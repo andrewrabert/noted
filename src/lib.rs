@@ -1,0 +1,26 @@
+pub mod authclient;
+pub mod backend;
+pub mod cli;
+pub mod config;
+pub mod credentials;
+pub mod error;
+pub mod front_matter;
+pub mod http;
+pub mod httpurl;
+pub mod mcp;
+pub mod newtype;
+pub mod notes;
+pub mod oauth;
+pub mod password;
+pub mod scope;
+pub mod search;
+pub mod serve;
+pub mod tasks;
+pub mod tools;
+pub mod types;
+pub mod util;
+
+pub use error::{NotedError, Result};
+pub use mcp::{context, McpContext};
+pub use notes::Notes;
+pub use tasks::Tasks;
