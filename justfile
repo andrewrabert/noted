@@ -10,8 +10,17 @@ build:
 build-android:
     #!/usr/bin/env sh
     set -eu
-    cross build --release --target aarch64-linux-android --manifest-path {{justfile_directory()}}/Cargo.toml
-    echo "binary: {{justfile_directory()}}/target/aarch64-linux-android/release/noted"
+    cd "{{justfile_directory()}}"
+    tools="$PWD/target/tools"
+    cross="$tools/bin/cross"
+    if [ ! -x "$cross" ]; then
+        cargo install cross --locked --root "$tools"
+    fi
+    if [ -z "${CROSS_CONTAINER_ENGINE:-}" ] && command -v podman >/dev/null 2>&1; then
+        export CROSS_CONTAINER_ENGINE=podman
+    fi
+    "$cross" build --release --target aarch64-linux-android
+    echo "binary: $PWD/target/aarch64-linux-android/release/noted"
 
 # Run the test suite
 test:
