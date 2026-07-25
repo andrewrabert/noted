@@ -13,6 +13,7 @@ use crate::tools::{DeleteArgs, EditArgs, LogArgs, MoveArgs, ReadArgs, SearchArgs
 mod admin;
 mod auth;
 mod dispatch;
+mod open;
 
 use admin::{KeyCmd, UserCmd};
 use auth::AuthCmd;
@@ -82,6 +83,8 @@ enum Command {
     Write(WriteArgs),
     /// Revise a note in place via string-replace
     Edit(EditArgs),
+    /// Open a note in $EDITOR
+    Open(open::OpenArgs),
     /// Move or rename a note or folder
     #[command(name = "move")]
     Move(MoveArgs),
@@ -204,6 +207,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Edit(c) => {
             dispatch::run_dispatch(&globals, dispatch::passthrough_of("EditNote", c))
         }
+        Command::Open(c) => open::run_open(&globals, c),
         Command::Move(c) => {
             dispatch::run_dispatch(&globals, dispatch::passthrough_of("MoveNote", c))
         }

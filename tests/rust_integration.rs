@@ -8,6 +8,7 @@ use noted::mcp::context;
 use noted::notes::Notes;
 use noted::search::{MatchOpts, WalkOpts};
 use noted::tasks::Tasks;
+use noted::tools::WriteWhen;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -52,9 +53,13 @@ fn read_existing_and_missing() {
 fn write_roundtrip_and_path_escape() {
     let dir = fixture_dir();
     let (notes, _) = cores(&dir);
-    notes.write(&rp("sub/new.md"), "hello").unwrap();
+    notes
+        .write(&rp("sub/new.md"), "hello", WriteWhen::Always)
+        .unwrap();
     assert_eq!(notes.read(&rp("sub/new.md")).unwrap(), "hello");
-    assert!(notes.write(&rp("../escape.md"), "x").is_err());
+    assert!(notes
+        .write(&rp("../escape.md"), "x", WriteWhen::Always)
+        .is_err());
     assert!(notes.read(&rp("../../etc/passwd")).is_err());
 }
 
@@ -64,7 +69,7 @@ fn log_is_immutable_and_recoverable_delete() {
     let (notes, _) = cores(&dir);
     let rel = notes.create_log("entry\n-- t · s", None).unwrap();
     assert!(rel.starts_with("Log/"));
-    let err = notes.write(&rp(&rel), "x").unwrap_err();
+    let err = notes.write(&rp(&rel), "x", WriteWhen::Always).unwrap_err();
     assert!(err.to_string().contains("immutable"));
     assert!(notes.delete(&rp(&rel)).is_err());
     assert!(notes.move_note(&rp(&rel), &rp("moved.md"), false).is_err());
@@ -152,7 +157,9 @@ fn write_and_edit_refused_under_tasks() {
     let dir = fixture_dir();
     let (notes, tasks) = cores(&dir);
     tasks.create(&tt("t"), &gp("grp"), "").unwrap();
-    assert!(notes.write(&rp("Tasks/grp/task_0001.md"), "x").is_err());
+    assert!(notes
+        .write(&rp("Tasks/grp/task_0001.md"), "x", WriteWhen::Always)
+        .is_err());
     assert!(notes.delete(&rp("Tasks/grp/task_0001.md")).is_err());
 }
 

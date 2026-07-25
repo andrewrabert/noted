@@ -4,6 +4,7 @@ use noted::notes::Notes;
 use noted::scope::{compile_rules, RuleSpec, StoredScope, TokenScope};
 use noted::search::{MatchOpts, WalkOpts};
 use noted::tasks::Tasks;
+use noted::tools::WriteWhen;
 
 fn folders(list: &[&str]) -> Option<Vec<String>> {
     Some(list.iter().map(|s| s.to_string()).collect())
@@ -68,7 +69,7 @@ fn notes_confine_allows_inside_rejects_outside() {
         .to_string()
         .contains("allowed folders"));
     assert!(notes
-        .write(&rp("people/x.md"), "y")
+        .write(&rp("people/x.md"), "y", WriteWhen::Always)
         .unwrap_err()
         .to_string()
         .contains("allowed folders"));

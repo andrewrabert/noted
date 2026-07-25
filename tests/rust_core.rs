@@ -2,6 +2,7 @@ mod common;
 
 use common::{cores, fixture_dir, notes_root};
 use noted::search::{MatchOpts, WalkOpts};
+use noted::tools::{ContentHash, WriteWhen};
 use noted::util::{atomic_write, slice_lines};
 use serde_json::json;
 
@@ -15,7 +16,7 @@ fn path_escapes_are_rejected() {
             "read {escape} should reject"
         );
         assert!(
-            notes.write(&rp(escape), "x").is_err(),
+            notes.write(&rp(escape), "x", WriteWhen::Always).is_err(),
             "write {escape} should reject"
         );
     }
@@ -32,7 +33,10 @@ fn hidden_paths_are_rejected_everywhere() {
             !err.contains("recover") && !err.contains("already in"),
             "read {hidden} used trash-recovery language: {err}"
         );
-        assert!(notes.write(&rp(hidden), "x").is_err(), "write {hidden}");
+        assert!(
+            notes.write(&rp(hidden), "x", WriteWhen::Always).is_err(),
+            "write {hidden}"
+        );
         assert!(notes.delete(&rp(hidden)).is_err(), "delete {hidden}");
         assert!(
             notes.move_note(&rp(hidden), &rp("ok.md"), false).is_err(),
@@ -75,10 +79,12 @@ fn read_edge_cases() {
 fn write_creates_parents_and_leaves_no_temp() {
     let dir = fixture_dir();
     let (notes, _) = cores(&dir);
-    notes.write(&rp("deep/nested/new.md"), "hello\n").unwrap();
+    notes
+        .write(&rp("deep/nested/new.md"), "hello\n", WriteWhen::Always)
+        .unwrap();
     assert_eq!(notes.read(&rp("deep/nested/new.md")).unwrap(), "hello\n");
 
-    notes.write(&rp("a.md"), "x").unwrap();
+    notes.write(&rp("a.md"), "x", WriteWhen::Always).unwrap();
     let leftovers: Vec<_> = std::fs::read_dir(notes_root(&dir))
         .unwrap()
         .filter_map(|e| e.ok())
@@ -93,7 +99,7 @@ fn log_entries_are_immutable() {
     let (notes, _) = cores(&dir);
     let entry = "Log/2026/07/2026-07-01T09-00-00.000000.md";
     assert!(notes
-        .write(&rp(entry), "nope")
+        .write(&rp(entry), "nope", WriteWhen::Always)
         .unwrap_err()
         .to_string()
         .contains("immutable"));
@@ -144,7 +150,9 @@ fn delete_moves_to_trash_and_uniquifies() {
 
     // .trash/old-idea.md already exists in the fixture → a same-named delete
     // must uniquify rather than clobber it.
-    notes.write(&rp("old-idea.md"), "different\n").unwrap();
+    notes
+        .write(&rp("old-idea.md"), "different\n", WriteWhen::Always)
+        .unwrap();
     let uniq = notes.delete(&rp("old-idea.md")).unwrap();
     assert_ne!(uniq, ".trash/old-idea.md");
     assert_eq!(
@@ -207,8 +215,12 @@ fn move_semantics() {
 fn move_onto_nonempty_folder_is_rejected() {
     let dir = fixture_dir();
     let (notes, _) = cores(&dir);
-    notes.write(&rp("srcd/a.md"), "a").unwrap();
-    notes.write(&rp("dstd/b.md"), "b").unwrap();
+    notes
+        .write(&rp("srcd/a.md"), "a", WriteWhen::Always)
+        .unwrap();
+    notes
+        .write(&rp("dstd/b.md"), "b", WriteWhen::Always)
+        .unwrap();
     assert!(notes
         .move_note(&rp("srcd"), &rp("dstd"), true)
         .unwrap_err()
@@ -269,7 +281,7 @@ async fn ignore_files_hide_paths_everywhere() {
     for rel in ["wip-x.md", "drafts/note.md"] {
         assert!(notes.read(&rp(rel)).is_err(), "read {rel} should reject");
         assert!(
-            notes.write(&rp(rel), "x").is_err(),
+            notes.write(&rp(rel), "x", WriteWhen::Always).is_err(),
             "write {rel} should reject"
         );
         assert!(
@@ -284,7 +296,9 @@ async fn ignore_files_hide_paths_everywhere() {
 
     assert!(notes.read(&rp("wip-keep.md")).is_ok());
     assert!(notes.read(&rp("visible.md")).is_ok());
-    assert!(notes.write(&rp("drafts/new.md"), "x").is_err());
+    assert!(notes
+        .write(&rp("drafts/new.md"), "x", WriteWhen::Always)
+        .is_err());
 }
 
 #[tokio::test]
@@ -487,6 +501,97 @@ fn atomic_write_replaces_in_place() {
     atomic_write(&target, "first").unwrap();
     atomic_write(&target, "second").unwrap();
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "second");
+}
+
+fn hash_of(s: &str) -> String {
+    ContentHash::of(s).to_string()
+}
+
+#[test]
+fn conditional_write_exists_matching_token() {
+    let dir = fixture_dir();
+    let (notes, _) = cores(&dir);
+    notes.write(&rp("cw.md"), "one", WriteWhen::Always).unwrap();
+
+    let token = hash_of("one");
+    notes
+        .write(
+            &rp("cw.md"),
+            "two",
+            format!("exists:{token}").parse().unwrap(),
+        )
+        .unwrap();
+    assert_eq!(notes.read(&rp("cw.md")).unwrap(), "two");
+
+    let err = notes
+        .write(
+            &rp("cw.md"),
+            "three",
+            format!("exists:{token}").parse().unwrap(),
+        )
+        .unwrap_err();
+    assert!(matches!(err, noted::error::NotedError::Conflict(_)));
+    assert_eq!(notes.read(&rp("cw.md")).unwrap(), "two");
+}
+
+#[test]
+fn conditional_write_missing_and_exists() {
+    let dir = fixture_dir();
+    let (notes, _) = cores(&dir);
+
+    notes.write(&rp("m.md"), "hi", WriteWhen::Missing).unwrap();
+    assert!(matches!(
+        notes
+            .write(&rp("m.md"), "again", WriteWhen::Missing)
+            .unwrap_err(),
+        noted::error::NotedError::Conflict(_)
+    ));
+
+    notes
+        .write(&rp("m.md"), "edited", WriteWhen::Exists)
+        .unwrap();
+    assert!(matches!(
+        notes
+            .write(&rp("absent.md"), "x", WriteWhen::Exists)
+            .unwrap_err(),
+        noted::error::NotedError::Conflict(_)
+    ));
+}
+
+#[test]
+fn conflict_message_never_mentions_sha256() {
+    let dir = fixture_dir();
+    let (notes, _) = cores(&dir);
+    notes.write(&rp("c.md"), "v1", WriteWhen::Always).unwrap();
+    let stale = format!("exists:{}", hash_of("other"));
+    let err = notes
+        .write(&rp("c.md"), "v2", stale.parse().unwrap())
+        .unwrap_err();
+    assert!(!err.to_string().to_lowercase().contains("sha256"));
+}
+
+#[test]
+fn write_when_from_str_and_content_hash_roundtrip() {
+    assert!(matches!(
+        "always".parse::<WriteWhen>(),
+        Ok(WriteWhen::Always)
+    ));
+    assert!(matches!(
+        "missing".parse::<WriteWhen>(),
+        Ok(WriteWhen::Missing)
+    ));
+    assert!(matches!(
+        "exists".parse::<WriteWhen>(),
+        Ok(WriteWhen::Exists)
+    ));
+    assert!("exists:".parse::<WriteWhen>().is_err());
+    assert!("bogus".parse::<WriteWhen>().is_err());
+
+    let h = ContentHash::of("payload");
+    let round: ContentHash = h.to_string().parse().unwrap();
+    assert!(h == round);
+    assert!("zz".parse::<ContentHash>().is_err());
+    assert!(format!("exists:{}", h).parse::<WriteWhen>().is_ok());
 }
 
 #[allow(dead_code)]

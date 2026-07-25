@@ -2,6 +2,7 @@ mod common;
 
 use common::{cores, fixture_dir, notes_root};
 use noted::tasks::parse_task_file;
+use noted::tools::WriteWhen;
 
 fn task_file(dir: &tempfile::TempDir, rel: &str) -> std::path::PathBuf {
     notes_root(dir).join("Tasks").join(format!("{rel}.md"))
@@ -455,7 +456,7 @@ fn tasks_subtree_is_managed() {
     tasks.create(&tt("t"), &gp(""), "").unwrap();
 
     assert!(notes
-        .write(&rp("Tasks/task_0009.md"), "nope")
+        .write(&rp("Tasks/task_0009.md"), "nope", WriteWhen::Always)
         .unwrap_err()
         .to_string()
         .contains("managed"));
@@ -469,7 +470,9 @@ fn tasks_subtree_is_managed() {
         .unwrap_err()
         .to_string()
         .contains("cannot be moved"));
-    notes.write(&rp("loose.md"), "x").unwrap();
+    notes
+        .write(&rp("loose.md"), "x", WriteWhen::Always)
+        .unwrap();
     assert!(notes
         .move_note(&rp("loose.md"), &rp("Tasks/task_0002.md"), false)
         .unwrap_err()

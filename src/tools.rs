@@ -1,11 +1,14 @@
 use std::collections::BTreeSet;
+use std::fmt;
+use std::str::FromStr;
 
 use clap::{Args, ValueEnum};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
-use crate::error::{rejected, unavailable, Result};
+use crate::error::{rejected, unavailable, NotedError, Result};
 use crate::notes::{Notes, RelPath};
 use crate::scope::TokenScope;
 use crate::search::{CaseMode, MatchOpts, WalkOpts};
@@ -218,10 +221,107 @@ pub(crate) struct ReadArgs {
     limit: Option<i64>,
 }
 
+impl ReadArgs {
+    pub(crate) fn new(path: RelPath) -> ReadArgs {
+        ReadArgs {
+            path,
+            offset: None,
+            limit: None,
+        }
+    }
+}
+
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub(crate) struct WriteArgs {
     path: RelPath,
     content: String,
+    #[arg(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    when: Option<String>,
+}
+
+impl WriteArgs {
+    pub(crate) fn new(path: RelPath, content: String) -> WriteArgs {
+        WriteArgs {
+            path,
+            content,
+            when: None,
+        }
+    }
+
+    pub(crate) fn when(mut self, when: WriteWhen) -> WriteArgs {
+        self.when = Some(when.to_string());
+        self
+    }
+}
+
+#[derive(Default)]
+pub enum WriteWhen {
+    #[default]
+    Always,
+    Missing,
+    Exists,
+    ExistsMatching(ContentHash),
+}
+
+impl fmt::Display for WriteWhen {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WriteWhen::Always => f.write_str("always"),
+            WriteWhen::Missing => f.write_str("missing"),
+            WriteWhen::Exists => f.write_str("exists"),
+            WriteWhen::ExistsMatching(token) => write!(f, "exists:{token}"),
+        }
+    }
+}
+
+impl FromStr for WriteWhen {
+    type Err = NotedError;
+    fn from_str(s: &str) -> Result<WriteWhen> {
+        match s.split_once(':') {
+            Some(("exists", token)) => Ok(WriteWhen::ExistsMatching(token.parse()?)),
+            None | Some(_) => match s {
+                "always" => Ok(WriteWhen::Always),
+                "missing" => Ok(WriteWhen::Missing),
+                "exists" => Ok(WriteWhen::Exists),
+                other => Err(rejected(format!("unknown write condition: '{other}'"))),
+            },
+        }
+    }
+}
+
+#[derive(PartialEq, Eq)]
+pub struct ContentHash([u8; 32]);
+
+impl ContentHash {
+    pub fn of(s: &str) -> ContentHash {
+        ContentHash(Sha256::digest(s.as_bytes()).into())
+    }
+}
+
+impl fmt::Display for ContentHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for b in self.0 {
+            write!(f, "{b:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+impl FromStr for ContentHash {
+    type Err = NotedError;
+    fn from_str(s: &str) -> Result<ContentHash> {
+        if s.len() != 64 {
+            return Err(rejected("invalid write condition token"));
+        }
+        let mut out = [0u8; 32];
+        for (i, byte) in out.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
+                .map_err(|_| rejected("invalid write condition token"))?;
+        }
+        Ok(ContentHash(out))
+    }
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
@@ -363,7 +463,13 @@ fn run_tool_sync(name: &str, args: &Value, notes: &Notes, tasks: &Tasks) -> Resu
         }
         "WriteNote" => {
             let a: WriteArgs = parse(args)?;
-            notes.write(&a.path, &a.content)?;
+            let when = a
+                .when
+                .as_deref()
+                .map(str::parse)
+                .transpose()?
+                .unwrap_or_default();
+            notes.write(&a.path, &a.content, when)?;
             Ok(ToolOutput::Written {
                 path: a.path.to_string(),
             })
@@ -431,7 +537,11 @@ fn run_edit(a: EditArgs, notes: &Notes) -> Result<ToolOutput> {
             "old string not unique ({count} matches); pass replace_all"
         )));
     }
-    notes.write(&a.path, &content.replace(&a.old_string, &a.new_string))?;
+    notes.write(
+        &a.path,
+        &content.replace(&a.old_string, &a.new_string),
+        WriteWhen::Always,
+    )?;
     Ok(ToolOutput::Edited {
         path: a.path.to_string(),
     })

@@ -25,6 +25,7 @@ impl IntoResponse for NotedError {
             NotedError::NotFound(_) => StatusCode::NOT_FOUND,
             NotedError::Forbidden(_) => StatusCode::FORBIDDEN,
             NotedError::InvalidInput(_) => StatusCode::BAD_REQUEST,
+            NotedError::Conflict(_) => StatusCode::CONFLICT,
             NotedError::Unavailable(_)
             | NotedError::Io { .. }
             | NotedError::Json { .. }

@@ -9,6 +9,8 @@ pub enum NotedError {
     #[error("{0}")]
     InvalidInput(String),
     #[error("{0}")]
+    Conflict(String),
+    #[error("{0}")]
     Unavailable(String),
     #[error("{context}")]
     Io {
@@ -48,6 +50,7 @@ impl NotedError {
             NotedError::NotFound(m)
             | NotedError::Forbidden(m)
             | NotedError::InvalidInput(m)
+            | NotedError::Conflict(m)
             | NotedError::Unavailable(m) => m,
             NotedError::Io { context, .. }
             | NotedError::Json { context, .. }
@@ -60,7 +63,10 @@ impl NotedError {
     pub fn is_rejection(&self) -> bool {
         matches!(
             self,
-            NotedError::NotFound(_) | NotedError::Forbidden(_) | NotedError::InvalidInput(_)
+            NotedError::NotFound(_)
+                | NotedError::Forbidden(_)
+                | NotedError::InvalidInput(_)
+                | NotedError::Conflict(_)
         )
     }
 }
@@ -83,6 +89,10 @@ pub fn not_found(msg: impl Into<String>) -> NotedError {
 
 pub fn forbidden(msg: impl Into<String>) -> NotedError {
     NotedError::Forbidden(msg.into())
+}
+
+pub fn conflict(msg: impl Into<String>) -> NotedError {
+    NotedError::Conflict(msg.into())
 }
 
 pub fn unavailable(msg: impl Into<String>) -> NotedError {

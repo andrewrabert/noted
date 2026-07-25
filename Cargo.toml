@@ -53,6 +53,8 @@ open = "5"
 keyring = { version = "3", features = ["apple-native", "windows-native", "async-secret-service", "async-io", "crypto-rust"] }
 macaroon = "0.3"
 humantime = "2"
+which = { version = "7", default-features = false }
+shell-words = "1"
 
 [features]
 # Compiles in test-only hooks (e.g. OAuth token injection) that must never ship

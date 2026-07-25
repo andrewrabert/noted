@@ -391,6 +391,61 @@ async fn mcp_stateless_needs_no_session() {
         .contains("projects/ideas.md"));
 }
 
+#[tokio::test]
+async fn conditional_write_over_http() {
+    let dir = common::fixture_dir();
+    let (app, t) = keyed_app(&dir, StoredScope::Unrestricted);
+
+    let (s, _) = post_json(
+        &app,
+        "/tool/WriteNote",
+        Some(&t),
+        &json!({"path": "http_cw.md", "content": "a", "when": "missing"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = post_json(
+        &app,
+        "/tool/WriteNote",
+        Some(&t),
+        &json!({"path": "http_cw.md", "content": "b", "when": "missing"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+
+    // An unknown word is a domain rejection (400), not a serde 422.
+    let (s, _) = post_json(
+        &app,
+        "/tool/WriteNote",
+        Some(&t),
+        &json!({"path": "http_cw.md", "content": "b", "when": "whenever"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn write_schema_hides_when_via_mcp() {
+    let dir = common::fixture_dir();
+    let (app, t) = keyed_app(&dir, StoredScope::Unrestricted);
+    let (s, _h, b) = post_mcp(
+        &app,
+        Some(&t),
+        &json!({"jsonrpc": "2.0", "id": 1,
+        "method": "tools/list", "params": {}}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let tools = json_body(&b)["result"]["tools"].as_array().unwrap().clone();
+    let write = tools
+        .iter()
+        .find(|t| t["name"] == "WriteNote")
+        .expect("WriteNote listed");
+    let props = &write["inputSchema"]["properties"];
+    assert!(props.get("content").is_some());
+    assert!(props.get("when").is_none(), "when leaked into MCP schema");
+}
+
 #[allow(dead_code)]
 fn un(s: impl AsRef<str>) -> noted::oauth::types::Username {
     s.as_ref().parse().unwrap()

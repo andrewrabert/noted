@@ -51,12 +51,16 @@ enum Render {
     Tasks { as_json: bool },
 }
 
+pub(super) fn call_of(name: &str, args: impl Serialize) -> ToolCall {
+    ToolCall {
+        name: name.to_string(),
+        args: serde_json::to_value(args).expect("cli args serialize to json"),
+    }
+}
+
 pub(super) fn passthrough_of(name: &str, args: impl Serialize) -> Dispatch {
     Dispatch {
-        call: ToolCall {
-            name: name.to_string(),
-            args: serde_json::to_value(args).expect("cli args serialize to json"),
-        },
+        call: call_of(name, args),
         render: Render::Passthrough,
         empty_is_failure: false,
     }
@@ -98,7 +102,7 @@ pub(super) fn run_dispatch(globals: &GlobalArgs, dispatch: Dispatch) -> Result<E
     Ok(ExitCode::SUCCESS)
 }
 
-fn build_backend(globals: &GlobalArgs) -> Result<Backend> {
+pub(super) fn build_backend(globals: &GlobalArgs) -> Result<Backend> {
     if let Some(url) = remote_url(globals)? {
         let session = Session::open(&url, globals.token.as_deref())?;
         let token = block_on(session.bearer())?;

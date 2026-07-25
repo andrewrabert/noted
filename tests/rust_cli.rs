@@ -265,6 +265,169 @@ fn remote_url_drives_a_live_serve() {
     assert!(r.stdout.contains("# Inbox"));
 }
 
+fn write_file(dir: &tempfile::TempDir, name: &str, content: &str) -> String {
+    let p = dir.path().join(name);
+    std::fs::write(&p, content).unwrap();
+    p.to_str().unwrap().to_string()
+}
+
+fn script(dir: &tempfile::TempDir, name: &str, body: &str) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let p = dir.path().join(name);
+    std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    p.to_str().unwrap().to_string()
+}
+
+#[test]
+fn open_overwrites_buffer_and_saves() {
+    let d = fixture();
+    let src = write_file(&d, "new.txt", "rewritten body");
+    let r = run(
+        &d,
+        true,
+        &[("EDITOR", &format!("cp {src}"))],
+        &["open", "Inbox.md"],
+    );
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert!(r.stdout.contains("wrote Inbox.md"));
+    assert!(!r.stderr.contains("preserved at"));
+    assert!(run(&d, true, &[], &["read", "Inbox.md"])
+        .stdout
+        .contains("rewritten body"));
+}
+
+#[test]
+fn open_creates_missing_note() {
+    let d = fixture();
+    let src = write_file(&d, "new.txt", "brand new");
+    let r = run(
+        &d,
+        true,
+        &[("EDITOR", &format!("cp {src}"))],
+        &["open", "created.md"],
+    );
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert!(run(&d, true, &[], &["read", "created.md"])
+        .stdout
+        .contains("brand new"));
+}
+
+#[test]
+fn open_unchanged_buffer_writes_nothing() {
+    let d = fixture();
+    let r = run(&d, true, &[("EDITOR", "true")], &["open", "Inbox.md"]);
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert_eq!(r.stdout.trim(), "unchanged");
+    assert!(!r.stderr.contains("preserved at"));
+}
+
+#[test]
+fn open_editor_failure_leaves_note_untouched() {
+    let d = fixture();
+    let before = run(&d, true, &[], &["read", "Inbox.md"]).stdout;
+    let r = run(&d, true, &[("EDITOR", "false")], &["open", "Inbox.md"]);
+    assert_ne!(r.code, 0);
+    assert!(!r.stderr.contains("preserved at"));
+    assert_eq!(run(&d, true, &[], &["read", "Inbox.md"]).stdout, before);
+}
+
+#[test]
+fn open_requires_an_editor() {
+    let d = fixture();
+    let empty_path = d.path().to_str().unwrap();
+    let r = run(&d, true, &[("PATH", empty_path)], &["open", "Inbox.md"]);
+    assert_ne!(r.code, 0);
+    assert!(r.stderr.contains("no editor"));
+}
+
+#[test]
+fn open_visual_wins_over_editor() {
+    let d = fixture();
+    let good = write_file(&d, "good.txt", "from visual");
+    let bad = write_file(&d, "bad.txt", "from editor");
+    let r = run(
+        &d,
+        true,
+        &[
+            ("VISUAL", &format!("cp {good}")),
+            ("EDITOR", &format!("cp {bad}")),
+        ],
+        &["open", "Inbox.md"],
+    );
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert!(run(&d, true, &[], &["read", "Inbox.md"])
+        .stdout
+        .contains("from visual"));
+}
+
+#[test]
+fn open_conflict_preserves_edits_and_aborts() {
+    let d = fixture();
+    let note = common::notes_root(&d).join("Inbox.md");
+    let ed = script(
+        &d,
+        "clobber.sh",
+        "printf 'concurrent write' > \"$NOTE_PATH\"\nprintf 'my careful edits' > \"$1\"",
+    );
+    let r = run(
+        &d,
+        true,
+        &[("EDITOR", &ed), ("NOTE_PATH", note.to_str().unwrap())],
+        &["open", "Inbox.md"],
+    );
+    assert_ne!(r.code, 0);
+    assert!(r.stderr.contains("preserved at"), "stderr: {}", r.stderr);
+    assert_eq!(std::fs::read_to_string(&note).unwrap(), "concurrent write");
+    let rescue = r
+        .stderr
+        .lines()
+        .find_map(|l| l.strip_prefix("your edits are preserved at "))
+        .expect("rescue path in stderr")
+        .trim();
+    let saved = std::fs::read_dir(rescue)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find_map(|e| std::fs::read_to_string(e.path()).ok())
+        .unwrap();
+    assert_eq!(saved, "my careful edits");
+}
+
+#[test]
+fn open_force_overwrites_concurrent_change() {
+    let d = fixture();
+    let note = common::notes_root(&d).join("Inbox.md");
+    let ed = script(
+        &d,
+        "clobber.sh",
+        "printf 'concurrent write' > \"$NOTE_PATH\"\nprintf 'forced edits' > \"$1\"",
+    );
+    let r = run(
+        &d,
+        true,
+        &[("EDITOR", &ed), ("NOTE_PATH", note.to_str().unwrap())],
+        &["open", "-f", "Inbox.md"],
+    );
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert!(!r.stderr.contains("preserved at"));
+    assert_eq!(std::fs::read_to_string(&note).unwrap(), "forced edits");
+}
+
+#[test]
+fn open_log_refusal_preserves_edits() {
+    let d = fixture();
+    let src = write_file(&d, "new.txt", "cannot land");
+    let r = run(
+        &d,
+        true,
+        &[("EDITOR", &format!("cp {src}"))],
+        &["open", "Log/2026/07/hack.md"],
+    );
+    assert_ne!(r.code, 0);
+    assert!(r.stderr.contains("immutable"));
+    assert!(r.stderr.contains("preserved at"), "stderr: {}", r.stderr);
+}
+
 fn pick_port() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.local_addr().unwrap().port()

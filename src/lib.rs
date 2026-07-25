@@ -16,6 +16,8 @@ pub mod scope;
 pub mod search;
 pub mod serve;
 pub mod tasks;
+#[allow(dead_code)]
+pub(crate) mod text_editor;
 pub mod tools;
 pub mod types;
 pub mod util;

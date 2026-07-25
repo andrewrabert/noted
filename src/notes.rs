@@ -1,15 +1,17 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use chrono::Local;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{forbidden, io_error, not_found, rejected, Result};
+use crate::error::{conflict, forbidden, io_error, not_found, rejected, Result};
 use crate::front_matter::dump_front;
 use crate::search::{match_paths, ripgrep, walk_search, MatchOpts, WalkOpts};
+use crate::tools::{ContentHash, WriteWhen};
 use crate::types::{Source, Timestamp};
-use crate::util::{atomic_write, normalize, IgnoreFilter};
+use crate::util::{atomic_create, atomic_write, normalize, IgnoreFilter};
 
 #[derive(Clone, Serialize)]
 pub struct LogFront {
@@ -29,6 +31,10 @@ pub struct Notes {
     root: PathBuf,
     pub source: Option<String>,
     confine: Option<Vec<String>>,
+    // Shared across every `confined()` clone (the Arc is cloned, not the lock),
+    // so all in-process writes serialize on one mutex — the conditional-write
+    // compare-and-swap is atomic even against an unconditional `Always` write.
+    writes: Arc<Mutex<()>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -139,6 +145,7 @@ impl Notes {
             root,
             source,
             confine: None,
+            writes: Arc::new(Mutex::new(())),
         })
     }
 
@@ -153,6 +160,7 @@ impl Notes {
                 root: self.root.clone(),
                 source: self.source.clone(),
                 confine: Some(folders),
+                writes: self.writes.clone(),
             },
         }
     }
@@ -268,13 +276,48 @@ impl Notes {
         }
     }
 
-    pub fn write(&self, rel: &RelPath, content: &str) -> Result<()> {
+    pub fn write(&self, rel: &RelPath, content: &str, when: WriteWhen) -> Result<()> {
         let path = self.resolve_file(rel)?;
         self.guard_log(&path, rel)?;
         if self.under_tasks(&path) {
             return Err(rejected(format!(
                 "tasks are managed: '{rel}' (use CreateTask/UpdateTask/MoveTask)"
             )));
+        }
+        // Hold the lock across the whole read-compare-write so no concurrent
+        // in-process write (conditional or `Always`) can slip between them.
+        let _guard = self.writes.lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(&when, WriteWhen::Missing) {
+            return atomic_create(&path, content).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    conflict(format!("note already exists: '{rel}'"))
+                } else {
+                    io_error(format!("cannot write note: '{rel}'"), e)
+                }
+            });
+        }
+        let current = match std::fs::read(&path) {
+            Ok(bytes) => Some(
+                String::from_utf8(bytes)
+                    .map_err(|_| rejected(format!("note is not valid utf-8: '{rel}'")))?,
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(io_error(format!("cannot read note: '{rel}'"), e)),
+        };
+        match when {
+            WriteWhen::Always => {}
+            WriteWhen::Missing => unreachable!("handled by atomic_create above"),
+            WriteWhen::Exists if current.is_none() => {
+                return Err(conflict(format!("no note at '{rel}'")));
+            }
+            WriteWhen::Exists => {}
+            WriteWhen::ExistsMatching(token) => match &current {
+                Some(c) if ContentHash::of(c) == token => {}
+                Some(_) => {
+                    return Err(conflict(format!("note changed since it was read: '{rel}'")));
+                }
+                None => return Err(conflict(format!("no note at '{rel}'"))),
+            },
         }
         atomic_write(&path, content)
     }

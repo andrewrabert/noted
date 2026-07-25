@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::error::{forbidden, json_error, not_found, rejected, unavailable, Result};
+use crate::error::{conflict, forbidden, json_error, not_found, rejected, unavailable, Result};
 use crate::httpurl::HttpUrl;
 use crate::notes::Notes;
 use crate::tasks::Tasks;
@@ -89,6 +89,7 @@ async fn roundtrip(
         return Err(match status {
             404 => not_found(msg),
             403 => forbidden(msg),
+            409 => conflict(msg),
             _ => rejected(msg),
         });
     }
