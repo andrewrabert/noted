@@ -111,10 +111,10 @@ fn new_temp(parent: &Path) -> Result<tempfile::NamedTempFile> {
         .map_err(|e| io_error("write failed", e))
 }
 
-pub fn atomic_write(path: &Path, text: &str) -> Result<()> {
+pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut tmp = new_temp(parent)?;
-    tmp.write_all(text.as_bytes())
+    tmp.write_all(data)
         .and_then(|_| tmp.flush())
         .map_err(|e| io_error("write failed", e))?;
     tmp.persist(path)
@@ -122,10 +122,10 @@ pub fn atomic_write(path: &Path, text: &str) -> Result<()> {
         .map_err(|e| io_error("write failed", e.error))
 }
 
-pub fn atomic_create(path: &Path, text: &str) -> std::io::Result<()> {
+pub fn atomic_create(path: &Path, data: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut tmp = new_temp(parent).map_err(std::io::Error::other)?;
-    tmp.write_all(text.as_bytes())?;
+    tmp.write_all(data)?;
     tmp.flush()?;
     tmp.persist_noclobber(path).map(|_| ()).map_err(|e| e.error)
 }

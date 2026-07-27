@@ -9,6 +9,7 @@ pub mod http;
 pub mod httpurl;
 pub mod mcp;
 pub mod newtype;
+pub mod note;
 pub mod notes;
 pub mod oauth;
 pub mod password;
@@ -24,5 +25,6 @@ pub mod util;
 
 pub use error::{NotedError, Result};
 pub use mcp::{context, McpContext};
-pub use notes::Notes;
-pub use tasks::Tasks;
+pub use note::{BinaryNote, Etag, Note, RelPath, TextNote};
+pub use notes::{LogNote, Notes};
+pub use tasks::{TaskNote, Tasks};

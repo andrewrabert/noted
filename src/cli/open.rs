@@ -8,8 +8,8 @@ use tempfile::TempDir;
 use crate::backend::Backend;
 use crate::config::block_on;
 use crate::error::{io_error, rejected, NotedError, Result};
-use crate::notes::RelPath;
-use crate::tools::{ContentHash, ReadArgs, ToolOutput, WriteArgs, WriteWhen};
+use crate::note::{RelPath, TextNote};
+use crate::tools::{ReadArgs, ToolOutput, WriteArgs, WriteWhen};
 
 use super::dispatch::{build_backend, call_of};
 use super::GlobalArgs;
@@ -64,36 +64,42 @@ pub(super) fn run_open(globals: &GlobalArgs, args: OpenArgs) -> Result<ExitCode>
     let backend = build_backend(globals)?;
     let path = args.path;
 
-    let initial = match block_on(read_note(&backend, &path)) {
-        Ok(text) => Some(text),
+    let original = match block_on(read_note(&backend, &path)) {
+        Ok(note) => Some(note),
         Err(NotedError::NotFound(_)) => None,
         Err(e) => return Err(e),
     };
+    let initial = original.as_ref().map(TextNote::content).unwrap_or_default();
 
     let basename = path.rsplit('/').next().unwrap_or(path.as_str());
-    let mut buffer = EditBuffer::create(basename, initial.as_deref().unwrap_or_default())?;
+    let mut buffer = EditBuffer::create(basename, initial)?;
 
     run_editor(&buffer.file)?;
 
     let edited = std::fs::read_to_string(&buffer.file)
         .map_err(|e| io_error("cannot read edited buffer", e))?;
-    if edited == initial.as_deref().unwrap_or_default() {
+    if edited == initial {
         println!("unchanged");
         buffer.commit();
         return Ok(ExitCode::SUCCESS);
     }
 
+    let edited = match &original {
+        Some(original) => original.clone().with_content(edited),
+        None => TextNote::new(path.clone(), edited),
+    };
+
     buffer.arm();
     let when = if args.force {
         None
     } else {
-        Some(match &initial {
+        Some(match &original {
             None => WriteWhen::Missing,
-            Some(initial) => WriteWhen::ExistsMatching(ContentHash::of(initial)),
+            Some(original) => WriteWhen::ExistsMatching(original.etag()),
         })
     };
 
-    match block_on(write_note(&backend, &path, &edited, when)) {
+    match block_on(write_note(&backend, &edited, when)) {
         Ok(out) => {
             println!("{}", out.render());
             buffer.commit();
@@ -102,7 +108,7 @@ pub(super) fn run_open(globals: &GlobalArgs, args: OpenArgs) -> Result<ExitCode>
         Err(NotedError::Conflict(_)) => {
             eprintln!("note changed since it was opened: '{path}'");
             if std::io::stdin().is_terminal() && prompt_overwrite() {
-                let out = block_on(write_note(&backend, &path, &edited, None))?;
+                let out = block_on(write_note(&backend, &edited, None))?;
                 println!("{}", out.render());
                 buffer.commit();
                 Ok(ExitCode::SUCCESS)
@@ -116,10 +122,10 @@ pub(super) fn run_open(globals: &GlobalArgs, args: OpenArgs) -> Result<ExitCode>
     }
 }
 
-async fn read_note(backend: &Backend, path: &RelPath) -> Result<String> {
+async fn read_note(backend: &Backend, path: &RelPath) -> Result<TextNote> {
     let call = call_of("ReadNote", ReadArgs::new(path.clone()));
     match backend.invoke(&call).await? {
-        ToolOutput::Text(s) => Ok(s),
+        ToolOutput::Text(s) => Ok(TextNote::new(path.clone(), s)),
         other => Err(rejected(format!(
             "unexpected read output: {}",
             other.render()
@@ -129,11 +135,10 @@ async fn read_note(backend: &Backend, path: &RelPath) -> Result<String> {
 
 async fn write_note(
     backend: &Backend,
-    path: &RelPath,
-    content: &str,
+    note: &TextNote,
     when: Option<WriteWhen>,
 ) -> Result<ToolOutput> {
-    let mut args = WriteArgs::new(path.clone(), content.to_string());
+    let mut args = WriteArgs::new(note.path().clone(), note.content().to_string());
     if let Some(when) = when {
         args = args.when(when);
     }

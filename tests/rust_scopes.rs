@@ -1,10 +1,10 @@
 mod common;
 
+use common::{note, read, rp};
 use noted::notes::Notes;
 use noted::scope::{compile_rules, RuleSpec, StoredScope, TokenScope};
 use noted::search::{MatchOpts, WalkOpts};
 use noted::tasks::Tasks;
-use noted::tools::WriteWhen;
 
 fn folders(list: &[&str]) -> Option<Vec<String>> {
     Some(list.iter().map(|s| s.to_string()).collect())
@@ -62,14 +62,13 @@ fn notes_confine_allows_inside_rejects_outside() {
     let notes = Notes::new(&common::notes_root(&dir), None)
         .unwrap()
         .confined(folders(&["projects"]));
-    assert!(notes.read(&rp("projects/ideas.md")).is_ok());
-    assert!(notes
-        .read(&rp("Inbox.md"))
+    assert!(read(&notes, "projects/ideas.md").is_ok());
+    assert!(read(&notes, "Inbox.md")
         .unwrap_err()
         .to_string()
         .contains("allowed folders"));
     assert!(notes
-        .write(&rp("people/x.md"), "y", WriteWhen::Always)
+        .put(&note("people/x.md", "y"))
         .unwrap_err()
         .to_string()
         .contains("allowed folders"));
@@ -81,8 +80,8 @@ fn notes_confine_allows_log_writes() {
     let notes = Notes::new(&common::notes_root(&dir), Some("test".into()))
         .unwrap()
         .confined(folders(&["projects"]));
-    let rel = notes.create_log("entry\n-- t · s", None).unwrap();
-    assert!(rel.starts_with("Log/"));
+    let logged = notes.create_log("entry\n-- t · s", None).unwrap();
+    assert!(logged.path().starts_with("Log/"));
 }
 
 #[test]
@@ -119,7 +118,7 @@ async fn notes_confine_search_only_returns_inside() {
 fn notes_confined_none_is_full() {
     let dir = common::fixture_dir();
     let notes = Notes::new(&common::notes_root(&dir), None).unwrap();
-    assert!(notes.confined(None).read(&rp("Inbox.md")).is_ok());
+    assert!(read(&notes.confined(None), "Inbox.md").is_ok());
 }
 
 #[test]
@@ -162,10 +161,6 @@ fn tasks_confine_query_filters() {
     assert!(!paths.is_empty() && paths.iter().all(|p| p.starts_with("dev/")));
 }
 
-#[allow(dead_code)]
-fn rp(s: &str) -> noted::notes::RelPath {
-    s.parse().unwrap()
-}
 #[allow(dead_code)]
 fn gp(s: &str) -> noted::tasks::GroupPath {
     s.parse().unwrap()

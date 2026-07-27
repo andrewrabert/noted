@@ -3,15 +3,21 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use chrono::Local;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::error::{conflict, forbidden, io_error, not_found, rejected, Result};
 use crate::front_matter::dump_front;
+use crate::note::{Etag, Note, RelPath, TextNote};
 use crate::search::{match_paths, ripgrep, walk_search, MatchOpts, WalkOpts};
-use crate::tools::{ContentHash, WriteWhen};
 use crate::types::{Source, Timestamp};
 use crate::util::{atomic_create, atomic_write, normalize, IgnoreFilter};
+
+enum Condition {
+    Always,
+    Missing,
+    Exists,
+    Matching(Etag),
+}
 
 #[derive(Clone, Serialize)]
 pub struct LogFront {
@@ -20,6 +26,38 @@ pub struct LogFront {
     pub host: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<Source>,
+}
+
+/// An immutable, auto-stamped log entry. Minted only by `Notes::create_log` —
+/// its system metadata cannot be forged by a caller — and never mutated after.
+pub struct LogNote {
+    path: RelPath,
+    front: LogFront,
+    body: String,
+}
+
+impl LogNote {
+    pub fn path(&self) -> &RelPath {
+        &self.path
+    }
+
+    pub fn front(&self) -> &LogFront {
+        &self.front
+    }
+
+    pub fn body(&self) -> &str {
+        &self.body
+    }
+
+    pub fn etag(&self) -> Result<Etag> {
+        Ok(Etag::of(&self.to_bytes()?))
+    }
+}
+
+impl Note for LogNote {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
+        Ok(dump_front(&self.front, &self.body)?.into_bytes())
+    }
 }
 
 const TRASH: &str = ".trash";
@@ -35,86 +73,6 @@ pub struct Notes {
     // so all in-process writes serialize on one mutex — the conditional-write
     // compare-and-swap is atomic even against an unconditional `Always` write.
     writes: Arc<Mutex<()>>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(transparent)]
-#[schemars(transparent)]
-pub struct RelPath(String);
-
-impl RelPath {
-    pub fn new(s: impl Into<String>) -> RelPath {
-        RelPath(s.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::str::FromStr for RelPath {
-    type Err = crate::error::NotedError;
-    fn from_str(s: &str) -> Result<RelPath> {
-        Ok(RelPath::new(s))
-    }
-}
-
-impl Ord for RelPath {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0
-            .to_lowercase()
-            .cmp(&other.0.to_lowercase())
-            .then_with(|| self.0.cmp(&other.0))
-    }
-}
-
-impl PartialOrd for RelPath {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl std::ops::Deref for RelPath {
-    type Target = str;
-    fn deref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for RelPath {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl From<RelPath> for String {
-    fn from(r: RelPath) -> String {
-        r.0
-    }
-}
-
-impl AsRef<str> for RelPath {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl PartialEq<str> for RelPath {
-    fn eq(&self, other: &str) -> bool {
-        self.0 == other
-    }
-}
-
-impl PartialEq<&str> for RelPath {
-    fn eq(&self, other: &&str) -> bool {
-        self.0 == *other
-    }
-}
-
-impl PartialEq<String> for RelPath {
-    fn eq(&self, other: &String) -> bool {
-        &self.0 == other
-    }
 }
 
 pub struct ContentHit {
@@ -264,19 +222,23 @@ impl Notes {
         Ok(path)
     }
 
-    pub fn read(&self, rel: &RelPath) -> Result<String> {
-        let path = self.resolve_file(rel)?;
-        if !path.is_file() {
-            return Err(not_found(format!("no note at '{rel}'")));
-        }
-        match std::fs::read(&path) {
+    fn read_utf8(&self, rel: &RelPath, path: &Path) -> Result<String> {
+        match std::fs::read(path) {
             Ok(bytes) => String::from_utf8(bytes)
                 .map_err(|_| rejected(format!("note is not valid utf-8: '{rel}'"))),
             Err(e) => Err(io_error(format!("no note at '{rel}'"), e)),
         }
     }
 
-    pub fn write(&self, rel: &RelPath, content: &str, when: WriteWhen) -> Result<()> {
+    pub fn get(&self, rel: &RelPath) -> Result<TextNote> {
+        let path = self.resolve_file(rel)?;
+        if !path.is_file() {
+            return Err(not_found(format!("no note at '{rel}'")));
+        }
+        Ok(TextNote::new(rel.clone(), self.read_utf8(rel, &path)?))
+    }
+
+    fn resolve_writable(&self, rel: &RelPath) -> Result<PathBuf> {
         let path = self.resolve_file(rel)?;
         self.guard_log(&path, rel)?;
         if self.under_tasks(&path) {
@@ -284,11 +246,16 @@ impl Notes {
                 "tasks are managed: '{rel}' (use CreateTask/UpdateTask/MoveTask)"
             )));
         }
-        // Hold the lock across the whole read-compare-write so no concurrent
-        // in-process write (conditional or `Always`) can slip between them.
+        Ok(path)
+    }
+
+    fn persist(&self, note: &TextNote, when: Condition) -> Result<()> {
+        let rel = note.path();
+        let path = self.resolve_writable(rel)?;
+        let bytes = note.to_bytes()?;
         let _guard = self.writes.lock().unwrap_or_else(|e| e.into_inner());
-        if matches!(&when, WriteWhen::Missing) {
-            return atomic_create(&path, content).map_err(|e| {
+        if matches!(when, Condition::Missing) {
+            return atomic_create(&path, &bytes).map_err(|e| {
                 if e.kind() == std::io::ErrorKind::AlreadyExists {
                     conflict(format!("note already exists: '{rel}'"))
                 } else {
@@ -297,32 +264,52 @@ impl Notes {
             });
         }
         let current = match std::fs::read(&path) {
-            Ok(bytes) => Some(
-                String::from_utf8(bytes)
-                    .map_err(|_| rejected(format!("note is not valid utf-8: '{rel}'")))?,
-            ),
+            Ok(bytes) => Some(bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(io_error(format!("cannot read note: '{rel}'"), e)),
         };
         match when {
-            WriteWhen::Always => {}
-            WriteWhen::Missing => unreachable!("handled by atomic_create above"),
-            WriteWhen::Exists if current.is_none() => {
+            Condition::Always => {}
+            Condition::Missing => unreachable!("handled by atomic_create above"),
+            Condition::Exists if current.is_none() => {
                 return Err(conflict(format!("no note at '{rel}'")));
             }
-            WriteWhen::Exists => {}
-            WriteWhen::ExistsMatching(token) => match &current {
-                Some(c) if ContentHash::of(c) == token => {}
+            Condition::Exists => {}
+            Condition::Matching(token) => match &current {
+                Some(c) if Etag::of(c) == token => {}
                 Some(_) => {
                     return Err(conflict(format!("note changed since it was read: '{rel}'")));
                 }
                 None => return Err(conflict(format!("no note at '{rel}'"))),
             },
         }
-        atomic_write(&path, content)
+        atomic_write(&path, &bytes)
     }
 
-    pub fn create_log(&self, body: &str, source: Option<&Source>) -> Result<String> {
+    pub fn put(&self, note: &TextNote) -> Result<()> {
+        self.persist(note, Condition::Always)
+    }
+
+    pub fn create(&self, note: &TextNote) -> Result<()> {
+        self.persist(note, Condition::Missing)
+    }
+
+    pub fn replace(&self, note: &TextNote) -> Result<()> {
+        self.persist(note, Condition::Exists)
+    }
+
+    pub fn replace_if_unchanged(&self, original: &TextNote, replacement: &TextNote) -> Result<()> {
+        if original.path() != replacement.path() {
+            return Err(rejected("replacement path does not match the original"));
+        }
+        self.persist(replacement, Condition::Matching(original.etag()))
+    }
+
+    pub fn replace_matching(&self, note: &TextNote, expected: Etag) -> Result<()> {
+        self.persist(note, Condition::Matching(expected))
+    }
+
+    pub fn create_log(&self, body: &str, source: Option<&Source>) -> Result<LogNote> {
         let now = Local::now();
         let source = source
             .map(|s| s.to_string())
@@ -343,8 +330,13 @@ impl Notes {
         let stamp = now.format("%Y-%m-%dT%H-%M-%S.%6f").to_string();
         let rel_md = self.unique_log(&rel_dir, &stamp);
 
-        atomic_write(&self.get_path(&rel_md)?, &dump_front(&front, body)?)?;
-        Ok(rel_md)
+        let log = LogNote {
+            path: RelPath::new(rel_md),
+            front,
+            body: body.to_string(),
+        };
+        atomic_write(&self.get_path(log.path())?, &log.to_bytes()?)?;
+        Ok(log)
     }
 
     fn unique_log(&self, rel_dir: &str, stamp: &str) -> String {

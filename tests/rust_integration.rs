@@ -2,13 +2,14 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
+use common::{note, read, rp};
+
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use noted::mcp::context;
 use noted::notes::Notes;
 use noted::search::{MatchOpts, WalkOpts};
 use noted::tasks::Tasks;
-use noted::tools::WriteWhen;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -45,38 +46,38 @@ fn cores(dir: &tempfile::TempDir) -> (Notes, Tasks) {
 fn read_existing_and_missing() {
     let dir = fixture_dir();
     let (notes, _) = cores(&dir);
-    assert!(notes.read(&rp("Inbox.md")).unwrap().contains("# Inbox"));
-    assert!(notes.read(&rp("nope.md")).is_err());
+    assert!(read(&notes, "Inbox.md").unwrap().contains("# Inbox"));
+    assert!(read(&notes, "nope.md").is_err());
 }
 
 #[test]
 fn write_roundtrip_and_path_escape() {
     let dir = fixture_dir();
     let (notes, _) = cores(&dir);
-    notes
-        .write(&rp("sub/new.md"), "hello", WriteWhen::Always)
-        .unwrap();
-    assert_eq!(notes.read(&rp("sub/new.md")).unwrap(), "hello");
-    assert!(notes
-        .write(&rp("../escape.md"), "x", WriteWhen::Always)
-        .is_err());
-    assert!(notes.read(&rp("../../etc/passwd")).is_err());
+    notes.put(&note("sub/new.md", "hello")).unwrap();
+    assert_eq!(read(&notes, "sub/new.md").unwrap(), "hello");
+    assert!(notes.put(&note("../escape.md", "x")).is_err());
+    assert!(read(&notes, "../../etc/passwd").is_err());
 }
 
 #[test]
 fn log_is_immutable_and_recoverable_delete() {
     let dir = fixture_dir();
     let (notes, _) = cores(&dir);
-    let rel = notes.create_log("entry\n-- t · s", None).unwrap();
+    let rel = notes
+        .create_log("entry\n-- t · s", None)
+        .unwrap()
+        .path()
+        .to_string();
     assert!(rel.starts_with("Log/"));
-    let err = notes.write(&rp(&rel), "x", WriteWhen::Always).unwrap_err();
+    let err = notes.put(&note(&rel, "x")).unwrap_err();
     assert!(err.to_string().contains("immutable"));
     assert!(notes.delete(&rp(&rel)).is_err());
     assert!(notes.move_note(&rp(&rel), &rp("moved.md"), false).is_err());
 
     let trash = notes.delete(&rp("Inbox.md")).unwrap();
     assert!(trash.starts_with(".trash/"));
-    assert!(notes.read(&rp("Inbox.md")).is_err());
+    assert!(read(&notes, "Inbox.md").is_err());
 }
 
 #[tokio::test]
@@ -157,9 +158,7 @@ fn write_and_edit_refused_under_tasks() {
     let dir = fixture_dir();
     let (notes, tasks) = cores(&dir);
     tasks.create(&tt("t"), &gp("grp"), "").unwrap();
-    assert!(notes
-        .write(&rp("Tasks/grp/task_0001.md"), "x", WriteWhen::Always)
-        .is_err());
+    assert!(notes.put(&note("Tasks/grp/task_0001.md", "x")).is_err());
     assert!(notes.delete(&rp("Tasks/grp/task_0001.md")).is_err());
 }
 
@@ -400,10 +399,6 @@ async fn http_mcp_endpoint_roundtrip() {
     assert!(text.contains("projects/ideas.md"));
 }
 
-#[allow(dead_code)]
-fn rp(s: &str) -> noted::notes::RelPath {
-    s.parse().unwrap()
-}
 #[allow(dead_code)]
 fn gp(s: &str) -> noted::tasks::GroupPath {
     s.parse().unwrap()

@@ -6,10 +6,10 @@ use clap::{Args, ValueEnum};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
 use crate::error::{rejected, unavailable, NotedError, Result};
-use crate::notes::{Notes, RelPath};
+use crate::note::{Etag, RelPath, TextNote};
+use crate::notes::Notes;
 use crate::scope::TokenScope;
 use crate::search::{CaseMode, MatchOpts, WalkOpts};
 use crate::tasks::{GroupPath, TaskState, TaskTitle, Tasks};
@@ -262,7 +262,7 @@ pub enum WriteWhen {
     Always,
     Missing,
     Exists,
-    ExistsMatching(ContentHash),
+    ExistsMatching(Etag),
 }
 
 impl fmt::Display for WriteWhen {
@@ -288,39 +288,6 @@ impl FromStr for WriteWhen {
                 other => Err(rejected(format!("unknown write condition: '{other}'"))),
             },
         }
-    }
-}
-
-#[derive(PartialEq, Eq)]
-pub struct ContentHash([u8; 32]);
-
-impl ContentHash {
-    pub fn of(s: &str) -> ContentHash {
-        ContentHash(Sha256::digest(s.as_bytes()).into())
-    }
-}
-
-impl fmt::Display for ContentHash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for b in self.0 {
-            write!(f, "{b:02x}")?;
-        }
-        Ok(())
-    }
-}
-
-impl FromStr for ContentHash {
-    type Err = NotedError;
-    fn from_str(s: &str) -> Result<ContentHash> {
-        if s.len() != 64 {
-            return Err(rejected("invalid write condition token"));
-        }
-        let mut out = [0u8; 32];
-        for (i, byte) in out.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
-                .map_err(|_| rejected("invalid write condition token"))?;
-        }
-        Ok(ContentHash(out))
     }
 }
 
@@ -458,8 +425,12 @@ fn run_tool_sync(name: &str, args: &Value, notes: &Notes, tasks: &Tasks) -> Resu
     match name {
         "ReadNote" => {
             let a: ReadArgs = parse(args)?;
-            let text = notes.read(&a.path)?;
-            Ok(ToolOutput::Text(slice_lines(&text, a.offset, a.limit)))
+            let note = notes.get(&a.path)?;
+            Ok(ToolOutput::Text(slice_lines(
+                note.content(),
+                a.offset,
+                a.limit,
+            )))
         }
         "WriteNote" => {
             let a: WriteArgs = parse(args)?;
@@ -469,9 +440,16 @@ fn run_tool_sync(name: &str, args: &Value, notes: &Notes, tasks: &Tasks) -> Resu
                 .map(str::parse)
                 .transpose()?
                 .unwrap_or_default();
-            notes.write(&a.path, &a.content, when)?;
+            let path = a.path.clone();
+            let note = TextNote::new(a.path, a.content);
+            match when {
+                WriteWhen::Always => notes.put(&note)?,
+                WriteWhen::Missing => notes.create(&note)?,
+                WriteWhen::Exists => notes.replace(&note)?,
+                WriteWhen::ExistsMatching(token) => notes.replace_matching(&note, token)?,
+            }
             Ok(ToolOutput::Written {
-                path: a.path.to_string(),
+                path: path.to_string(),
             })
         }
         "EditNote" => run_edit(parse(args)?, notes),
@@ -492,8 +470,10 @@ fn run_tool_sync(name: &str, args: &Value, notes: &Notes, tasks: &Tasks) -> Resu
         }
         "LogNote" => {
             let a: LogArgs = parse(args)?;
-            let rel = notes.create_log(a.body.as_str(), a.source.as_ref())?;
-            Ok(ToolOutput::Logged { path: rel })
+            let note = notes.create_log(a.body.as_str(), a.source.as_ref())?;
+            Ok(ToolOutput::Logged {
+                path: note.path().to_string(),
+            })
         }
         "CreateTask" => {
             let a: CreateTaskArgs = parse(args)?;
@@ -527,8 +507,8 @@ fn run_tool_sync(name: &str, args: &Value, notes: &Notes, tasks: &Tasks) -> Resu
 }
 
 fn run_edit(a: EditArgs, notes: &Notes) -> Result<ToolOutput> {
-    let content = notes.read(&a.path)?;
-    let count = content.matches(&a.old_string).count();
+    let original = notes.get(&a.path)?;
+    let count = original.content().matches(&a.old_string).count();
     if count == 0 {
         return Err(rejected("old string not found"));
     }
@@ -537,11 +517,10 @@ fn run_edit(a: EditArgs, notes: &Notes) -> Result<ToolOutput> {
             "old string not unique ({count} matches); pass replace_all"
         )));
     }
-    notes.write(
-        &a.path,
-        &content.replace(&a.old_string, &a.new_string),
-        WriteWhen::Always,
-    )?;
+    let replacement = original
+        .clone()
+        .with_content(original.content().replace(&a.old_string, &a.new_string));
+    notes.replace_if_unchanged(&original, &replacement)?;
     Ok(ToolOutput::Edited {
         path: a.path.to_string(),
     })

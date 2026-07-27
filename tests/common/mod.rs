@@ -6,12 +6,25 @@ use std::sync::Arc;
 use axum::http::{HeaderMap, Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
+use noted::note::{RelPath, TextNote};
 use noted::notes::Notes;
 use noted::oauth::{AuthService, Db};
 use noted::scope::{RuleSpec, StoredScope, TokenScope};
 use noted::tasks::Tasks;
 use serde_json::Value;
 use tower::ServiceExt;
+
+pub fn rp(s: &str) -> RelPath {
+    s.parse().unwrap()
+}
+
+pub fn note(rel: &str, content: &str) -> TextNote {
+    TextNote::new(rp(rel), content)
+}
+
+pub fn read(notes: &Notes, rel: &str) -> noted::Result<String> {
+    notes.get(&rp(rel)).map(|n| n.content().to_string())
+}
 
 pub fn scope(tools: Option<&[&str]>, paths: Option<&[&str]>) -> TokenScope {
     let to_vec = |o: Option<&[&str]>| o.map(|s| s.iter().map(|x| x.to_string()).collect());

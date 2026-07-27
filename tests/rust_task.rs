@@ -1,8 +1,7 @@
 mod common;
 
-use common::{cores, fixture_dir, notes_root};
+use common::{cores, fixture_dir, note, notes_root, rp};
 use noted::tasks::parse_task_file;
-use noted::tools::WriteWhen;
 
 fn task_file(dir: &tempfile::TempDir, rel: &str) -> std::path::PathBuf {
     notes_root(dir).join("Tasks").join(format!("{rel}.md"))
@@ -456,7 +455,7 @@ fn tasks_subtree_is_managed() {
     tasks.create(&tt("t"), &gp(""), "").unwrap();
 
     assert!(notes
-        .write(&rp("Tasks/task_0009.md"), "nope", WriteWhen::Always)
+        .put(&note("Tasks/task_0009.md", "nope"))
         .unwrap_err()
         .to_string()
         .contains("managed"));
@@ -470,9 +469,7 @@ fn tasks_subtree_is_managed() {
         .unwrap_err()
         .to_string()
         .contains("cannot be moved"));
-    notes
-        .write(&rp("loose.md"), "x", WriteWhen::Always)
-        .unwrap();
+    notes.put(&note("loose.md", "x")).unwrap();
     assert!(notes
         .move_note(&rp("loose.md"), &rp("Tasks/task_0002.md"), false)
         .unwrap_err()
@@ -553,10 +550,6 @@ fn symlinked_group_dir_is_ignored() {
     );
 }
 
-#[allow(dead_code)]
-fn rp(s: &str) -> noted::notes::RelPath {
-    s.parse().unwrap()
-}
 #[allow(dead_code)]
 fn gp(s: &str) -> noted::tasks::GroupPath {
     s.parse().unwrap()

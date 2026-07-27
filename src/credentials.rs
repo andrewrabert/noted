@@ -255,5 +255,5 @@ fn save_yaml<T: Serialize>(path: &std::path::Path, value: &T) -> Result<()> {
         }
     }
     let yaml = serde_yaml::to_string(value).map_err(|e| yaml_error("credential store", e))?;
-    atomic_write(path, &yaml)
+    atomic_write(path, yaml.as_bytes())
 }

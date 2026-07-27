@@ -9,7 +9,7 @@ use serde_json::json;
 use crate::error::{forbidden, io_error, not_found, rejected, NotedError, Result};
 use crate::front_matter::{dump_front, split_front};
 use crate::newtype::{str_newtype, str_newtype_validated};
-use crate::notes::RelPath;
+use crate::note::{Note, RelPath};
 use crate::types::Timestamp;
 use crate::util::{atomic_create, atomic_write, IgnoreFilter};
 
@@ -156,25 +156,77 @@ pub fn parse_task_file(text: &str) -> (Option<TaskFront>, String) {
     }
 }
 
-fn reconcile(
-    prior: &TaskFront,
-    task: &TaskTitle,
-    state: TaskState,
-    body: &str,
-) -> Result<(TaskFront, String)> {
-    if state.requires_body() && body.trim().is_empty() {
-        return Err(rejected(format!(
-            "state '{state}' requires a non-empty note body"
-        )));
+/// A task as a domain object: typed frontmatter plus its markdown body. Parsing
+/// (`from_bytes`) is the one fallible edge — a file under `Tasks/` that isn't a
+/// well-formed task is rejected; everything downstream holds a valid `TaskNote`.
+pub struct TaskNote {
+    front: TaskFront,
+    body: String,
+}
+
+impl TaskNote {
+    fn new(task: TaskTitle, state: TaskState, body: String) -> TaskNote {
+        let now = Timestamp::now();
+        TaskNote {
+            front: TaskFront {
+                task,
+                state,
+                created_at: now.clone(),
+                updated_at: now,
+            },
+            body,
+        }
     }
-    let front = TaskFront {
-        task: task.clone(),
-        state,
-        created_at: prior.created_at.clone(),
-        updated_at: Timestamp::now(),
-    };
-    let text = dump_front(&front, body)?;
-    Ok((front, text))
+
+    fn from_bytes(bytes: &[u8]) -> Result<TaskNote> {
+        let text = std::str::from_utf8(bytes).map_err(|_| rejected("not a task"))?;
+        let (front, body) = parse_task_file(text);
+        let front = front.ok_or_else(|| rejected("not a task"))?;
+        Ok(TaskNote { front, body })
+    }
+
+    fn front(&self) -> &TaskFront {
+        &self.front
+    }
+
+    fn body(&self) -> &str {
+        &self.body
+    }
+
+    /// Apply an edit, re-validating the schema and stamping `updated_at`.
+    /// `created_at` is preserved.
+    fn reconciled(&self, task: &TaskTitle, state: TaskState, body: &str) -> Result<TaskNote> {
+        if state.requires_body() && body.trim().is_empty() {
+            return Err(rejected(format!(
+                "state '{state}' requires a non-empty note body"
+            )));
+        }
+        Ok(TaskNote {
+            front: TaskFront {
+                task: task.clone(),
+                state,
+                created_at: self.front.created_at.clone(),
+                updated_at: Timestamp::now(),
+            },
+            body: body.to_string(),
+        })
+    }
+
+    /// Restamp `updated_at` without touching the schema (used by a group move).
+    fn restamped(&self) -> TaskNote {
+        let mut front = self.front.clone();
+        front.updated_at = Timestamp::now();
+        TaskNote {
+            front,
+            body: self.body.clone(),
+        }
+    }
+}
+
+impl Note for TaskNote {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
+        Ok(dump_front(&self.front, &self.body)?.into_bytes())
+    }
 }
 
 #[derive(Clone)]
@@ -274,6 +326,11 @@ impl Tasks {
         no_ext.to_string_lossy().into_owned()
     }
 
+    fn read_task(&self, path: &Path, reference: &RelPath) -> Result<TaskNote> {
+        let bytes = std::fs::read(path).map_err(|e| io_error("read failed", e))?;
+        TaskNote::from_bytes(&bytes).map_err(|_| rejected(format!("not a task: '{reference}'")))
+    }
+
     fn files(&self, group: Option<&str>) -> Result<Vec<PathBuf>> {
         let base = match group {
             Some(g) => self.resolve(g)?,
@@ -321,12 +378,12 @@ impl Tasks {
         })
     }
 
-    fn claim_name(&self, group_dir: &Path, text: &str) -> Result<PathBuf> {
+    fn claim_name(&self, group_dir: &Path, data: &[u8]) -> Result<PathBuf> {
         for _ in 0..100 {
             let base = self.next_number(group_dir);
             for number in base..base + 1000 {
                 let path = group_dir.join(format!("task_{number:04}.md"));
-                match atomic_create(&path, text) {
+                match atomic_create(&path, data) {
                     Ok(()) => return Ok(path),
                     Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
                     Err(e) => return Err(io_error("write failed", e)),
@@ -345,16 +402,10 @@ impl Tasks {
         group: &GroupPath,
         notes: &str,
     ) -> Result<serde_json::Value> {
-        let now = Timestamp::now();
         let group_dir = self.resolve(group.as_str())?;
-        let front = TaskFront {
-            task: task.clone(),
-            state: TaskState::Created,
-            created_at: now.clone(),
-            updated_at: now,
-        };
-        let path = self.claim_name(&group_dir, &dump_front(&front, notes)?)?;
-        Ok(self.summary(&path, &front))
+        let task_note = TaskNote::new(task.clone(), TaskState::Created, notes.to_string());
+        let path = self.claim_name(&group_dir, &task_note.to_bytes()?)?;
+        Ok(self.summary(&path, task_note.front()))
     }
 
     pub fn query(
@@ -385,17 +436,16 @@ impl Tasks {
             if self.confine.is_some() && !self.within_confine(&crate::util::normalize(&path)) {
                 continue;
             }
-            let text = std::fs::read_to_string(&path).map_err(|e| io_error("read failed", e))?;
-            let (front, text_body) = parse_task_file(&text);
-            let Some(front) = front else {
+            let bytes = std::fs::read(&path).map_err(|e| io_error("read failed", e))?;
+            let Ok(task_note) = TaskNote::from_bytes(&bytes) else {
                 continue;
             };
-            if filter_closed && front.state.is_closed() {
+            if filter_closed && task_note.front().state.is_closed() {
                 continue;
             }
-            let mut record = self.summary(&path, &front);
+            let mut record = self.summary(&path, task_note.front());
             if body {
-                record["body"] = json!(text_body);
+                record["body"] = json!(task_note.body());
             }
             records.push(record);
         }
@@ -422,19 +472,14 @@ impl Tasks {
         if !self.real_file(&path) {
             return Err(not_found(format!("no task at '{reference}'")));
         }
-        let text = std::fs::read_to_string(&path).map_err(|e| io_error("read failed", e))?;
-        let (prior, prior_body) = parse_task_file(&text);
-        let Some(prior) = prior else {
-            return Err(rejected(format!("not a task: '{reference}'")));
-        };
-        let (front, new_text) = reconcile(
-            &prior,
-            task.unwrap_or(&prior.task),
-            state.unwrap_or(prior.state),
-            note.unwrap_or(&prior_body),
+        let prior = self.read_task(&path, reference)?;
+        let updated = prior.reconciled(
+            task.unwrap_or(&prior.front().task),
+            state.unwrap_or(prior.front().state),
+            note.unwrap_or(prior.body()),
         )?;
-        atomic_write(&path, &new_text)?;
-        Ok(self.summary(&path, &front))
+        atomic_write(&path, &updated.to_bytes()?)?;
+        Ok(self.summary(&path, updated.front()))
     }
 
     pub fn move_task(&self, reference: &RelPath, group: &GroupPath) -> Result<serde_json::Value> {
@@ -446,23 +491,18 @@ impl Tasks {
         if dest_dir == src.parent().unwrap_or(&self.dir) {
             return Err(rejected("task already in that group"));
         }
-        let text = std::fs::read_to_string(&src).map_err(|e| io_error("read failed", e))?;
-        let (prior, prior_body) = parse_task_file(&text);
-        let Some(mut front) = prior else {
-            return Err(rejected(format!("not a task: '{reference}'")));
-        };
-        front.updated_at = Timestamp::now();
-        let new_text = dump_front(&front, &prior_body)?;
+        let relocated = self.read_task(&src, reference)?.restamped();
+        let bytes = relocated.to_bytes()?;
 
         let stem = src
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         let dest = if numbered(&stem).is_some() {
-            self.claim_name(&dest_dir, &new_text)?
+            self.claim_name(&dest_dir, &bytes)?
         } else {
             let dest = dest_dir.join(format!("{stem}.md"));
-            match atomic_create(&dest, &new_text) {
+            match atomic_create(&dest, &bytes) {
                 Ok(()) => dest,
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     return Err(rejected(format!(
@@ -474,7 +514,7 @@ impl Tasks {
             }
         };
         std::fs::remove_file(&src).map_err(|e| io_error("move failed", e))?;
-        Ok(self.summary(&dest, &front))
+        Ok(self.summary(&dest, relocated.front()))
     }
 }
 
