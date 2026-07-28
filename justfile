@@ -24,7 +24,7 @@ build-android:
 
 # Run the test suite
 test:
-    @cargo test --manifest-path {{justfile_directory()}}/Cargo.toml
+    @cargo test --manifest-path {{justfile_directory()}}/Cargo.toml --workspace
 
 # Build the release binary and install it to ~/.local/bin/noted
 install:
@@ -43,7 +43,7 @@ fmt-check:
 
 # Lint with clippy (warnings are errors)
 lint:
-    @cargo clippy --manifest-path {{justfile_directory()}}/Cargo.toml --all-targets -- -D warnings
+    @cargo clippy --manifest-path {{justfile_directory()}}/Cargo.toml --workspace --all-targets -- -D warnings
 
 # Run all static checks + tests
 check: fmt-check lint test

@@ -1,0 +1,11 @@
+[package]
+name = "picker-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pure match/state core for noted's fuzzy picker; no terminal dependency."
+license = "MIT"
+rust-version = "1.90"
+publish = false
+
+[dependencies]
+nucleo-matcher = "0.3.1"

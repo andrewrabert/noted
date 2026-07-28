@@ -13,6 +13,7 @@ pub mod note;
 pub mod notes;
 pub mod oauth;
 pub mod password;
+pub(crate) mod picker;
 pub mod scope;
 pub mod search;
 pub mod serve;

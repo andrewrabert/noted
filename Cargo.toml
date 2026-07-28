@@ -1,3 +1,6 @@
+[workspace]
+members = ["crates/picker-core"]
+
 [package]
 name = "noted"
 version = "0.1.0"
@@ -55,6 +58,8 @@ macaroon = "0.3"
 humantime = "2"
 which = { version = "7", default-features = false }
 shell-words = "1"
+crossterm = "0.29.0"
+picker-core = { path = "crates/picker-core" }
 
 [features]
 # Compiles in test-only hooks (e.g. OAuth token injection) that must never ship

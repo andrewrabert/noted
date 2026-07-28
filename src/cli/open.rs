@@ -9,6 +9,7 @@ use crate::backend::Backend;
 use crate::config::block_on;
 use crate::error::{io_error, rejected, NotedError, Result};
 use crate::note::{RelPath, TextNote};
+use crate::picker::Pick;
 use crate::tools::{ReadArgs, ToolOutput, WriteArgs, WriteWhen};
 
 use super::dispatch::{build_backend, call_of};
@@ -16,8 +17,8 @@ use super::GlobalArgs;
 
 #[derive(Args)]
 pub(super) struct OpenArgs {
-    /// Note to open, by relative path
-    path: RelPath,
+    /// Note to open, by relative path; omit to pick one interactively
+    path: Option<RelPath>,
     /// Overwrite unconditionally, ignoring concurrent changes
     #[arg(short, long)]
     force: bool,
@@ -62,9 +63,55 @@ impl Drop for EditBuffer {
 
 pub(super) fn run_open(globals: &GlobalArgs, args: OpenArgs) -> Result<ExitCode> {
     let backend = build_backend(globals)?;
-    let path = args.path;
+    let path = match args.path {
+        Some(path) => path,
+        None => match pick_path(&backend)? {
+            Pick::Chosen(choice) => choice.parse()?,
+            Pick::Aborted => return Ok(ExitCode::SUCCESS),
+        },
+    };
+    edit_note(&backend, path, args.force)
+}
 
-    let original = match block_on(read_note(&backend, &path)) {
+fn pick_path(backend: &Backend) -> Result<Pick> {
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        return Err(rejected("open with no path requires a terminal"));
+    }
+    let paths = block_on(list_paths(backend))?;
+    if paths.is_empty() {
+        return Err(rejected("no notes"));
+    }
+    crate::picker::pick(paths)
+}
+
+async fn list_paths(backend: &Backend) -> Result<Vec<String>> {
+    // SearchArgs' fields are private, so the payload is a JSON literal rather
+    // than a constructed args struct.
+    let call = call_of(
+        "SearchNotes",
+        serde_json::json!({"mode": "path", "pattern": "."}),
+    );
+    match backend.invoke(&call).await? {
+        ToolOutput::Text(s) => Ok(parse_paths(&s)),
+        other => Err(rejected(format!(
+            "unexpected search output: {}",
+            other.render()
+        ))),
+    }
+}
+
+/// Note paths from a `mode=path` search. Log sidecars (`.md.meta`) come back
+/// in that listing but are not editable notes, so they are dropped.
+fn parse_paths(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| line.ends_with(".md"))
+        .map(str::to_string)
+        .collect()
+}
+
+fn edit_note(backend: &Backend, path: RelPath, force: bool) -> Result<ExitCode> {
+    let original = match block_on(read_note(backend, &path)) {
         Ok(note) => Some(note),
         Err(NotedError::NotFound(_)) => None,
         Err(e) => return Err(e),
@@ -90,7 +137,7 @@ pub(super) fn run_open(globals: &GlobalArgs, args: OpenArgs) -> Result<ExitCode>
     };
 
     buffer.arm();
-    let when = if args.force {
+    let when = if force {
         None
     } else {
         Some(match &original {
@@ -99,7 +146,7 @@ pub(super) fn run_open(globals: &GlobalArgs, args: OpenArgs) -> Result<ExitCode>
         })
     };
 
-    match block_on(write_note(&backend, &edited, when)) {
+    match block_on(write_note(backend, &edited, when)) {
         Ok(out) => {
             println!("{}", out.render());
             buffer.commit();
@@ -108,7 +155,7 @@ pub(super) fn run_open(globals: &GlobalArgs, args: OpenArgs) -> Result<ExitCode>
         Err(NotedError::Conflict(_)) => {
             eprintln!("note changed since it was opened: '{path}'");
             if std::io::stdin().is_terminal() && prompt_overwrite() {
-                let out = block_on(write_note(&backend, &edited, None))?;
+                let out = block_on(write_note(backend, &edited, None))?;
                 println!("{}", out.render());
                 buffer.commit();
                 Ok(ExitCode::SUCCESS)
@@ -163,4 +210,24 @@ fn prompt_overwrite() -> bool {
         return false;
     }
     matches!(line.trim(), "y" | "Y" | "yes" | "Yes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_paths;
+
+    #[test]
+    fn parse_paths_keeps_notes_and_drops_blanks_and_sidecars() {
+        let text = "Inbox.md\n\n  projects/ideas.md  \nLog/2026/07/x.md.meta\n";
+        assert_eq!(
+            parse_paths(text),
+            vec!["Inbox.md".to_string(), "projects/ideas.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_paths_of_empty_output_is_empty() {
+        assert!(parse_paths("").is_empty());
+        assert!(parse_paths("\n \n").is_empty());
+    }
 }

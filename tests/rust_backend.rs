@@ -204,3 +204,23 @@ fn backend_selects_filesystem_locally() {
         Backend::Filesystem { .. }
     ));
 }
+
+#[tokio::test]
+async fn search_path_mode_lists_every_note_for_the_picker() {
+    let dir = common::fixture_dir();
+    let out = remote(&dir)
+        .invoke(&call(
+            "SearchNotes",
+            json!({"mode": "path", "pattern": "."}),
+        ))
+        .await
+        .unwrap();
+    let text = out.render();
+    let paths: Vec<&str> = text.lines().collect();
+    assert!(paths.contains(&"Inbox.md"));
+    assert!(paths.contains(&"projects/ideas.md"));
+    assert!(
+        paths.iter().any(|p| p.ends_with(".md.meta")),
+        "path mode also lists log sidecars, so the picker filters them out"
+    );
+}
