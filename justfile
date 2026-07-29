@@ -48,6 +48,10 @@ lint:
 # Run all static checks + tests
 check: fmt-check lint test
 
+# List outdated dependencies
+outdated:
+    @cargo outdated --manifest-path {{justfile_directory()}}/Cargo.toml --workspace --root-deps-only
+
 # Install the git pre-commit hook
 install-hooks:
     @uvx pre-commit install
