@@ -1,7 +1,7 @@
 [package]
 name = "picker-core"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Pure match/state core for noted's fuzzy picker; no terminal dependency."
 license = "MIT"
 rust-version = "1.90"

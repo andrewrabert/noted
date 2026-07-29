@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
 use base64::Engine;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use crate::credentials::{Credential, CredentialStore};
-use crate::error::{http_error, io_error, rejected, unavailable, Result};
+use crate::error::{Result, http_error, io_error, rejected, unavailable};
 use crate::httpurl::HttpUrl;
 use crate::oauth::macaroon;
 use crate::oauth::types::{AccessToken, ClientId, Macaroon, RefreshToken};

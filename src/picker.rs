@@ -6,7 +6,7 @@ use crossterm::terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternate
 use crossterm::{cursor, event, execute, queue, terminal};
 use picker_core::{Action, Key, PickerState};
 
-use crate::error::{io_error, Result};
+use crate::error::{Result, io_error};
 
 pub(crate) enum Pick {
     Chosen(String),

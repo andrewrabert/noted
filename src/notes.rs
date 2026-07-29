@@ -5,12 +5,12 @@ use std::sync::{Arc, Mutex};
 use chrono::Local;
 use serde::Serialize;
 
-use crate::error::{conflict, forbidden, io_error, not_found, rejected, Result};
+use crate::error::{Result, conflict, forbidden, io_error, not_found, rejected};
 use crate::front_matter::dump_front;
 use crate::note::{Etag, Note, RelPath, TextNote};
-use crate::search::{match_paths, ripgrep, walk_search, MatchOpts, WalkOpts};
+use crate::search::{MatchOpts, WalkOpts, match_paths, ripgrep, walk_search};
 use crate::types::{Source, Timestamp};
-use crate::util::{atomic_create, atomic_write, normalize, IgnoreFilter};
+use crate::util::{IgnoreFilter, atomic_create, atomic_write, normalize};
 
 enum Condition {
     Always,
@@ -164,13 +164,12 @@ impl Notes {
         if resolved != self.root && !resolved.starts_with(&self.root) {
             return Err(rejected(format!("path escapes notes root: '{rel}'")));
         }
-        if let Ok(under) = resolved.strip_prefix(&self.root) {
-            if under
+        if let Ok(under) = resolved.strip_prefix(&self.root)
+            && under
                 .components()
                 .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
-            {
-                return Err(rejected(format!("invalid path: '{rel}'")));
-            }
+        {
+            return Err(rejected(format!("invalid path: '{rel}'")));
         }
         if IgnoreFilter::new(&self.root).is_ignored(&resolved) {
             return Err(rejected(format!("invalid path: '{rel}'")));

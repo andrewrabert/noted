@@ -13,7 +13,7 @@ use crate::error::NotedError;
 use crate::notes::Notes;
 use crate::scope::TokenScope;
 use crate::tasks::Tasks;
-use crate::tools::{allowed_tools, is_tool, run_tool, tool_defs, ToolOutput};
+use crate::tools::{ToolOutput, allowed_tools, is_tool, run_tool, tool_defs};
 
 pub const INSTRUCTIONS: &str = "This is the user's personal notes — the canonical place where they keep and organize their own notes, ideas, todos, and log entries as a nested tree of Markdown (.md) files. Whenever the user refers to 'my notes', asks to look something up, record or jot something down, or check what they've written before, use these tools instead of guessing or answering from memory. Search, read, write, edit, move, and delete notes by relative path (e.g. 'proj/ideas.md'). Use LogNote to quickly capture an immutable, timestamped log entry (its metadata is auto-generated and it cannot be edited or deleted). Track units of work with the task tools: CreateTask opens a task (optionally in a nested 'group' under Tasks/, e.g. group='dev/noted'); GetTasks reads them (by group prefix, or an exact task path with body=true); UpdateTask advances one (state=created/started/blocked/completed/rejected/invalid); MoveTask changes a task's group. A task is identified by its Tasks-relative path minus '.md' (e.g. 'dev/noted/task_0001'); tasks are searchable notes, but are managed only through these tools — WriteNote/EditNote are refused under Tasks/.";
 

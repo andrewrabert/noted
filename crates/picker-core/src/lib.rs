@@ -144,7 +144,7 @@ impl PickerState {
                 return match self.selection() {
                     Some(item) => Action::Accept(item.to_string()),
                     None => Action::Redraw,
-                }
+                };
             }
             Key::Cancel => return Action::Cancel,
             Key::Up => self.move_up(),

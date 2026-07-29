@@ -41,10 +41,12 @@ async fn tool_search_fixed_glob_and_hidden_flags() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert!(json_body(&b)["ok"]["data"]
-        .as_str()
-        .unwrap()
-        .contains("projects/ideas.md"));
+    assert!(
+        json_body(&b)["ok"]["data"]
+            .as_str()
+            .unwrap()
+            .contains("projects/ideas.md")
+    );
 
     // case/word/type are absent from the MCP schema yet must still deserialize
     let (s, _) = post_json(
@@ -130,10 +132,12 @@ async fn tool_folder_scope_confines_paths() {
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
-    assert!(json_body(&b)["detail"]
-        .as_str()
-        .unwrap()
-        .contains("allowed folders"));
+    assert!(
+        json_body(&b)["detail"]
+            .as_str()
+            .unwrap()
+            .contains("allowed folders")
+    );
 }
 
 #[tokio::test]
@@ -193,10 +197,12 @@ async fn mcp_scope_refuses_out_of_scope_tool() {
     assert_eq!(s, StatusCode::OK); // JSON-RPC ok envelope...
     let result = &json_body(&b)["result"];
     assert_eq!(result["isError"], true); // ...carrying a tool error
-    assert!(result["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("not permitted"));
+    assert!(
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("not permitted")
+    );
 }
 
 #[tokio::test]
@@ -301,10 +307,12 @@ async fn tool_multi_grant_confines_notes_per_tool_but_not_tasks() {
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
-    assert!(json_body(&b)["detail"]
-        .as_str()
-        .unwrap()
-        .contains("allowed folders"));
+    assert!(
+        json_body(&b)["detail"]
+            .as_str()
+            .unwrap()
+            .contains("allowed folders")
+    );
     let (s, _) = post_json(
         &app,
         "/tool/CreateTask",
@@ -385,10 +393,12 @@ async fn mcp_stateless_needs_no_session() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert!(json_body(&b)["result"]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("projects/ideas.md"));
+    assert!(
+        json_body(&b)["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("projects/ideas.md")
+    );
 }
 
 #[tokio::test]

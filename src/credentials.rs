@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::config::expand_home;
-use crate::error::{io_error, json_error, rejected, unavailable, yaml_error, Result};
+use crate::error::{Result, io_error, json_error, rejected, unavailable, yaml_error};
 use crate::httpurl::HttpUrl;
 use crate::oauth::types::{AccessToken, ClientId, Macaroon, RefreshToken};
 use crate::types::UnixEpochSeconds;
@@ -217,10 +217,10 @@ impl CredentialStore {
 }
 
 fn hosts_file_path() -> Result<PathBuf> {
-    if let Ok(p) = std::env::var("NOTED_HOSTS_FILE") {
-        if !p.is_empty() {
-            return Ok(expand_home(&p));
-        }
+    if let Ok(p) = std::env::var("NOTED_HOSTS_FILE")
+        && !p.is_empty()
+    {
+        return Ok(expand_home(&p));
     }
     let dir = dirs::config_dir().ok_or_else(|| rejected("cannot determine config dir"))?;
     Ok(dir.join("noted").join("hosts.yaml"))
@@ -249,10 +249,10 @@ fn load_yaml<T: for<'de> Deserialize<'de> + Default>(path: &std::path::Path) -> 
 }
 
 fn save_yaml<T: Serialize>(path: &std::path::Path, value: &T) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| io_error("credential store", e))?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|e| io_error("credential store", e))?;
     }
     let yaml = serde_yaml::to_string(value).map_err(|e| yaml_error("credential store", e))?;
     atomic_write(path, yaml.as_bytes())

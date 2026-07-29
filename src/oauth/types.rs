@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::error::{rejected, Result};
+use crate::error::{Result, rejected};
 use crate::newtype::{secret_newtype, str_newtype, str_newtype_validated};
 
 fn valid_charset(s: &str) -> bool {

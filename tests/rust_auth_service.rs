@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use noted::oauth::service::{sha256_hex, AuthService, RevokeBy, ScopeEdit, PREFIX_ACC, PREFIX_KEY};
+use noted::oauth::service::{AuthService, PREFIX_ACC, PREFIX_KEY, RevokeBy, ScopeEdit, sha256_hex};
 use noted::oauth::{CredentialStatus, Db};
 use noted::scope::{RuleSpec, StoredScope};
 
@@ -30,8 +30,8 @@ fn user_add_requires_valid_name_and_password() {
     svc.user_add(&un("alice"), &pw("pw")).unwrap();
     assert!(svc.user_add(&un("alice"), &pw("other")).is_err()); // duplicate
     assert!(svc.user_add(&un("bob"), &pw("")).is_err()); // empty password
-                                                         // Invalid names are now unrepresentable: rejected when the string is parsed
-                                                         // into a `Username` (the CLI/HTTP boundary), so `user_add` never sees one.
+    // Invalid names are now unrepresentable: rejected when the string is parsed
+    // into a `Username` (the CLI/HTTP boundary), so `user_add` never sees one.
     for bad in ["9lives", "has space", ""] {
         assert!(bad.parse::<noted::oauth::types::Username>().is_err());
     }
@@ -72,15 +72,17 @@ fn grants_narrow_and_never_fail_open() {
     assert!(scope.allows("WriteNote"));
 
     assert!(svc.user_ungrant(&un("alice"), 1).is_err());
-    assert!(svc
-        .user_grant(&un("alice"), ScopeEdit::Append(Vec::new()))
-        .is_err());
-    assert!(svc
-        .user_grant(
+    assert!(
+        svc.user_grant(&un("alice"), ScopeEdit::Append(Vec::new()))
+            .is_err()
+    );
+    assert!(
+        svc.user_grant(
             &un("alice"),
             ScopeEdit::Append(vec![spec(&["NotATool"], &[])])
         )
-        .is_err());
+        .is_err()
+    );
 }
 
 #[test]
@@ -157,13 +159,14 @@ fn key_scope_rides_the_record() {
             "dev/myapp-web".to_string()
         ])
     );
-    assert!(svc
-        .key_create(
+    assert!(
+        svc.key_create(
             &lb("bad"),
             StoredScope::Grants(vec![spec(&["Nope"], &[])]),
             None
         )
-        .is_err());
+        .is_err()
+    );
 }
 
 #[test]
@@ -187,14 +190,16 @@ fn labels_are_group_handles() {
             .unwrap(),
         1
     );
-    assert!(svc
-        .resolve_bearer(tokens[0].token.expose())
-        .unwrap()
-        .is_none());
-    assert!(svc
-        .resolve_bearer(tokens[1].token.expose())
-        .unwrap()
-        .is_some());
+    assert!(
+        svc.resolve_bearer(tokens[0].token.expose())
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        svc.resolve_bearer(tokens[1].token.expose())
+            .unwrap()
+            .is_some()
+    );
 
     assert_eq!(svc.key_revoke(&RevokeBy::Label(lb("claude"))).unwrap(), 2);
     for t in &tokens {
@@ -278,10 +283,11 @@ fn resolve_bearer_dispatches_on_prefix_only() {
     assert!(svc.resolve_bearer(&refresh).unwrap().is_none());
     assert!(svc.resolve_bearer("ghp_notours").unwrap().is_none());
     assert!(svc.resolve_bearer("").unwrap().is_none());
-    assert!(svc
-        .resolve_bearer(&format!("{PREFIX_ACC}nope"))
-        .unwrap()
-        .is_none());
+    assert!(
+        svc.resolve_bearer(&format!("{PREFIX_ACC}nope"))
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -290,11 +296,12 @@ fn orphan_credentials_are_revoked_on_sight() {
     // issue_login_pair doesn't check the owner exists, so "ghost" forges an orphan
     let (access, _, _) = svc.issue_login_pair("ghost", "c").unwrap();
     assert!(svc.resolve_bearer(&access).unwrap().is_none());
-    assert!(svc
-        .db()
-        .get_credential(&sha256_hex(&access))
-        .unwrap()
-        .is_none());
+    assert!(
+        svc.db()
+            .get_credential(&sha256_hex(&access))
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -343,9 +350,10 @@ fn no_plaintext_secret_at_rest() {
             "plaintext secret found at rest"
         );
     }
-    assert!(!raw
-        .windows("hunter2-password".len())
-        .any(|w| w == b"hunter2-password"));
+    assert!(
+        !raw.windows("hunter2-password".len())
+            .any(|w| w == b"hunter2-password")
+    );
 }
 
 #[allow(dead_code)]

@@ -46,24 +46,32 @@ fn hidden_paths_are_rejected_everywhere() {
 fn read_edge_cases() {
     let dir = fixture_dir();
     let (notes, _) = cores(&dir);
-    assert!(read(&notes, "")
-        .unwrap_err()
-        .to_string()
-        .contains("required"));
-    assert!(read(&notes, "foo/")
-        .unwrap_err()
-        .to_string()
-        .contains("must be a file"));
-    assert!(read(&notes, "nope.md")
-        .unwrap_err()
-        .to_string()
-        .contains("no note at"));
+    assert!(
+        read(&notes, "")
+            .unwrap_err()
+            .to_string()
+            .contains("required")
+    );
+    assert!(
+        read(&notes, "foo/")
+            .unwrap_err()
+            .to_string()
+            .contains("must be a file")
+    );
+    assert!(
+        read(&notes, "nope.md")
+            .unwrap_err()
+            .to_string()
+            .contains("no note at")
+    );
 
     std::fs::write(notes_root(&dir).join("bad.md"), [0xff, 0xfe, 0x00]).unwrap();
-    assert!(read(&notes, "bad.md")
-        .unwrap_err()
-        .to_string()
-        .contains("utf-8"));
+    assert!(
+        read(&notes, "bad.md")
+            .unwrap_err()
+            .to_string()
+            .contains("utf-8")
+    );
 }
 
 #[test]
@@ -87,21 +95,27 @@ fn log_entries_are_immutable() {
     let dir = fixture_dir();
     let (notes, _) = cores(&dir);
     let entry = "Log/2026/07/2026-07-01T09-00-00.000000.md";
-    assert!(notes
-        .put(&note(entry, "nope"))
-        .unwrap_err()
-        .to_string()
-        .contains("immutable"));
-    assert!(notes
-        .delete(&rp(entry))
-        .unwrap_err()
-        .to_string()
-        .contains("immutable"));
-    assert!(notes
-        .move_note(&rp(entry), &rp("moved.md"), false)
-        .unwrap_err()
-        .to_string()
-        .contains("immutable"));
+    assert!(
+        notes
+            .put(&note(entry, "nope"))
+            .unwrap_err()
+            .to_string()
+            .contains("immutable")
+    );
+    assert!(
+        notes
+            .delete(&rp(entry))
+            .unwrap_err()
+            .to_string()
+            .contains("immutable")
+    );
+    assert!(
+        notes
+            .move_note(&rp(entry), &rp("moved.md"), false)
+            .unwrap_err()
+            .to_string()
+            .contains("immutable")
+    );
 }
 
 #[test]
@@ -158,11 +172,13 @@ fn delete_moves_to_trash_and_uniquifies() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("invalid path") && !err.contains("already in"));
-    assert!(notes
-        .delete(&rp("ghost.md"))
-        .unwrap_err()
-        .to_string()
-        .contains("no note at"));
+    assert!(
+        notes
+            .delete(&rp("ghost.md"))
+            .unwrap_err()
+            .to_string()
+            .contains("no note at")
+    );
 }
 
 #[test]
@@ -176,32 +192,40 @@ fn move_semantics() {
         .unwrap();
     assert_eq!(read(&notes, "Inbox2.md").unwrap(), body);
 
-    assert!(notes
-        .move_note(&rp("Inbox2.md"), &rp("projects/ideas.md"), false)
-        .unwrap_err()
-        .to_string()
-        .contains("destination exists"));
+    assert!(
+        notes
+            .move_note(&rp("Inbox2.md"), &rp("projects/ideas.md"), false)
+            .unwrap_err()
+            .to_string()
+            .contains("destination exists")
+    );
     notes
         .move_note(&rp("Inbox2.md"), &rp("projects/ideas.md"), true)
         .unwrap();
     assert_eq!(read(&notes, "projects/ideas.md").unwrap(), body);
 
     assert!(notes.move_note(&rp(""), &rp("d.md"), false).is_err());
-    assert!(notes
-        .move_note(&rp("ghost.md"), &rp("d.md"), false)
-        .unwrap_err()
-        .to_string()
-        .contains("no note or folder"));
-    assert!(notes
-        .move_note(&rp("daily"), &rp("daily"), false)
-        .unwrap_err()
-        .to_string()
-        .contains("same"));
-    assert!(notes
-        .move_note(&rp("projects"), &rp("projects/sub"), false)
-        .unwrap_err()
-        .to_string()
-        .contains("into itself"));
+    assert!(
+        notes
+            .move_note(&rp("ghost.md"), &rp("d.md"), false)
+            .unwrap_err()
+            .to_string()
+            .contains("no note or folder")
+    );
+    assert!(
+        notes
+            .move_note(&rp("daily"), &rp("daily"), false)
+            .unwrap_err()
+            .to_string()
+            .contains("same")
+    );
+    assert!(
+        notes
+            .move_note(&rp("projects"), &rp("projects/sub"), false)
+            .unwrap_err()
+            .to_string()
+            .contains("into itself")
+    );
 }
 
 #[test]
@@ -210,11 +234,13 @@ fn move_onto_nonempty_folder_is_rejected() {
     let (notes, _) = cores(&dir);
     notes.put(&note("srcd/a.md", "a")).unwrap();
     notes.put(&note("dstd/b.md", "b")).unwrap();
-    assert!(notes
-        .move_note(&rp("srcd"), &rp("dstd"), true)
-        .unwrap_err()
-        .to_string()
-        .contains("non-empty folder"));
+    assert!(
+        notes
+            .move_note(&rp("srcd"), &rp("dstd"), true)
+            .unwrap_err()
+            .to_string()
+            .contains("non-empty folder")
+    );
 }
 
 #[tokio::test]
@@ -225,11 +251,13 @@ async fn search_excludes_trash_but_meta_is_ordinary() {
     let w = WalkOpts::default();
 
     // FROBNICATE appears only in the fixture's trashed note
-    assert!(notes
-        .grep("FROBNICATE", 1, &m, &w)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        notes
+            .grep("FROBNICATE", 1, &m, &w)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     let meta_hits = notes.grep("testhost", 1, &m, &w).await.unwrap();
     assert!(meta_hits.iter().any(|h| h.rel().ends_with(".md.meta")));
@@ -368,11 +396,13 @@ async fn search_pattern_and_glob_edges() {
     assert!(notes.grep("", 1, &m, &w).await.is_err());
     assert!(notes.match_path("", &m, &w).await.is_err());
 
-    assert!(notes
-        .grep("NOSUCHTOKEN_ZZZ", 1, &m, &w)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        notes
+            .grep("NOSUCHTOKEN_ZZZ", 1, &m, &w)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     assert!(notes.grep("(", 1, &m, &w).await.is_err());
     assert!(notes.match_path("(", &m, &w).await.is_err());
@@ -382,11 +412,13 @@ async fn search_pattern_and_glob_edges() {
         globs: vec!["emptydir".into()],
         types: vec![],
     };
-    assert!(notes
-        .match_path("x", &m, &empty_scope)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        notes
+            .match_path("x", &m, &empty_scope)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let file_scope = WalkOpts {
         globs: vec!["Inbox.md".into()],
         types: vec![],
@@ -435,20 +467,24 @@ async fn search_feature_flags() {
         ..Default::default()
     };
     std::fs::write(notes_root(&dir).join("case.md"), "Hello\n").unwrap();
-    assert!(notes
-        .grep("HELLO", 0, &sensitive, &w)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        notes
+            .grep("HELLO", 0, &sensitive, &w)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let insensitive = MatchOpts {
         case: noted::search::CaseMode::Insensitive,
         ..Default::default()
     };
-    assert!(!notes
-        .grep("HELLO", 0, &insensitive, &w)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        !notes
+            .grep("HELLO", 0, &insensitive, &w)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     let excl = WalkOpts {
         globs: vec!["!people/**".into()],

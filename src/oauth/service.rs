@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
-use crate::error::{rejected, Result};
+use crate::error::{Result, rejected};
 use crate::password::hash_password;
 use crate::scope::{RuleSpec, StoredScope, TokenScope};
 use crate::types::{SecondsDuration, Ttl, UnixEpochSeconds};
@@ -280,10 +280,10 @@ impl AuthService {
             if *rec.owner() != owner || rec.status() == CredentialStatus::Revoked {
                 continue;
             }
-            if let Some(id) = id {
-                if rec.credential_id() != id {
-                    continue;
-                }
+            if let Some(id) = id
+                && rec.credential_id() != id
+            {
+                continue;
             }
             self.db.revoke_credential_txn(&hash)?;
             n += 1;

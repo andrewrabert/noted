@@ -5,7 +5,7 @@ use rmcp::transport::stdio;
 
 use crate::cli::{McpCmd, ServeCmd};
 use crate::config::{self, expand_home, resolve_root};
-use crate::error::{rejected, unavailable, Result};
+use crate::error::{Result, rejected, unavailable};
 use crate::mcp::context;
 use crate::notes::Notes;
 use crate::oauth::{AuthService, OAuthProvider};

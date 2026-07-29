@@ -25,7 +25,7 @@ pub mod types;
 pub mod util;
 
 pub use error::{NotedError, Result};
-pub use mcp::{context, McpContext};
+pub use mcp::{McpContext, context};
 pub use note::{BinaryNote, Etag, Note, RelPath, TextNote};
 pub use notes::{LogNote, Notes};
 pub use tasks::{TaskNote, Tasks};

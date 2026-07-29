@@ -2,15 +2,15 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
-use crate::error::{rejected, unavailable, Result};
+use crate::error::{Result, rejected, unavailable};
 use crate::scope::StoredScope;
 
 use super::db::Db;
-use super::service::{AuthService, RevokeBy, ScopeEdit, DEFAULT_CREDENTIAL_TTL};
+use super::service::{AuthService, DEFAULT_CREDENTIAL_TTL, RevokeBy, ScopeEdit};
 use super::types::{CredentialId, Label, Password, Username};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -190,10 +190,10 @@ pub fn bind_socket(path: &Path) -> Result<UnixListener> {
         std::fs::remove_file(path)
             .map_err(|e| rejected(format!("admin socket: cannot replace {e}")))?;
     }
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| rejected(format!("admin socket: {e}")))?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|e| rejected(format!("admin socket: {e}")))?;
     }
     let listener =
         UnixListener::bind(path).map_err(|e| rejected(format!("admin socket: bind: {e}")))?;

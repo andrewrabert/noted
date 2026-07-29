@@ -3,12 +3,12 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use axum::{
+    Json, Router,
     body::Bytes,
     extract::{RawQuery, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
 use oxide_auth::endpoint::{AccessTokenFlow, AuthorizationFlow, OwnerConsent, RefreshFlow};
 use oxide_auth::frontends::simple::endpoint::{FnSolicitor, Generic, Vacant};
@@ -20,7 +20,7 @@ use oxide_auth::primitives::authorizer::AuthMap;
 use oxide_auth::primitives::generator::RandomGenerator;
 use oxide_auth::primitives::registrar::{Client, ClientMap, RegisteredUrl};
 use oxide_auth::primitives::scope::Scope;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::error::Result;
 use crate::http::AppState;
@@ -309,15 +309,15 @@ fn ox_to_axum(r: OxResponse) -> Response {
         OxStatus::Unauthorized => StatusCode::UNAUTHORIZED,
     };
     let mut resp = status.into_response();
-    if let Some(url) = r.location {
-        if let Ok(v) = header::HeaderValue::from_str(url.as_str()) {
-            resp.headers_mut().insert(header::LOCATION, v);
-        }
+    if let Some(url) = r.location
+        && let Ok(v) = header::HeaderValue::from_str(url.as_str())
+    {
+        resp.headers_mut().insert(header::LOCATION, v);
     }
-    if let Some(wa) = r.www_authenticate {
-        if let Ok(v) = header::HeaderValue::from_str(&wa) {
-            resp.headers_mut().insert(header::WWW_AUTHENTICATE, v);
-        }
+    if let Some(wa) = r.www_authenticate
+        && let Ok(v) = header::HeaderValue::from_str(&wa)
+    {
+        resp.headers_mut().insert(header::WWW_AUTHENTICATE, v);
     }
     match r.body {
         Some(OxBody::Json(s)) => {
@@ -529,7 +529,7 @@ async fn token(State(state): State<AppState>, body: Bytes) -> Response {
                 match AccessTokenFlow::prepare(Extended::extend_with(generic, addons())) {
                     Ok(mut flow) => flow.execute(req),
                     Err(_) => {
-                        return oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error")
+                        return oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
                     }
                 }
             };
@@ -554,7 +554,7 @@ async fn token(State(state): State<AppState>, body: Bytes) -> Response {
                 match RefreshFlow::prepare(generic) {
                     Ok(mut flow) => flow.execute(req),
                     Err(_) => {
-                        return oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error")
+                        return oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
                     }
                 }
             };

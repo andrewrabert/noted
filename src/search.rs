@@ -11,7 +11,7 @@ use ignore::{WalkBuilder, WalkState};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{rejected, unavailable, Result};
+use crate::error::{Result, rejected, unavailable};
 use crate::util::normalize;
 
 #[derive(Serialize, Deserialize, JsonSchema, ValueEnum, Default, Clone, Copy, PartialEq)]

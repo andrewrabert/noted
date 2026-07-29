@@ -10,7 +10,7 @@ use noted::mcp::context;
 use noted::notes::Notes;
 use noted::search::{MatchOpts, WalkOpts};
 use noted::tasks::Tasks;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 fn copy_tree(src: &Path, dst: &Path) {
@@ -108,14 +108,16 @@ fn task_lifecycle_numbering_and_states() {
     assert_eq!(b["path"], "dev/noted/task_0002");
     assert_eq!(a["state"], "created");
 
-    assert!(tasks
-        .update(
-            &rp("dev/noted/task_0001"),
-            Some(ts("completed")),
-            None,
-            None
-        )
-        .is_err());
+    assert!(
+        tasks
+            .update(
+                &rp("dev/noted/task_0001"),
+                Some(ts("completed")),
+                None,
+                None
+            )
+            .is_err()
+    );
     let done = tasks
         .update(
             &rp("dev/noted/task_0001"),
@@ -208,10 +210,12 @@ async fn mcp_initialize_list_and_call() {
 
     let init = mcp_post(&app, &init_msg()).await;
     assert_eq!(init["result"]["serverInfo"]["name"], "noted");
-    assert!(init["result"]["instructions"]
-        .as_str()
-        .unwrap()
-        .contains("personal notes"));
+    assert!(
+        init["result"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("personal notes")
+    );
 
     let list = mcp_post(
         &app,

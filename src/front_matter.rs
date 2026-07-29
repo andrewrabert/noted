@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::error::{rejected, Result};
+use crate::error::{Result, rejected};
 
 pub fn dump_front<T: Serialize>(front: &T, body: &str) -> Result<String> {
     let yaml = serde_yaml::to_string(front).map_err(|e| rejected(format!("yaml: {e}")))?;

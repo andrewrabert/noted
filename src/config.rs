@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 
-use crate::error::{io_error, rejected, Result};
+use crate::error::{Result, io_error, rejected};
 
 pub fn expand_home(path: &str) -> PathBuf {
     match path.strip_prefix("~/") {
@@ -35,10 +35,10 @@ pub fn parse_ttl(s: &str) -> std::result::Result<crate::types::Ttl, String> {
 }
 
 fn env_file_path() -> Option<PathBuf> {
-    if let Ok(override_) = std::env::var("NOTED_ENV_FILE") {
-        if !override_.is_empty() {
-            return Some(expand_home(&override_));
-        }
+    if let Ok(override_) = std::env::var("NOTED_ENV_FILE")
+        && !override_.is_empty()
+    {
+        return Some(expand_home(&override_));
     }
     Some(dirs::config_dir()?.join("noted.env"))
 }

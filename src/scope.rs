@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{rejected, Result};
+use crate::error::{Result, rejected};
 use crate::tools::is_tool;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -111,10 +111,10 @@ fn intersect_prefixes(a: &[String], b: &[String]) -> Vec<String> {
             } else {
                 None
             };
-            if let Some(p) = pick {
-                if seen.insert(p.as_str()) {
-                    out.push(p.clone());
-                }
+            if let Some(p) = pick
+                && seen.insert(p.as_str())
+            {
+                out.push(p.clone());
             }
         }
     }

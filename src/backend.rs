@@ -1,10 +1,10 @@
 use serde_json::Value;
 
-use crate::error::{conflict, forbidden, json_error, not_found, rejected, unavailable, Result};
+use crate::error::{Result, conflict, forbidden, json_error, not_found, rejected, unavailable};
 use crate::httpurl::HttpUrl;
 use crate::notes::Notes;
 use crate::tasks::Tasks;
-use crate::tools::{run_tool, ToolOutput, CLI_ONLY_FIELDS};
+use crate::tools::{CLI_ONLY_FIELDS, ToolOutput, run_tool};
 
 pub struct ToolCall {
     pub name: String,

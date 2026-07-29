@@ -3,7 +3,7 @@ use std::path::Path;
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{db_error, io_error, json_error, NotedError, Result};
+use crate::error::{NotedError, Result, db_error, io_error, json_error};
 use crate::oauth::types::{
     ClientId, CredentialId, Fingerprint, Label, Owner, PasswordHash, SecretHash,
 };
@@ -190,10 +190,10 @@ pub struct Db {
 
 impl Db {
     pub fn open(path: &Path) -> Result<Db> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|e| io_error("oauth db: mkdir", e))?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| io_error("oauth db: mkdir", e))?;
         }
         let inner = Database::create(path).map_err(|e| db_error("oauth db: open", e))?;
         let w = inner.begin_write().map_err(db_err)?;

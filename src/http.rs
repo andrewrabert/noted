@@ -1,20 +1,20 @@
 use std::sync::Arc;
 
 use axum::{
+    Extension, Json, Router,
     extract::{Path, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::post,
-    Extension, Json, Router,
 };
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceBuilder;
 
 use crate::error::NotedError;
-use crate::mcp::{authorize_and_run, CallScope, Dispatch, McpContext};
+use crate::mcp::{CallScope, Dispatch, McpContext, authorize_and_run};
 use crate::oauth::service::BearerKind;
 use crate::oauth::types::Secret;
 use crate::oauth::{AuthService, OAuthProvider};
@@ -115,7 +115,7 @@ pub fn build_app(
 }
 
 fn bearer(headers: &HeaderMap) -> Option<Secret> {
-    use axum_extra::headers::{authorization::Bearer, Authorization, HeaderMapExt};
+    use axum_extra::headers::{Authorization, HeaderMapExt, authorization::Bearer};
     headers
         .typed_get::<Authorization<Bearer>>()
         .map(|auth| Secret::new(auth.token()))
@@ -213,10 +213,10 @@ fn oauth_challenge(state: &AppState) -> Response {
         Json(json!({"error": "unauthorized"})),
     )
         .into_response();
-    if let Some(oauth) = state.oauth() {
-        if let Ok(v) = HeaderValue::from_str(&oauth.resource_metadata_challenge()) {
-            resp.headers_mut().insert(header::WWW_AUTHENTICATE, v);
-        }
+    if let Some(oauth) = state.oauth()
+        && let Ok(v) = HeaderValue::from_str(&oauth.resource_metadata_challenge())
+    {
+        resp.headers_mut().insert(header::WWW_AUTHENTICATE, v);
     }
     resp
 }

@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use noted::oauth::Db;
 use noted::oauth::admin::{self, AdminClient, AdminRequest};
 use noted::oauth::service::{AuthService, RevokeBy, ScopeEdit};
-use noted::oauth::Db;
 use noted::scope::{RuleSpec, StoredScope};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;

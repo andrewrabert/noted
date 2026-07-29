@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
-use ignore::gitignore::Gitignore;
 use ignore::WalkBuilder;
+use ignore::gitignore::Gitignore;
 use rand::RngCore;
 
-use crate::error::{io_error, Result};
+use crate::error::{Result, io_error};
 
 pub fn walk_builder(base: &Path) -> WalkBuilder {
     let filter = IgnoreFilter::new(base);

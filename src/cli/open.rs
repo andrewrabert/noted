@@ -7,13 +7,13 @@ use tempfile::TempDir;
 
 use crate::backend::Backend;
 use crate::config::block_on;
-use crate::error::{io_error, rejected, NotedError, Result};
+use crate::error::{NotedError, Result, io_error, rejected};
 use crate::note::{RelPath, TextNote};
 use crate::picker::Pick;
 use crate::tools::{ReadArgs, ToolOutput, WriteArgs, WriteWhen};
 
-use super::dispatch::{build_backend, call_of};
 use super::GlobalArgs;
+use super::dispatch::{build_backend, call_of};
 
 #[derive(Args)]
 pub(super) struct OpenArgs {
@@ -53,10 +53,10 @@ impl EditBuffer {
 
 impl Drop for EditBuffer {
     fn drop(&mut self) {
-        if self.armed {
-            if let Some(dir) = self.dir.take() {
-                eprintln!("your edits are preserved at {}", dir.keep().display());
-            }
+        if self.armed
+            && let Some(dir) = self.dir.take()
+        {
+            eprintln!("your edits are preserved at {}", dir.keep().display());
         }
     }
 }

@@ -90,8 +90,8 @@ mod tests {
     fn pw(s: &str) -> Password {
         Password::new(s)
     }
-    use crate::oauth::service::{ACCESS_TTL, PREFIX_ACC, PREFIX_REF};
     use crate::oauth::Db;
+    use crate::oauth::service::{ACCESS_TTL, PREFIX_ACC, PREFIX_REF};
 
     fn service() -> (tempfile::TempDir, Arc<AuthService>) {
         let dir = tempfile::tempdir().unwrap();
@@ -144,10 +144,12 @@ mod tests {
         assert!(rotated.token.starts_with(PREFIX_ACC));
         assert_ne!(rotated.token, issued.token);
         assert!(issuer3.recover_refresh(&refresh0).unwrap().is_none());
-        assert!(issuer3
-            .recover_refresh(&rotated.refresh.clone().unwrap())
-            .unwrap()
-            .is_some());
+        assert!(
+            issuer3
+                .recover_refresh(&rotated.refresh.clone().unwrap())
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
@@ -158,9 +160,11 @@ mod tests {
         let issued = issuer.issue(grant_for("bob", "c")).unwrap();
         auth.user_remove(&un("bob")).unwrap();
         assert!(issuer.recover_token(&issued.token).unwrap().is_none());
-        assert!(issuer
-            .recover_refresh(&issued.refresh.unwrap())
-            .unwrap()
-            .is_none());
+        assert!(
+            issuer
+                .recover_refresh(&issued.refresh.unwrap())
+                .unwrap()
+                .is_none()
+        );
     }
 }

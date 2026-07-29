@@ -1,20 +1,20 @@
 use std::sync::OnceLock;
 
 use axum::{
+    Json, Router,
     body::Bytes,
     extract::State,
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::post,
-    Json, Router,
 };
 use macaroon::{ByteString, Caveat, Format, Macaroon, MacaroonKey, Verifier};
 use rand::RngCore;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::service::{AuthService, PREFIX_MAC};
 use super::KeyRecord;
-use crate::error::{rejected, Result};
+use super::service::{AuthService, PREFIX_MAC};
+use crate::error::{Result, rejected};
 use crate::http::AppState;
 use crate::scope::{RuleSpec, TokenScope};
 use crate::types::{Ttl, UnixEpochSeconds};

@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use axum::http::{HeaderMap, Request, StatusCode};
 use axum::Router;
+use axum::http::{HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
 use noted::note::{RelPath, TextNote};
 use noted::notes::Notes;

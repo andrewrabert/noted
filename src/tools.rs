@@ -5,9 +5,9 @@ use std::str::FromStr;
 use clap::{Args, ValueEnum};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::error::{rejected, unavailable, NotedError, Result};
+use crate::error::{NotedError, Result, rejected, unavailable};
 use crate::note::{Etag, RelPath, TextNote};
 use crate::notes::Notes;
 use crate::scope::TokenScope;
@@ -371,7 +371,7 @@ pub(crate) struct MoveTaskArgs {
 }
 
 fn schema_of<T: JsonSchema>() -> Value {
-    let generator = schemars::gen::SchemaSettings::draft07()
+    let generator = schemars::r#gen::SchemaSettings::draft07()
         .with(|s| s.inline_subschemas = true)
         .into_generator();
     let mut v =

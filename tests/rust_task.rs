@@ -80,11 +80,12 @@ fn numbering_from_max_and_tolerates_hand_named() {
 
 #[test]
 fn create_requires_task() {
-    assert!(""
-        .parse::<noted::tasks::TaskTitle>()
-        .unwrap_err()
-        .to_string()
-        .contains("task is required"));
+    assert!(
+        "".parse::<noted::tasks::TaskTitle>()
+            .unwrap_err()
+            .to_string()
+            .contains("task is required")
+    );
     assert!("   ".parse::<noted::tasks::TaskTitle>().is_err());
 }
 
@@ -103,22 +104,26 @@ fn bad_group_names_and_escapes_rejected() {
         );
     }
     assert!(tasks.create(&tt("t"), &gp("ok-group_2"), "").is_ok());
-    assert!(tasks
-        .query("../secrets", false, false)
-        .unwrap_err()
-        .to_string()
-        .contains("invalid name"));
+    assert!(
+        tasks
+            .query("../secrets", false, false)
+            .unwrap_err()
+            .to_string()
+            .contains("invalid name")
+    );
 }
 
 #[test]
 fn empty_task_ref_and_headless_task_rejected() {
     let dir = fixture_dir();
     let (_, tasks) = cores(&dir);
-    assert!(tasks
-        .update(&rp(""), None, None, None)
-        .unwrap_err()
-        .to_string()
-        .contains("task path required"));
+    assert!(
+        tasks
+            .update(&rp(""), None, None, None)
+            .unwrap_err()
+            .to_string()
+            .contains("task path required")
+    );
 
     tasks.create(&tt("real"), &gp(""), "").unwrap(); // makes the Tasks dir
     seed(
@@ -126,11 +131,13 @@ fn empty_task_ref_and_headless_task_rejected() {
         "headless",
         "---\nstate: created\ncreated_at: X\nupdated_at: X\n---\nb\n",
     );
-    assert!(tasks
-        .update(&rp("headless"), Some(ts("started")), None, None)
-        .unwrap_err()
-        .to_string()
-        .contains("not a task"));
+    assert!(
+        tasks
+            .update(&rp("headless"), Some(ts("started")), None, None)
+            .unwrap_err()
+            .to_string()
+            .contains("not a task")
+    );
 }
 
 #[test]
@@ -147,9 +154,11 @@ fn ignored_tasks_are_unreachable_and_ignored_by_numbering() {
     seed(&dir, "task_0009", CREATED);
 
     assert!(!paths(&tasks.query("", false, false).unwrap()).contains(&"task_0009".to_string()));
-    assert!(tasks
-        .update(&rp("task_0009"), Some(ts("started")), None, None)
-        .is_err());
+    assert!(
+        tasks
+            .update(&rp("task_0009"), Some(ts("started")), None, None)
+            .is_err()
+    );
     // task_0009 was seeded high so it would inflate numbering if it counted
     assert_eq!(
         tasks.create(&tt("b"), &gp(""), "").unwrap()["path"],
@@ -349,16 +358,20 @@ fn update_state_and_body_rules() {
 
     // Unknown states are now unrepresentable in the core: rejection happens when
     // the string is parsed into a `TaskState` (CLI/HTTP boundary).
-    assert!("bogus"
-        .parse::<noted::tasks::TaskState>()
-        .unwrap_err()
-        .to_string()
-        .contains("unknown state"));
-    assert!(tasks
-        .update(&rp("task_0001"), Some(ts("completed")), None, None)
-        .unwrap_err()
-        .to_string()
-        .contains("non-empty"));
+    assert!(
+        "bogus"
+            .parse::<noted::tasks::TaskState>()
+            .unwrap_err()
+            .to_string()
+            .contains("unknown state")
+    );
+    assert!(
+        tasks
+            .update(&rp("task_0001"), Some(ts("completed")), None, None)
+            .unwrap_err()
+            .to_string()
+            .contains("non-empty")
+    );
     assert_eq!(
         tasks
             .update(
@@ -376,19 +389,23 @@ fn update_state_and_body_rules() {
 fn update_missing_and_non_task_file() {
     let dir = fixture_dir();
     let (_, tasks) = cores(&dir);
-    assert!(tasks
-        .update(&rp("nope/task_0001"), Some(ts("started")), None, None)
-        .unwrap_err()
-        .to_string()
-        .contains("no task at"));
+    assert!(
+        tasks
+            .update(&rp("nope/task_0001"), Some(ts("started")), None, None)
+            .unwrap_err()
+            .to_string()
+            .contains("no task at")
+    );
 
     tasks.create(&tt("real"), &gp(""), "").unwrap();
     seed(&dir, "stray", "no frontmatter here\n");
-    assert!(tasks
-        .update(&rp("stray"), Some(ts("started")), None, None)
-        .unwrap_err()
-        .to_string()
-        .contains("not a task"));
+    assert!(
+        tasks
+            .update(&rp("stray"), Some(ts("started")), None, None)
+            .unwrap_err()
+            .to_string()
+            .contains("not a task")
+    );
 }
 
 #[test]
@@ -403,12 +420,14 @@ fn move_renumbers_bumps_updated_and_removes_source() {
         .unwrap();
     assert_eq!(moved["path"], "dev/task_0002");
     assert!(moved["updated_at"].as_str().unwrap() >= before["updated_at"].as_str().unwrap());
-    assert!(tasks
-        .query("shopping", false, false)
-        .unwrap()
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        tasks
+            .query("shopping", false, false)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -416,16 +435,20 @@ fn move_same_group_and_missing_refused() {
     let dir = fixture_dir();
     let (_, tasks) = cores(&dir);
     tasks.create(&tt("a"), &gp("shopping"), "").unwrap();
-    assert!(tasks
-        .move_task(&rp("shopping/task_0001"), &gp("shopping"))
-        .unwrap_err()
-        .to_string()
-        .contains("already in that group"));
-    assert!(tasks
-        .move_task(&rp("ghost/task_0001"), &gp("dev"))
-        .unwrap_err()
-        .to_string()
-        .contains("no task at"));
+    assert!(
+        tasks
+            .move_task(&rp("shopping/task_0001"), &gp("shopping"))
+            .unwrap_err()
+            .to_string()
+            .contains("already in that group")
+    );
+    assert!(
+        tasks
+            .move_task(&rp("ghost/task_0001"), &gp("dev"))
+            .unwrap_err()
+            .to_string()
+            .contains("no task at")
+    );
 }
 
 #[test]
@@ -441,11 +464,13 @@ fn move_custom_name_preserved_and_clash_refused() {
     );
     seed(&dir, "other/buy-eggs", CREATED);
     seed(&dir, "dev/buy-eggs", CREATED);
-    assert!(tasks
-        .move_task(&rp("other/buy-eggs"), &gp("dev"))
-        .unwrap_err()
-        .to_string()
-        .contains("destination exists"));
+    assert!(
+        tasks
+            .move_task(&rp("other/buy-eggs"), &gp("dev"))
+            .unwrap_err()
+            .to_string()
+            .contains("destination exists")
+    );
 }
 
 #[test]
@@ -454,27 +479,35 @@ fn tasks_subtree_is_managed() {
     let (notes, tasks) = cores(&dir);
     tasks.create(&tt("t"), &gp(""), "").unwrap();
 
-    assert!(notes
-        .put(&note("Tasks/task_0009.md", "nope"))
-        .unwrap_err()
-        .to_string()
-        .contains("managed"));
-    assert!(notes
-        .delete(&rp("Tasks/task_0001.md"))
-        .unwrap_err()
-        .to_string()
-        .contains("cannot be deleted"));
-    assert!(notes
-        .move_note(&rp("Tasks/task_0001.md"), &rp("elsewhere.md"), false)
-        .unwrap_err()
-        .to_string()
-        .contains("cannot be moved"));
+    assert!(
+        notes
+            .put(&note("Tasks/task_0009.md", "nope"))
+            .unwrap_err()
+            .to_string()
+            .contains("managed")
+    );
+    assert!(
+        notes
+            .delete(&rp("Tasks/task_0001.md"))
+            .unwrap_err()
+            .to_string()
+            .contains("cannot be deleted")
+    );
+    assert!(
+        notes
+            .move_note(&rp("Tasks/task_0001.md"), &rp("elsewhere.md"), false)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot be moved")
+    );
     notes.put(&note("loose.md", "x")).unwrap();
-    assert!(notes
-        .move_note(&rp("loose.md"), &rp("Tasks/task_0002.md"), false)
-        .unwrap_err()
-        .to_string()
-        .contains("cannot be moved"));
+    assert!(
+        notes
+            .move_note(&rp("loose.md"), &rp("Tasks/task_0002.md"), false)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot be moved")
+    );
 }
 
 #[test]
@@ -483,12 +516,16 @@ fn parse_task_file_edges() {
     assert!(front.is_none());
     assert_eq!(body, "---\nnever closes\n");
 
-    assert!(parse_task_file("---\nfoo: [unclosed\n---\nbody\n")
-        .0
-        .is_none());
-    assert!(parse_task_file("---\njust a scalar\n---\nbody\n")
-        .0
-        .is_none());
+    assert!(
+        parse_task_file("---\nfoo: [unclosed\n---\nbody\n")
+            .0
+            .is_none()
+    );
+    assert!(
+        parse_task_file("---\njust a scalar\n---\nbody\n")
+            .0
+            .is_none()
+    );
 
     let (front, body) = parse_task_file(CREATED);
     let front = front.unwrap();
@@ -510,15 +547,19 @@ fn symlinked_task_file_is_ignored() {
 
     let listed = paths(&tasks.query("grp", false, false).unwrap());
     assert_eq!(listed, vec!["grp/task_0001"]);
-    assert!(tasks
-        .query("grp/task_0005", false, false)
-        .unwrap()
-        .as_array()
-        .unwrap()
-        .is_empty());
-    assert!(tasks
-        .update(&rp("grp/task_0005"), Some(ts("started")), None, None)
-        .is_err());
+    assert!(
+        tasks
+            .query("grp/task_0005", false, false)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        tasks
+            .update(&rp("grp/task_0005"), Some(ts("started")), None, None)
+            .is_err()
+    );
     // the symlink was named task_0005 precisely so it would inflate numbering
     // if it counted
     assert_eq!(
@@ -538,12 +579,14 @@ fn symlinked_group_dir_is_ignored() {
     std::fs::write(outside.path().join("task_0001.md"), CREATED).unwrap();
     std::os::unix::fs::symlink(outside.path(), notes_root(&dir).join("Tasks/escape")).unwrap();
 
-    assert!(tasks
-        .query("escape", false, false)
-        .unwrap()
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        tasks
+            .query("escape", false, false)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         paths(&tasks.query("", false, true).unwrap()),
         vec!["task_0001"]

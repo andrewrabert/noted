@@ -4,7 +4,7 @@ use chrono::Local;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{rejected, unavailable, Result};
+use crate::error::{Result, rejected, unavailable};
 use crate::newtype::str_newtype;
 
 #[derive(

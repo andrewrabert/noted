@@ -6,12 +6,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::error::{forbidden, io_error, not_found, rejected, NotedError, Result};
+use crate::error::{NotedError, Result, forbidden, io_error, not_found, rejected};
 use crate::front_matter::{dump_front, split_front};
 use crate::newtype::{str_newtype, str_newtype_validated};
 use crate::note::{Note, RelPath};
 use crate::types::Timestamp;
-use crate::util::{atomic_create, atomic_write, IgnoreFilter};
+use crate::util::{IgnoreFilter, atomic_create, atomic_write};
 
 const DIR: &str = "Tasks";
 
@@ -307,10 +307,10 @@ impl Tasks {
         let mut cur = self.dir.clone();
         for part in rest.components() {
             cur.push(part);
-            if let Ok(meta) = std::fs::symlink_metadata(&cur) {
-                if meta.file_type().is_symlink() {
-                    return true;
-                }
+            if let Ok(meta) = std::fs::symlink_metadata(&cur)
+                && meta.file_type().is_symlink()
+            {
+                return true;
             }
         }
         false
@@ -508,7 +508,7 @@ impl Tasks {
                     return Err(rejected(format!(
                         "destination exists: '{}'",
                         self.rel(&dest)
-                    )))
+                    )));
                 }
                 Err(e) => return Err(io_error("write failed", e)),
             }

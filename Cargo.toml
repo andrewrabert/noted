@@ -4,7 +4,7 @@ members = ["crates/picker-core"]
 [package]
 name = "noted"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "A tree of .md notes exposed as an MCP server and HTTP API over one set of file operations (Rust/Axum rewrite)."
 license = "MIT"
 rust-version = "1.90"

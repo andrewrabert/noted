@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 
 use crate::config::setup_logging;
-use crate::error::{rejected, unavailable, Result};
+use crate::error::{Result, rejected, unavailable};
 use crate::mcp::CallScope;
 use crate::oauth::service::DEFAULT_CREDENTIAL_TTL_HUMAN;
 use crate::scope::RuleSpec;
@@ -291,8 +291,10 @@ mod tests {
     fn scope_flags_reject_unknown_tool_and_bad_json() {
         assert!(flags(Some("Nope"), None, None).to_call_scope().is_err());
         assert!(flags(None, None, Some("not json")).to_call_scope().is_err());
-        assert!(flags(None, None, Some(r#"[{"path": ["a"]}]"#))
-            .to_call_scope()
-            .is_err());
+        assert!(
+            flags(None, None, Some(r#"[{"path": ["a"]}]"#))
+                .to_call_scope()
+                .is_err()
+        );
     }
 }

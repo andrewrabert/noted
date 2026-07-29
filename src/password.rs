@@ -1,8 +1,8 @@
 use std::sync::OnceLock;
 
+use scrypt::Scrypt;
 use scrypt::password_hash::rand_core::OsRng;
 use scrypt::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use scrypt::Scrypt;
 
 pub fn hash_password(password: &str) -> String {
     let salt = SaltString::generate(&mut OsRng);

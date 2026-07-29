@@ -172,11 +172,11 @@ fn format_tasks(records: &Value, color: bool) -> String {
         lines.push(format!("{label} {path}  {task}"));
         let updated = r["updated_at"].as_str().unwrap_or("");
         lines.push(paint(&format!("          updated {updated}"), dim, color));
-        if let Some(body) = r.get("body").and_then(|b| b.as_str()) {
-            if !body.trim().is_empty() {
-                for line in body.trim_end_matches('\n').lines() {
-                    lines.push(paint(&format!("          {line}"), dim, color));
-                }
+        if let Some(body) = r.get("body").and_then(|b| b.as_str())
+            && !body.trim().is_empty()
+        {
+            for line in body.trim_end_matches('\n').lines() {
+                lines.push(paint(&format!("          {line}"), dim, color));
             }
         }
     }

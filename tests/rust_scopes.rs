@@ -2,7 +2,7 @@ mod common;
 
 use common::{note, read, rp};
 use noted::notes::Notes;
-use noted::scope::{compile_rules, RuleSpec, StoredScope, TokenScope};
+use noted::scope::{RuleSpec, StoredScope, TokenScope, compile_rules};
 use noted::search::{MatchOpts, WalkOpts};
 use noted::tasks::Tasks;
 
@@ -44,10 +44,12 @@ fn rule_json_is_fail_closed() {
 
 #[test]
 fn stored_scope_modes_are_distinct() {
-    assert!(StoredScope::Unrestricted
-        .compile()
-        .unwrap()
-        .allows("DeleteNote"));
+    assert!(
+        StoredScope::Unrestricted
+            .compile()
+            .unwrap()
+            .allows("DeleteNote")
+    );
     assert_eq!(
         StoredScope::Unrestricted.compile().unwrap(),
         TokenScope::full()
@@ -63,15 +65,19 @@ fn notes_confine_allows_inside_rejects_outside() {
         .unwrap()
         .confined(folders(&["projects"]));
     assert!(read(&notes, "projects/ideas.md").is_ok());
-    assert!(read(&notes, "Inbox.md")
-        .unwrap_err()
-        .to_string()
-        .contains("allowed folders"));
-    assert!(notes
-        .put(&note("people/x.md", "y"))
-        .unwrap_err()
-        .to_string()
-        .contains("allowed folders"));
+    assert!(
+        read(&notes, "Inbox.md")
+            .unwrap_err()
+            .to_string()
+            .contains("allowed folders")
+    );
+    assert!(
+        notes
+            .put(&note("people/x.md", "y"))
+            .unwrap_err()
+            .to_string()
+            .contains("allowed folders")
+    );
 }
 
 #[test]
@@ -90,14 +96,18 @@ fn notes_confine_move_guarded_both_ends() {
     let notes = Notes::new(&common::notes_root(&dir), None)
         .unwrap()
         .confined(folders(&["projects"]));
-    assert!(notes
-        .move_note(&rp("projects/ideas.md"), &rp("people/moved.md"), false)
-        .unwrap_err()
-        .to_string()
-        .contains("allowed folders"));
-    assert!(notes
-        .move_note(&rp("projects/ideas.md"), &rp("projects/moved.md"), false)
-        .is_ok());
+    assert!(
+        notes
+            .move_note(&rp("projects/ideas.md"), &rp("people/moved.md"), false)
+            .unwrap_err()
+            .to_string()
+            .contains("allowed folders")
+    );
+    assert!(
+        notes
+            .move_note(&rp("projects/ideas.md"), &rp("projects/moved.md"), false)
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -131,16 +141,20 @@ fn tasks_confine_create_and_reject() {
     let tasks = Tasks::new(&root).confined(folders(&["dev"]));
     let made = tasks.create(&tt("scoped work"), &gp("dev"), "").unwrap();
     assert!(made["path"].as_str().unwrap().starts_with("dev/"));
-    assert!(tasks
-        .create(&tt("nope"), &gp("ops"), "")
-        .unwrap_err()
-        .to_string()
-        .contains("allowed folders"));
-    assert!(tasks
-        .create(&tt("nope"), &gp(""), "")
-        .unwrap_err()
-        .to_string()
-        .contains("allowed folders"));
+    assert!(
+        tasks
+            .create(&tt("nope"), &gp("ops"), "")
+            .unwrap_err()
+            .to_string()
+            .contains("allowed folders")
+    );
+    assert!(
+        tasks
+            .create(&tt("nope"), &gp(""), "")
+            .unwrap_err()
+            .to_string()
+            .contains("allowed folders")
+    );
 }
 
 #[test]

@@ -4,7 +4,7 @@ use clap::{Args, Subcommand};
 use serde_json::Value;
 
 use crate::config::{block_on, parse_ttl};
-use crate::error::{rejected, unavailable, Result};
+use crate::error::{Result, rejected, unavailable};
 use crate::oauth::admin::{AdminConn, AdminRequest};
 use crate::oauth::service::{CredentialSummary, RevokeBy, ScopeEdit, UserSummary};
 use crate::oauth::types::Label;

@@ -6,7 +6,7 @@ use serde_json::json;
 use crate::authclient::{self, RevokeSelector, Session};
 use crate::config::{block_on, parse_ttl};
 use crate::credentials::CredentialStore;
-use crate::error::{rejected, Result};
+use crate::error::{Result, rejected};
 use crate::httpurl::HttpUrl;
 use crate::oauth::macaroon;
 use crate::scope::RuleSpec;

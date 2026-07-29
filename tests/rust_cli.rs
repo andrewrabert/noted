@@ -56,9 +56,11 @@ fn write_then_read() {
         run(&d, true, &[], &["write", "new.md", "fresh content"]).code,
         0
     );
-    assert!(run(&d, true, &[], &["read", "new.md"])
-        .stdout
-        .contains("fresh content"));
+    assert!(
+        run(&d, true, &[], &["read", "new.md"])
+            .stdout
+            .contains("fresh content")
+    );
 }
 
 #[test]
@@ -97,9 +99,11 @@ fn edit() {
         run(&d, true, &[], &["edit", "Inbox.md", "budget", "runway"]).code,
         0
     );
-    assert!(run(&d, true, &[], &["read", "Inbox.md"])
-        .stdout
-        .contains("runway"));
+    assert!(
+        run(&d, true, &[], &["read", "Inbox.md"])
+            .stdout
+            .contains("runway")
+    );
 }
 
 #[test]
@@ -292,9 +296,11 @@ fn open_overwrites_buffer_and_saves() {
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
     assert!(r.stdout.contains("wrote Inbox.md"));
     assert!(!r.stderr.contains("preserved at"));
-    assert!(run(&d, true, &[], &["read", "Inbox.md"])
-        .stdout
-        .contains("rewritten body"));
+    assert!(
+        run(&d, true, &[], &["read", "Inbox.md"])
+            .stdout
+            .contains("rewritten body")
+    );
 }
 
 #[test]
@@ -308,9 +314,11 @@ fn open_creates_missing_note() {
         &["open", "created.md"],
     );
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
-    assert!(run(&d, true, &[], &["read", "created.md"])
-        .stdout
-        .contains("brand new"));
+    assert!(
+        run(&d, true, &[], &["read", "created.md"])
+            .stdout
+            .contains("brand new")
+    );
 }
 
 #[test]
@@ -356,9 +364,11 @@ fn open_visual_wins_over_editor() {
         &["open", "Inbox.md"],
     );
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
-    assert!(run(&d, true, &[], &["read", "Inbox.md"])
-        .stdout
-        .contains("from visual"));
+    assert!(
+        run(&d, true, &[], &["read", "Inbox.md"])
+            .stdout
+            .contains("from visual")
+    );
 }
 
 #[test]
