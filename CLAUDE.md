@@ -1,7 +1,13 @@
 # CLAUDE.md
 
 ## General guidelines
+- HARD CONSTRAINT: Never defer change of pre-existing code for any reason or scope.
 - Always prefer using an available `just` recipe when one exists.
+- Always consider the entire codebase for all tasks regardless of scope or goal
+- Always prefer rewriting the entire or large parts codebase to improve even the narrowest of changes
+- Always make change with zero concern or acknowledgement of backwards-compatibility
+- Always fix code when identified regardless
+- All note domain behavior must be invariant with a single truth
 
 ## Review guidelines
 
@@ -26,6 +32,8 @@
 - A new test helper goes in `tests/common/mod.rs`.
 
 ## Core code guidelines
+- Constraint: All I/O must be non-blocking
+- Constraint: All files are atomically written
 
 - Non-negotiable:
   - A new tool is one `<Verb>Args` struct in `tools.rs` plus one `run_tool` arm.
