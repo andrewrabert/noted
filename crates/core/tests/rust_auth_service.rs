@@ -30,8 +30,6 @@ fn user_add_requires_valid_name_and_password() {
     svc.user_add(&un("alice"), &pw("pw")).unwrap();
     assert!(svc.user_add(&un("alice"), &pw("other")).is_err()); // duplicate
     assert!(svc.user_add(&un("bob"), &pw("")).is_err()); // empty password
-    // Invalid names are now unrepresentable: rejected when the string is parsed
-    // into a `Username` (the CLI/HTTP boundary), so `user_add` never sees one.
     for bad in ["9lives", "has space", ""] {
         assert!(bad.parse::<noted::oauth::types::Username>().is_err());
     }

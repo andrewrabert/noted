@@ -1,10 +1,6 @@
-//! Match and state for a fuzzy picker. This crate deliberately depends on no
-//! terminal library: the driver lives in `noted::picker`.
-
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 
-/// A keypress the picker understands, decoded by the driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     Char(char),
@@ -16,8 +12,6 @@ pub enum Key {
     Cancel,
 }
 
-/// What the driver should do next. `Accept` carries the chosen item, so an
-/// accept with nothing selected cannot be constructed.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
     Accept(String),
@@ -29,8 +23,6 @@ fn matcher() -> Matcher {
     Matcher::new(Config::DEFAULT.match_paths())
 }
 
-/// Indices into `items` that match `query`, best score first; ties keep the
-/// original order. An empty query keeps every item in its original order.
 fn filter(matcher: &mut Matcher, items: &[String], query: &str) -> Vec<usize> {
     if query.is_empty() {
         return (0..items.len()).collect();

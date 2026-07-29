@@ -85,8 +85,6 @@ fn pick_path(backend: &Backend) -> Result<Pick> {
 }
 
 async fn list_paths(backend: &Backend) -> Result<Vec<String>> {
-    // SearchArgs' fields are private, so the payload is a JSON literal rather
-    // than a constructed args struct.
     let call = call_of(
         "SearchNotes",
         serde_json::json!({"mode": "path", "pattern": "."}),
@@ -100,8 +98,6 @@ async fn list_paths(backend: &Backend) -> Result<Vec<String>> {
     }
 }
 
-/// Note paths from a `mode=path` search. Log sidecars (`.md.meta`) come back
-/// in that listing but are not editable notes, so they are dropped.
 fn parse_paths(text: &str) -> Vec<String> {
     text.lines()
         .map(str::trim)

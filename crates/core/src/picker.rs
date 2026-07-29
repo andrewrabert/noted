@@ -54,8 +54,6 @@ fn key_of(event: KeyEvent) -> Option<Key> {
     }
 }
 
-/// Owns the terminal mode. `Drop` restores it on every exit path, including
-/// `?` and panics, so an aborted picker never leaves a raw alternate screen.
 struct RawScreen {
     out: std::io::Stderr,
 }
