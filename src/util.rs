@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use base64::Engine;
 use ignore::WalkBuilder;
 use ignore::gitignore::Gitignore;
-use rand::RngCore;
+use rand::Rng;
 
 use crate::error::{Result, io_error};
 
@@ -99,7 +99,7 @@ impl IgnoreFilter {
 
 pub fn random_token(n_bytes: usize) -> String {
     let mut bytes = vec![0u8; n_bytes];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&bytes)
 }
 

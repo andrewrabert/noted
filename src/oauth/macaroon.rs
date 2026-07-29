@@ -9,7 +9,7 @@ use axum::{
     routing::post,
 };
 use macaroon::{ByteString, Caveat, Format, Macaroon, MacaroonKey, Verifier};
-use rand::RngCore;
+use rand::Rng;
 use serde_json::{Value, json};
 
 use super::KeyRecord;
@@ -172,7 +172,7 @@ async fn root(State(state): State<AppState>, headers: HeaderMap) -> Response {
         Ok(Some(r)) => r,
         Ok(None) => {
             let mut secret = vec![0u8; 32];
-            rand::rngs::OsRng.fill_bytes(&mut secret);
+            rand::rng().fill_bytes(&mut secret);
             let rec = KeyRecord {
                 secret,
                 min_epoch: 0,

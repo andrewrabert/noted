@@ -1,20 +1,21 @@
 use std::sync::OnceLock;
 
 use scrypt::Scrypt;
-use scrypt::password_hash::rand_core::OsRng;
-use scrypt::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use scrypt::password_hash::phc::PasswordHash;
+use scrypt::password_hash::{PasswordHasher, PasswordVerifier};
 
 pub fn hash_password(password: &str) -> String {
-    let salt = SaltString::generate(&mut OsRng);
-    Scrypt
-        .hash_password(password.as_bytes(), &salt)
-        .expect("scrypt hashing with a valid salt")
+    Scrypt::new()
+        .hash_password(password.as_bytes())
+        .expect("scrypt hashing with a generated salt")
         .to_string()
 }
 
 pub fn verify_password(password: &str, stored: &str) -> bool {
     match PasswordHash::new(stored) {
-        Ok(hash) => Scrypt.verify_password(password.as_bytes(), &hash).is_ok(),
+        Ok(hash) => Scrypt::new()
+            .verify_password(password.as_bytes(), &hash)
+            .is_ok(),
         Err(_) => false,
     }
 }

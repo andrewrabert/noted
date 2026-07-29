@@ -81,7 +81,7 @@ impl FromStr for TaskState {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "String", into = "String")]
-#[schemars(transparent)]
+#[schemars(with = "String")]
 pub struct TaskTitle(String);
 str_newtype_validated!(TaskTitle, validate_task_title);
 

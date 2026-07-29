@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha256};
 
 use crate::error::{Result, rejected};
@@ -68,7 +68,7 @@ pub fn sha256_hex(secret: &str) -> SecretHash {
 
 pub fn new_credential_id() -> CredentialId {
     let mut bytes = [0u8; CRED_ID_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     let mut id = String::from("cred_");
     for b in bytes {
         id.push(CRED_ID_ALPHABET[(b % 32) as usize] as char);

@@ -371,7 +371,7 @@ pub(crate) struct MoveTaskArgs {
 }
 
 fn schema_of<T: JsonSchema>() -> Value {
-    let generator = schemars::r#gen::SchemaSettings::draft07()
+    let generator = schemars::generate::SchemaSettings::draft07()
         .with(|s| s.inline_subschemas = true)
         .into_generator();
     let mut v =

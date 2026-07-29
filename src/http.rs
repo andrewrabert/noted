@@ -81,7 +81,7 @@ pub fn build_app(
 
     let mcp_ctx = state.ctx.clone();
     let mut mcp_config = StreamableHttpServerConfig::default();
-    mcp_config.stateful_mode = false;
+    mcp_config.legacy_session_mode = false;
     mcp_config.json_response = true;
     mcp_config.allowed_hosts.clear();
     let mcp_service = StreamableHttpService::new(
