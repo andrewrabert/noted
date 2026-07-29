@@ -4,7 +4,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::style::{Attribute, Print, SetAttribute};
 use crossterm::terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, event, execute, queue, terminal};
-use picker_core::{Action, Key, PickerState};
+use picker::{Action, Key, PickerState};
 
 use crate::error::{Result, io_error};
 

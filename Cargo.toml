@@ -1,76 +1,7 @@
 [workspace]
-members = ["crates/picker-core"]
-
-[package]
-name = "noted"
-version = "0.1.0"
-edition = "2024"
-description = "A tree of .md notes exposed as an MCP server and HTTP API over one set of file operations (Rust/Axum rewrite)."
-license = "MIT"
-rust-version = "1.90"
-
-[lib]
-name = "noted"
-
-[[bin]]
-name = "noted"
-
-[dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net"] }
-clap = { version = "4", features = ["derive", "env"] }
-anstyle = "1"
-axum = "0.8"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml = "0.9"
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-base64 = "0.23"
-hostname = "0.4"
-reqwest = { version = "0.13", features = ["json", "form"] }
-scrypt = { version = "0.12", features = ["phc", "getrandom"] }
-sha2 = "0.11"
-rand = "0.10"
-url = "2"
-tower = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
-tempfile = "3"
-path-clean = "1"
-dotenvy = "0.15"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-appender = "0.2"
-schemars = "1"
-governor = "0.10"
-maud = "0.27"
-grep = "0.4"
-ignore = "0.4"
-rmcp = { version = "3", default-features = false, features = ["server", "transport-streamable-http-server", "transport-io"] }
-http = "1"
-oxide-auth = "0.6"
-dirs = "6"
-thiserror = "2"
-axum-extra = { version = "0.12", default-features = false, features = ["typed-header"] }
-redb = "4"
-open = "5"
-keyring = "4"
-macaroon = "0.3"
-humantime = "2"
-which = "8"
-shell-words = "1"
-crossterm = "0.29"
-picker-core = { path = "crates/picker-core" }
-
-[features]
-# Compiles in test-only hooks (e.g. OAuth token injection) that must never ship
-# in a production binary. Enabled for the test build via the self dev-dependency
-# below; absent from a plain `cargo build`.
-test-util = []
-
-[dev-dependencies]
-tempfile = "3"
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-# Self-dependency solely to turn on `test-util` when compiling the test targets.
-noted = { path = ".", features = ["test-util"] }
+members = ["crates/core", "crates/picker"]
+default-members = ["crates/core"]
+resolver = "3"
 
 [profile.release]
 strip = true

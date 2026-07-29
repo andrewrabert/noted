@@ -35,11 +35,11 @@ install:
 
 # Format the sources
 fmt:
-    @cargo fmt --manifest-path {{justfile_directory()}}/Cargo.toml
+    @cargo fmt --all --manifest-path {{justfile_directory()}}/Cargo.toml
 
 # Verify formatting without writing
 fmt-check:
-    @cargo fmt --manifest-path {{justfile_directory()}}/Cargo.toml --check
+    @cargo fmt --all --manifest-path {{justfile_directory()}}/Cargo.toml --check
 
 # Lint with clippy (warnings are errors)
 lint:

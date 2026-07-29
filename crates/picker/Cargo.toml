@@ -1,5 +1,5 @@
 [package]
-name = "picker-core"
+name = "picker"
 version = "0.1.0"
 edition = "2024"
 description = "Pure match/state core for noted's fuzzy picker; no terminal dependency."

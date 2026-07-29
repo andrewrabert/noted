@@ -38,7 +38,7 @@ fn probe(features: &[&str]) -> Output {
         .arg(tmp.path().join("Cargo.toml"))
         .env(
             "CARGO_TARGET_DIR",
-            format!("{manifest}/target/feature_gating_probe"),
+            format!("{manifest}/../../target/feature_gating_probe"),
         )
         .output()
         .expect("run cargo build for the probe crate")

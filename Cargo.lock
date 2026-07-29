@@ -2048,7 +2048,7 @@ dependencies = [
  "open",
  "oxide-auth",
  "path-clean",
- "picker-core",
+ "picker",
  "rand 0.10.2",
  "redb",
  "reqwest",
@@ -2312,7 +2312,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "picker-core"
+name = "picker"
 version = "0.1.0"
 dependencies = [
  "nucleo-matcher",
