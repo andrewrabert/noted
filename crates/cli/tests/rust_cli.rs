@@ -610,3 +610,61 @@ fn bootstrap_key_then_authenticated_live_serve() {
     assert!(ok.stdout.contains("# Inbox"));
     assert_ne!(denied.code, 0);
 }
+
+#[test]
+#[cfg(unix)]
+fn admin_socket_without_auth_db_is_rejected() {
+    let d = fixture();
+    let sock = d.path().join("admin.sock");
+    let r = run(
+        &d,
+        true,
+        &[],
+        &[
+            "server",
+            "http",
+            "--port",
+            "0",
+            "--admin-socket",
+            sock.to_str().unwrap(),
+        ],
+    );
+    assert_ne!(r.code, 0);
+    assert!(
+        r.stderr.contains("--admin-socket requires --auth-db"),
+        "stderr: {}",
+        r.stderr
+    );
+}
+
+#[test]
+fn public_url_without_auth_db_is_rejected() {
+    let d = fixture();
+    let r = run(
+        &d,
+        true,
+        &[],
+        &[
+            "server",
+            "http",
+            "--port",
+            "0",
+            "--public-url",
+            "https://notes.example",
+        ],
+    );
+    assert_ne!(r.code, 0);
+    assert!(
+        r.stderr.contains("--public-url requires --auth-db"),
+        "stderr: {}",
+        r.stderr
+    );
+}
+
+#[test]
+fn admin_without_a_transport_is_rejected() {
+    let d = fixture();
+    let r = run(&d, false, &[], &["server", "key", "list"]);
+    assert_ne!(r.code, 0);
+    assert!(r.stderr.contains("--auth-db"), "stderr: {}", r.stderr);
+}

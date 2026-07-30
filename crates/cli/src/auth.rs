@@ -3,18 +3,19 @@ use std::process::ExitCode;
 use clap::{Args, Subcommand};
 use serde_json::json;
 
-use crate::authclient::{self, RevokeSelector, Session};
-use crate::config::{block_on, parse_ttl};
-use crate::credentials::CredentialStore;
-use crate::error::{Result, rejected};
-use crate::httpurl::HttpUrl;
-use crate::oauth::macaroon;
-use crate::scope::RuleSpec;
+use noted::authclient::{self, RevokeSelector, Session};
+use noted::credentials::CredentialStore;
+use noted::error::{Result, rejected};
+use noted::httpurl::HttpUrl;
+use noted::oauth::macaroon;
+use noted::scope::RuleSpec;
+use noted::types::Ttl;
 
-use super::{GlobalArgs, RuleFlags};
+use crate::config::{block_on, credential_store_config, parse_ttl};
+use crate::{GlobalArgs, RuleFlags};
 
 #[derive(Args)]
-pub(super) struct AuthCmd {
+pub(crate) struct AuthCmd {
     #[command(subcommand)]
     sub: AuthSub,
 }
@@ -41,7 +42,7 @@ struct MintCmd {
     #[command(flatten)]
     flags: RuleFlags,
     #[arg(long, value_parser = parse_ttl, default_value = "1h")]
-    ttl: crate::types::Ttl,
+    ttl: Ttl,
     #[arg(long)]
     session: Option<String>,
     #[arg(long)]
@@ -67,8 +68,8 @@ fn resolve_url(explicit: Option<&str>, globals: &GlobalArgs) -> Result<HttpUrl> 
     raw.parse()
 }
 
-pub(super) fn run_auth(cmd: AuthCmd, globals: &GlobalArgs) -> Result<ExitCode> {
-    let store = CredentialStore::open()?;
+pub(crate) fn run_auth(cmd: AuthCmd, globals: &GlobalArgs) -> Result<ExitCode> {
+    let store = CredentialStore::open(credential_store_config()?);
     match cmd.sub {
         AuthSub::Login(a) => {
             let url = resolve_url(a.url.as_deref(), globals)?;
@@ -148,7 +149,11 @@ fn run_revoke(store: &CredentialStore, r: RevokeCmd, globals: &GlobalArgs) -> Re
     } else {
         return Err(rejected("provide an id, --session, or --all"));
     };
-    let session = Session::open(&url, Some(cred.access_token.expose()))?;
+    let session = Session::open(
+        &url,
+        Some(cred.access_token.expose()),
+        CredentialStore::open(credential_store_config()?),
+    );
     block_on(session.revoke(selector))?;
     println!("revoked");
     Ok(ExitCode::SUCCESS)

@@ -2026,14 +2026,34 @@ name = "noted"
 version = "0.1.0"
 dependencies = [
  "anstyle",
- "axum",
- "axum-extra",
- "base64 0.23.0",
  "chrono",
  "clap",
  "crossterm",
  "dirs",
  "dotenvy",
+ "humantime",
+ "noted-core",
+ "noted-picker",
+ "serde",
+ "serde_json",
+ "shell-words",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "which",
+]
+
+[[package]]
+name = "noted-core"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "axum-extra",
+ "base64 0.23.0",
+ "chrono",
+ "clap",
  "governor",
  "grep",
  "hostname",
@@ -2044,11 +2064,10 @@ dependencies = [
  "keyring",
  "macaroon",
  "maud",
- "noted",
+ "noted-core",
  "open",
  "oxide-auth",
  "path-clean",
- "picker",
  "rand 0.10.2",
  "redb",
  "reqwest",
@@ -2059,16 +2078,19 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.11.0",
- "shell-words",
  "tempfile",
  "thiserror",
  "tokio",
  "tower",
  "tracing",
- "tracing-appender",
- "tracing-subscriber",
  "url",
- "which",
+]
+
+[[package]]
+name = "noted-picker"
+version = "0.1.0"
+dependencies = [
+ "nucleo-matcher",
 ]
 
 [[package]]
@@ -2309,13 +2331,6 @@ dependencies = [
  "base64ct",
  "ctutils",
  "getrandom 0.4.3",
-]
-
-[[package]]
-name = "picker"
-version = "0.1.0"
-dependencies = [
- "nucleo-matcher",
 ]
 
 [[package]]

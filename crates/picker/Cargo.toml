@@ -1,11 +1,17 @@
 [package]
-name = "picker"
-version = "0.1.0"
-edition = "2024"
-description = "Pure match/state core for noted's fuzzy picker; no terminal dependency."
-license = "MIT"
-rust-version = "1.90"
+name = "noted-picker"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
 publish = false
+
+[lib]
+name = "picker"
 
 [dependencies]
 nucleo-matcher = "0.3"

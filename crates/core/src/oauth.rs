@@ -28,7 +28,6 @@ use crate::password::{verify_dummy, verify_password};
 use crate::types::{Ttl, UnixEpochSeconds};
 use crate::util::random_token;
 
-#[cfg(unix)]
 pub mod admin;
 mod db;
 mod issuer;

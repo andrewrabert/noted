@@ -5,18 +5,18 @@ use std::process::ExitCode;
 use clap::Args;
 use tempfile::TempDir;
 
-use crate::backend::Backend;
-use crate::config::block_on;
-use crate::error::{NotedError, Result, io_error, rejected};
-use crate::note::{RelPath, TextNote};
-use crate::picker::Pick;
-use crate::tools::{ReadArgs, ToolOutput, WriteArgs, WriteWhen};
+use noted::backend::Backend;
+use noted::error::{NotedError, Result, io_error, rejected};
+use noted::note::{RelPath, TextNote};
+use noted::tools::{ReadArgs, ToolOutput, WriteArgs, WriteWhen};
 
-use super::GlobalArgs;
-use super::dispatch::{build_backend, call_of};
+use crate::GlobalArgs;
+use crate::config::block_on;
+use crate::dispatch::{build_backend, call_of};
+use crate::picker::Pick;
 
 #[derive(Args)]
-pub(super) struct OpenArgs {
+pub(crate) struct OpenArgs {
     /// Note to open, by relative path; omit to pick one interactively
     path: Option<RelPath>,
     /// Overwrite unconditionally, ignoring concurrent changes
@@ -61,7 +61,7 @@ impl Drop for EditBuffer {
     }
 }
 
-pub(super) fn run_open(globals: &GlobalArgs, args: OpenArgs) -> Result<ExitCode> {
+pub(crate) fn run_open(globals: &GlobalArgs, args: OpenArgs) -> Result<ExitCode> {
     let backend = build_backend(globals)?;
     let path = match args.path {
         Some(path) => path,

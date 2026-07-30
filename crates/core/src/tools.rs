@@ -176,7 +176,7 @@ pub(crate) enum Mode {
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
-pub(crate) struct SearchArgs {
+pub struct SearchArgs {
     #[arg(default_value = ".")]
     #[serde(default = "default_pattern")]
     pattern: String,
@@ -211,7 +211,7 @@ pub(crate) struct SearchArgs {
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
-pub(crate) struct ReadArgs {
+pub struct ReadArgs {
     path: RelPath,
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -222,7 +222,7 @@ pub(crate) struct ReadArgs {
 }
 
 impl ReadArgs {
-    pub(crate) fn new(path: RelPath) -> ReadArgs {
+    pub fn new(path: RelPath) -> ReadArgs {
         ReadArgs {
             path,
             offset: None,
@@ -232,7 +232,7 @@ impl ReadArgs {
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
-pub(crate) struct WriteArgs {
+pub struct WriteArgs {
     path: RelPath,
     content: String,
     #[arg(skip)]
@@ -242,7 +242,7 @@ pub(crate) struct WriteArgs {
 }
 
 impl WriteArgs {
-    pub(crate) fn new(path: RelPath, content: String) -> WriteArgs {
+    pub fn new(path: RelPath, content: String) -> WriteArgs {
         WriteArgs {
             path,
             content,
@@ -250,7 +250,7 @@ impl WriteArgs {
         }
     }
 
-    pub(crate) fn when(mut self, when: WriteWhen) -> WriteArgs {
+    pub fn when(mut self, when: WriteWhen) -> WriteArgs {
         self.when = Some(when.to_string());
         self
     }
@@ -292,7 +292,7 @@ impl FromStr for WriteWhen {
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
-pub(crate) struct EditArgs {
+pub struct EditArgs {
     path: RelPath,
     old_string: String,
     new_string: String,
@@ -302,7 +302,7 @@ pub(crate) struct EditArgs {
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
-pub(crate) struct MoveArgs {
+pub struct MoveArgs {
     path: RelPath,
     dest: RelPath,
     #[arg(long)]
@@ -311,21 +311,29 @@ pub(crate) struct MoveArgs {
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
-pub(crate) struct DeleteArgs {
+pub struct DeleteArgs {
     path: RelPath,
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
-pub(crate) struct LogArgs {
+pub struct LogArgs {
     body: LogBody,
-    #[arg(short = 's', long, env = "NOTED_SOURCE")]
+    #[arg(short = 's', long)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(skip)]
     source: Option<Source>,
 }
 
+impl LogArgs {
+    /// Fill `source` only when the caller gave none explicitly.
+    pub fn with_default_source(mut self, source: Option<Source>) -> LogArgs {
+        self.source = self.source.or(source);
+        self
+    }
+}
+
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
-pub(crate) struct CreateTaskArgs {
+pub struct CreateTaskArgs {
     task: TaskTitle,
     #[arg(long, default_value = "")]
     #[serde(default)]
@@ -336,7 +344,7 @@ pub(crate) struct CreateTaskArgs {
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
-pub(crate) struct GetTasksArgs {
+pub struct GetTasksArgs {
     #[arg(default_value = "")]
     #[serde(default)]
     prefix: String,
@@ -349,7 +357,7 @@ pub(crate) struct GetTasksArgs {
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
-pub(crate) struct UpdateTaskArgs {
+pub struct UpdateTaskArgs {
     path: RelPath,
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -363,7 +371,7 @@ pub(crate) struct UpdateTaskArgs {
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
-pub(crate) struct MoveTaskArgs {
+pub struct MoveTaskArgs {
     path: RelPath,
     #[arg(default_value = "")]
     #[serde(default)]

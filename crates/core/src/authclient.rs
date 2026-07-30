@@ -163,12 +163,12 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn open(url: &HttpUrl, token_override: Option<&str>) -> Result<Session> {
-        Ok(Session {
+    pub fn open(url: &HttpUrl, token_override: Option<&str>, store: CredentialStore) -> Session {
+        Session {
             url: url.clone(),
             token_override: token_override.filter(|s| !s.is_empty()).map(str::to_string),
-            store: CredentialStore::open()?,
-        })
+            store,
+        }
     }
 
     pub async fn bearer(&self) -> Result<Option<String>> {

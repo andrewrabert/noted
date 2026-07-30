@@ -3,14 +3,15 @@ use std::path::PathBuf;
 use clap::{Args, Subcommand};
 use serde_json::Value;
 
-use crate::config::{block_on, parse_ttl};
-use crate::error::{Result, rejected, unavailable};
-use crate::oauth::admin::{AdminConn, AdminRequest};
-use crate::oauth::service::{CredentialSummary, RevokeBy, ScopeEdit, UserSummary};
-use crate::oauth::types::Label;
-use crate::scope::StoredScope;
+use noted::error::{Result, rejected, unavailable};
+use noted::oauth::admin::{AdminConn, AdminRequest};
+use noted::oauth::service::{CredentialSummary, RevokeBy, ScopeEdit, UserSummary};
+use noted::oauth::types::Label;
+use noted::scope::StoredScope;
+use noted::types::Ttl;
 
-use super::RuleFlags;
+use crate::RuleFlags;
+use crate::config::{block_on, parse_ttl};
 
 #[derive(serde::Deserialize)]
 struct UserGetResponse {
@@ -20,14 +21,35 @@ struct UserGetResponse {
 
 #[derive(Args)]
 struct AdminTransport {
+    #[cfg(unix)]
     #[arg(long = "admin-socket", env = "NOTED_ADMIN_SOCKET", global = true)]
     admin_socket: Option<PathBuf>,
     #[arg(long = "auth-db", env = "NOTED_AUTH_DB", global = true)]
     auth_db: Option<PathBuf>,
 }
 
+impl AdminTransport {
+    /// The sole adapter to core's admin connection: it owns the messages that
+    /// name CLI flags and their environment variables.
+    async fn open(&self) -> Result<AdminConn> {
+        #[cfg(unix)]
+        let socket = self.admin_socket.clone();
+        #[cfg(not(unix))]
+        let socket: Option<PathBuf> = None;
+        if socket.is_none() && self.auth_db.is_none() {
+            #[cfg(unix)]
+            return Err(rejected(
+                "--admin-socket or --auth-db (NOTED_ADMIN_SOCKET / NOTED_AUTH_DB) is required",
+            ));
+            #[cfg(not(unix))]
+            return Err(rejected("--auth-db (NOTED_AUTH_DB) is required"));
+        }
+        AdminConn::open(socket.as_deref(), self.auth_db.as_deref()).await
+    }
+}
+
 #[derive(Args)]
-pub(super) struct UserCmd {
+pub(crate) struct UserCmd {
     #[command(flatten)]
     transport: AdminTransport,
     #[command(subcommand)]
@@ -80,7 +102,7 @@ struct UserRevokeCmd {
 }
 
 #[derive(Args)]
-pub(super) struct KeyCmd {
+pub(crate) struct KeyCmd {
     #[command(flatten)]
     transport: AdminTransport,
     #[command(subcommand)]
@@ -103,7 +125,7 @@ struct KeyCreateCmd {
     #[command(flatten)]
     flags: RuleFlags,
     #[arg(long, value_parser = parse_ttl)]
-    ttl: Option<crate::types::Ttl>,
+    ttl: Option<Ttl>,
     #[arg(long)]
     json: bool,
 }
@@ -141,10 +163,8 @@ struct KeyRevokeCmd {
 }
 
 fn admin_one(t: &AdminTransport, req: AdminRequest) -> Result<Value> {
-    let socket = t.admin_socket.clone();
-    let db = t.auth_db.clone();
     block_on(async move {
-        let mut conn = AdminConn::open(socket.as_deref(), db.as_deref()).await?;
+        let mut conn = t.open().await?;
         conn.call(req).await
     })
 }
@@ -224,7 +244,7 @@ fn prompt_password() -> Result<String> {
     Ok(line.trim_end_matches(['\n', '\r']).to_string())
 }
 
-pub(super) fn run_user(cmd: UserCmd) -> Result<()> {
+pub(crate) fn run_user(cmd: UserCmd) -> Result<()> {
     let t = &cmd.transport;
     match cmd.sub {
         UserSub::Add(a) => {
@@ -314,7 +334,7 @@ pub(super) fn run_user(cmd: UserCmd) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn run_key(cmd: KeyCmd) -> Result<()> {
+pub(crate) fn run_key(cmd: KeyCmd) -> Result<()> {
     let t = &cmd.transport;
     match cmd.sub {
         KeySub::Create(c) => {
@@ -322,13 +342,11 @@ pub(super) fn run_key(cmd: KeyCmd) -> Result<()> {
                 None => StoredScope::Unrestricted,
                 Some(specs) => StoredScope::Grants(specs),
             };
-            let socket = t.admin_socket.clone();
-            let db = t.auth_db.clone();
             let label = c.label.clone();
             let ttl = c.ttl;
             let as_json = c.json;
             block_on(async move {
-                let mut conn = AdminConn::open(socket.as_deref(), db.as_deref()).await?;
+                let mut conn = t.open().await?;
                 let minted = conn
                     .call(AdminRequest::KeyCreate { label, scope, ttl })
                     .await?;

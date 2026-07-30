@@ -1,7 +1,8 @@
-use std::future::Future;
 use std::path::{Path, PathBuf};
 
-use crate::error::{Result, io_error, rejected};
+use noted::credentials::{CredentialStoreConfig, SecretStorage};
+use noted::error::{Result, io_error, rejected};
+use noted::types::{Source, Ttl};
 
 pub fn expand_home(path: &str) -> PathBuf {
     match path.strip_prefix("~/") {
@@ -28,10 +29,34 @@ pub fn resolve_root(dir: Option<&str>) -> Result<PathBuf> {
     Ok(expand_home(dir))
 }
 
-pub fn parse_ttl(s: &str) -> std::result::Result<crate::types::Ttl, String> {
+pub fn parse_ttl(s: &str) -> std::result::Result<Ttl, String> {
     humantime::parse_duration(s)
-        .map(|d| crate::types::Ttl::from_secs(d.as_secs()))
+        .map(|d| Ttl::from_secs(d.as_secs()))
         .map_err(|e| e.to_string())
+}
+
+/// The canonical `NOTED_SOURCE`: every command that records a source takes it
+/// from here rather than reading the process environment itself.
+pub fn env_source() -> Option<Source> {
+    Source::from_opt(std::env::var("NOTED_SOURCE").ok())
+}
+
+/// Where credentials live. An explicit `NOTED_HOSTS_FILE` also forces plaintext
+/// secret storage.
+pub fn credential_store_config() -> Result<CredentialStoreConfig> {
+    match std::env::var("NOTED_HOSTS_FILE") {
+        Ok(p) if !p.is_empty() => Ok(CredentialStoreConfig {
+            hosts_path: expand_home(&p),
+            storage: SecretStorage::Plaintext,
+        }),
+        _ => {
+            let dir = dirs::config_dir().ok_or_else(|| rejected("cannot determine config dir"))?;
+            Ok(CredentialStoreConfig {
+                hosts_path: dir.join("noted").join("hosts.yaml"),
+                storage: SecretStorage::Auto,
+            })
+        }
+    }
 }
 
 fn env_file_path() -> Option<PathBuf> {

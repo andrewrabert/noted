@@ -3,8 +3,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::expand_home;
-use crate::error::{Result, io_error, json_error, rejected, unavailable, yaml_error};
+use crate::error::{Result, io_error, json_error, unavailable, yaml_error};
 use crate::httpurl::HttpUrl;
 use crate::oauth::types::{AccessToken, ClientId, Macaroon, RefreshToken};
 use crate::types::UnixEpochSeconds;
@@ -112,35 +111,53 @@ impl SecretBackend for PlaintextFile {
     }
 }
 
+/// Where secrets may live. `Auto` picks the platform keyring when one is
+/// usable; `Plaintext` forces the file beside the hosts file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecretStorage {
+    Auto,
+    Plaintext,
+}
+
+/// The fully resolved location and storage policy of the credential store.
+/// Discovering it from the environment is the caller's job.
+#[derive(Clone, Debug)]
+pub struct CredentialStoreConfig {
+    pub hosts_path: PathBuf,
+    pub storage: SecretStorage,
+}
+
 pub struct CredentialStore {
     hosts_path: PathBuf,
     backend: Box<dyn SecretBackend>,
 }
 
 impl CredentialStore {
-    pub fn open() -> Result<CredentialStore> {
-        let hosts_path = hosts_file_path()?;
-        let forced_plaintext = std::env::var_os("NOTED_HOSTS_FILE").is_some();
-        let backend: Box<dyn SecretBackend> = if !forced_plaintext && keyring_available() {
+    pub fn open(config: CredentialStoreConfig) -> CredentialStore {
+        let CredentialStoreConfig {
+            hosts_path,
+            storage,
+        } = config;
+        let use_keyring = matches!(storage, SecretStorage::Auto) && keyring_available();
+        let backend: Box<dyn SecretBackend> = if use_keyring {
             Box::new(Keyring)
         } else {
             Box::new(PlaintextFile {
                 path: secrets_path(&hosts_path),
             })
         };
-        Ok(CredentialStore {
+        CredentialStore {
             hosts_path,
             backend,
-        })
+        }
     }
 
     #[cfg(feature = "test-util")]
     pub fn open_plaintext_at(hosts_path: PathBuf) -> CredentialStore {
-        let path = secrets_path(&hosts_path);
-        CredentialStore {
+        CredentialStore::open(CredentialStoreConfig {
             hosts_path,
-            backend: Box::new(PlaintextFile { path }),
-        }
+            storage: SecretStorage::Plaintext,
+        })
     }
 
     pub fn get(&self, url: &HttpUrl) -> Result<Option<Credential>> {
@@ -214,16 +231,6 @@ impl CredentialStore {
     fn save_hosts(&self, hosts: &BTreeMap<String, Pointer>) -> Result<()> {
         save_yaml(&self.hosts_path, hosts)
     }
-}
-
-fn hosts_file_path() -> Result<PathBuf> {
-    if let Ok(p) = std::env::var("NOTED_HOSTS_FILE")
-        && !p.is_empty()
-    {
-        return Ok(expand_home(&p));
-    }
-    let dir = dirs::config_dir().ok_or_else(|| rejected("cannot determine config dir"))?;
-    Ok(dir.join("noted").join("hosts.yaml"))
 }
 
 fn secrets_path(hosts_path: &std::path::Path) -> PathBuf {

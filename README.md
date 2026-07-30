@@ -46,6 +46,7 @@ environment wins. CLI flags override both.
 | `NOTED_DEFAULT_TTL`  | `--default-ttl`  | `30d`                 | Default lifetime for issued credentials.             |
 | `NOTED_LOG_LEVEL`    | `--log-level`    | `INFO`                | Tracing log level.                                   |
 | `NOTED_LOG_FILE`     | `--log-file`     | *(stderr)*            | Write logs to this file instead of stderr.           |
+| `NOTED_HOSTS_FILE`   | -                | `~/.config/noted/hosts.yaml` | Credential metadata path; setting it forces plaintext secret storage. |
 
 ## Auth
 

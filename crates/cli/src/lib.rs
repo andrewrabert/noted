@@ -3,24 +3,30 @@ use std::process::ExitCode;
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
 
-use crate::config::setup_logging;
-use crate::error::{Result, rejected, unavailable};
-use crate::mcp::CallScope;
-use crate::oauth::service::DEFAULT_CREDENTIAL_TTL_HUMAN;
-use crate::scope::RuleSpec;
-use crate::tools::{DeleteArgs, EditArgs, LogArgs, MoveArgs, ReadArgs, SearchArgs, WriteArgs};
+use noted::error::{Result, rejected, unavailable};
+use noted::mcp::CallScope;
+use noted::oauth::service::DEFAULT_CREDENTIAL_TTL_HUMAN;
+use noted::scope::RuleSpec;
+use noted::serve::{HttpConfig, StdioConfig};
+use noted::tools::{DeleteArgs, EditArgs, LogArgs, MoveArgs, ReadArgs, SearchArgs, WriteArgs};
+use noted::types::Ttl;
+
+use crate::config::{parse_ttl, resolve_root, setup_logging};
 
 mod admin;
 mod auth;
+mod config;
 mod dispatch;
 mod open;
+mod picker;
+mod text_editor;
 
 use admin::{KeyCmd, UserCmd};
 use auth::AuthCmd;
 use dispatch::TaskCmd;
 
 pub fn main() -> ExitCode {
-    crate::config::load_env_file();
+    config::load_env_file();
     let cli = Cli::parse();
     let _log_guard = match setup_logging(
         &cli.globals.log_level,
@@ -115,7 +121,7 @@ enum ServerSub {
 }
 
 #[derive(Args)]
-pub(crate) struct RuleFlags {
+struct RuleFlags {
     #[arg(long)]
     tools: Option<String>,
     #[arg(long)]
@@ -145,45 +151,88 @@ impl RuleFlags {
         }]))
     }
 
-    pub(crate) fn to_call_scope(&self) -> Result<CallScope> {
+    fn to_call_scope(&self) -> Result<CallScope> {
         match self.to_specs()? {
             None => Ok(CallScope::Unconfined),
-            Some(specs) => Ok(CallScope::Scoped(crate::scope::compile_rules(&specs)?)),
+            Some(specs) => Ok(CallScope::Scoped(noted::scope::compile_rules(&specs)?)),
         }
     }
 }
 
 #[derive(Args)]
-pub(crate) struct ServeCmd {
+struct ServeCmd {
     #[arg(long, env = "NOTED_HOST", default_value = "127.0.0.1")]
-    pub(crate) host: String,
+    host: String,
     #[arg(long, env = "NOTED_PORT", default_value_t = 8000)]
-    pub(crate) port: u16,
+    port: u16,
     #[arg(long = "public-url", env = "NOTED_PUBLIC_URL")]
-    pub(crate) public_url: Option<String>,
+    public_url: Option<String>,
     #[arg(long = "auth-db", env = "NOTED_AUTH_DB")]
-    pub(crate) auth_db: Option<PathBuf>,
+    auth_db: Option<PathBuf>,
+    #[cfg(unix)]
     #[arg(long = "admin-socket", env = "NOTED_ADMIN_SOCKET")]
-    pub(crate) admin_socket: Option<PathBuf>,
+    admin_socket: Option<PathBuf>,
     #[arg(
         long = "default-ttl",
         env = "NOTED_DEFAULT_TTL",
         default_value = DEFAULT_CREDENTIAL_TTL_HUMAN,
-        value_parser = crate::config::parse_ttl
+        value_parser = parse_ttl
     )]
-    pub(crate) default_ttl: crate::types::Ttl,
+    default_ttl: Ttl,
     #[command(flatten)]
-    pub(crate) scope: RuleFlags,
-    #[arg(short = 's', long, env = "NOTED_SOURCE")]
-    pub(crate) source: Option<String>,
+    scope: RuleFlags,
+    #[arg(short = 's', long)]
+    source: Option<String>,
+}
+
+impl ServeCmd {
+    /// The sole adapter from flags to core's server config. Validations whose
+    /// messages name CLI flags belong here, not in core.
+    fn into_config(self, dir: Option<&str>) -> Result<HttpConfig> {
+        #[cfg(unix)]
+        if self.admin_socket.is_some() && self.auth_db.is_none() {
+            return Err(rejected("--admin-socket requires --auth-db"));
+        }
+        if self.public_url.is_some() && self.auth_db.is_none() {
+            return Err(rejected("--public-url requires --auth-db"));
+        }
+        Ok(HttpConfig {
+            root: resolve_root(dir)?,
+            source: self
+                .source
+                .or_else(|| config::env_source().map(|s| s.as_str().to_string())),
+            host: self.host,
+            port: self.port,
+            public_url: self.public_url,
+            auth_db: self
+                .auth_db
+                .map(|p| config::expand_home(&p.to_string_lossy())),
+            #[cfg(unix)]
+            admin_socket: self.admin_socket,
+            default_ttl: self.default_ttl,
+            scope: self.scope.to_call_scope()?,
+        })
+    }
 }
 
 #[derive(Args)]
-pub(crate) struct McpCmd {
+struct McpCmd {
     #[command(flatten)]
-    pub(crate) scope: RuleFlags,
-    #[arg(short = 's', long, env = "NOTED_SOURCE")]
-    pub(crate) source: Option<String>,
+    scope: RuleFlags,
+    #[arg(short = 's', long)]
+    source: Option<String>,
+}
+
+impl McpCmd {
+    fn into_config(self, dir: Option<&str>) -> Result<StdioConfig> {
+        Ok(StdioConfig {
+            root: resolve_root(dir)?,
+            source: self
+                .source
+                .or_else(|| config::env_source().map(|s| s.as_str().to_string())),
+            scope: self.scope.to_call_scope()?,
+        })
+    }
 }
 
 fn run(cli: Cli) -> Result<ExitCode> {
@@ -214,7 +263,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Delete(c) => {
             dispatch::run_dispatch(&globals, dispatch::passthrough_of("DeleteNote", c))
         }
-        Command::Log(c) => dispatch::run_dispatch(&globals, dispatch::passthrough_of("LogNote", c)),
+        Command::Log(c) => dispatch::run_dispatch(
+            &globals,
+            dispatch::passthrough_of("LogNote", c.with_default_source(config::env_source())),
+        ),
         Command::Task(c) => dispatch::run_dispatch(&globals, dispatch::build_task(c)),
         Command::Auth(c) => auth::run_auth(c, &globals),
         Command::Server(c) => run_server(c, globals.dir),
@@ -223,8 +275,12 @@ fn run(cli: Cli) -> Result<ExitCode> {
 
 fn run_server(cmd: ServerCmd, dir: Option<String>) -> Result<ExitCode> {
     match cmd.sub {
-        ServerSub::Http(c) => crate::serve::serve(c, dir).map(|()| ExitCode::SUCCESS),
-        ServerSub::Mcp(c) => crate::serve::mcp_stdio(c, dir).map(|()| ExitCode::SUCCESS),
+        ServerSub::Http(c) => {
+            noted::serve::serve_http(c.into_config(dir.as_deref())?).map(|()| ExitCode::SUCCESS)
+        }
+        ServerSub::Mcp(c) => {
+            noted::serve::serve_stdio(c.into_config(dir.as_deref())?).map(|()| ExitCode::SUCCESS)
+        }
         ServerSub::User(c) => admin::run_user(c).map(|()| ExitCode::SUCCESS),
         ServerSub::Key(c) => admin::run_key(c).map(|()| ExitCode::SUCCESS),
     }

@@ -1,7 +1,5 @@
 pub mod authclient;
 pub mod backend;
-pub mod cli;
-pub mod config;
 pub mod credentials;
 pub mod error;
 pub mod front_matter;
@@ -13,13 +11,10 @@ pub mod note;
 pub mod notes;
 pub mod oauth;
 pub mod password;
-pub(crate) mod picker;
 pub mod scope;
 pub mod search;
 pub mod serve;
 pub mod tasks;
-#[allow(dead_code)]
-pub(crate) mod text_editor;
 pub mod tools;
 pub mod types;
 pub mod util;

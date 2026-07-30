@@ -1,0 +1,38 @@
+[package]
+name = "noted"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "noted_cli"
+
+[[bin]]
+name = "noted"
+path = "src/main.rs"
+
+[dependencies]
+noted-core = { workspace = true }
+noted-picker = { workspace = true }
+anstyle = "1"
+chrono = { workspace = true }
+clap = { workspace = true }
+crossterm = "0.29"
+dirs = "6"
+dotenvy = "0.15"
+humantime = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+shell-words = "1"
+tempfile = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+tracing = { workspace = true }
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+which = "8"

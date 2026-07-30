@@ -6,14 +6,14 @@ use crossterm::terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternate
 use crossterm::{cursor, event, execute, queue, terminal};
 use picker::{Action, Key, PickerState};
 
-use crate::error::{Result, io_error};
+use noted::error::{Result, io_error};
 
-pub(crate) enum Pick {
+pub enum Pick {
     Chosen(String),
     Aborted,
 }
 
-pub(crate) fn pick(items: Vec<String>) -> Result<Pick> {
+pub fn pick(items: Vec<String>) -> Result<Pick> {
     let mut state = PickerState::new(items);
     let mut screen = RawScreen::enter()?;
     loop {

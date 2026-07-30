@@ -5,19 +5,20 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::authclient::Session;
-use crate::backend::{Backend, ToolCall};
-use crate::config::{block_on, resolve_root};
-use crate::error::Result;
-use crate::httpurl::HttpUrl;
-use crate::notes::Notes;
-use crate::tasks::{TaskState, Tasks};
-use crate::tools::{CreateTaskArgs, GetTasksArgs, MoveTaskArgs, ToolOutput, UpdateTaskArgs};
+use noted::authclient::Session;
+use noted::backend::{Backend, ToolCall};
+use noted::credentials::CredentialStore;
+use noted::error::Result;
+use noted::httpurl::HttpUrl;
+use noted::notes::Notes;
+use noted::tasks::{TaskState, Tasks};
+use noted::tools::{CreateTaskArgs, GetTasksArgs, MoveTaskArgs, ToolOutput, UpdateTaskArgs};
 
-use super::GlobalArgs;
+use crate::GlobalArgs;
+use crate::config::{block_on, credential_store_config, resolve_root};
 
 #[derive(Args)]
-pub(super) struct TaskCmd {
+pub(crate) struct TaskCmd {
     #[command(subcommand)]
     sub: TaskSub,
 }
@@ -40,7 +41,7 @@ struct TaskGetCmd {
     json: bool,
 }
 
-pub(super) struct Dispatch {
+pub(crate) struct Dispatch {
     call: ToolCall,
     render: Render,
     empty_is_failure: bool,
@@ -51,14 +52,14 @@ enum Render {
     Tasks { as_json: bool },
 }
 
-pub(super) fn call_of(name: &str, args: impl Serialize) -> ToolCall {
+pub(crate) fn call_of(name: &str, args: impl Serialize) -> ToolCall {
     ToolCall {
         name: name.to_string(),
         args: serde_json::to_value(args).expect("cli args serialize to json"),
     }
 }
 
-pub(super) fn passthrough_of(name: &str, args: impl Serialize) -> Dispatch {
+pub(crate) fn passthrough_of(name: &str, args: impl Serialize) -> Dispatch {
     Dispatch {
         call: call_of(name, args),
         render: Render::Passthrough,
@@ -66,13 +67,13 @@ pub(super) fn passthrough_of(name: &str, args: impl Serialize) -> Dispatch {
     }
 }
 
-pub(super) fn search(args: impl Serialize) -> Dispatch {
+pub(crate) fn search(args: impl Serialize) -> Dispatch {
     let mut d = passthrough_of("SearchNotes", args);
     d.empty_is_failure = true;
     d
 }
 
-pub(super) fn build_task(cmd: TaskCmd) -> Dispatch {
+pub(crate) fn build_task(cmd: TaskCmd) -> Dispatch {
     match cmd.sub {
         TaskSub::Create(c) => passthrough_of("CreateTask", c),
         TaskSub::Get(c) => Dispatch {
@@ -88,7 +89,7 @@ pub(super) fn build_task(cmd: TaskCmd) -> Dispatch {
     }
 }
 
-pub(super) fn run_dispatch(globals: &GlobalArgs, dispatch: Dispatch) -> Result<ExitCode> {
+pub(crate) fn run_dispatch(globals: &GlobalArgs, dispatch: Dispatch) -> Result<ExitCode> {
     use std::io::IsTerminal;
     let backend = build_backend(globals)?;
     tracing::debug!(tool = %dispatch.call.name, "dispatching");
@@ -102,9 +103,10 @@ pub(super) fn run_dispatch(globals: &GlobalArgs, dispatch: Dispatch) -> Result<E
     Ok(ExitCode::SUCCESS)
 }
 
-pub(super) fn build_backend(globals: &GlobalArgs) -> Result<Backend> {
+pub(crate) fn build_backend(globals: &GlobalArgs) -> Result<Backend> {
     if let Some(url) = remote_url(globals)? {
-        let session = Session::open(&url, globals.token.as_deref())?;
+        let store = CredentialStore::open(credential_store_config()?);
+        let session = Session::open(&url, globals.token.as_deref(), store);
         let token = block_on(session.bearer())?;
         return Ok(Backend::http(&url, token));
     }
@@ -114,7 +116,7 @@ pub(super) fn build_backend(globals: &GlobalArgs) -> Result<Backend> {
     Ok(Backend::filesystem(notes, tasks))
 }
 
-pub(super) fn remote_url(globals: &GlobalArgs) -> Result<Option<HttpUrl>> {
+pub(crate) fn remote_url(globals: &GlobalArgs) -> Result<Option<HttpUrl>> {
     match globals.url.as_deref().filter(|s| !s.is_empty()) {
         None => Ok(None),
         Some(s) => Ok(Some(s.parse()?)),

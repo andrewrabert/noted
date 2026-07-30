@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+#[cfg(unix)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::error::{Result, rejected, unavailable};
@@ -185,27 +187,40 @@ pub fn apply(svc: &AuthService, req: AdminRequest) -> AdminResponse {
     AdminResponse::from_result(result)
 }
 
-pub fn bind_socket(path: &Path) -> Result<UnixListener> {
-    if path.exists() {
-        std::fs::remove_file(path)
-            .map_err(|e| rejected(format!("admin socket: cannot replace {e}")))?;
-    }
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent).map_err(|e| rejected(format!("admin socket: {e}")))?;
-    }
+#[cfg(unix)]
+pub async fn bind_socket(path: &Path) -> Result<UnixListener> {
+    let path = path.to_path_buf();
     let listener =
-        UnixListener::bind(path).map_err(|e| rejected(format!("admin socket: bind: {e}")))?;
-    let mode = {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::Permissions::from_mode(0o600)
-    };
-    std::fs::set_permissions(path, mode)
-        .map_err(|e| unavailable(format!("admin socket: chmod: {e}")))?;
-    Ok(listener)
+        tokio::task::spawn_blocking(move || -> Result<std::os::unix::net::UnixListener> {
+            if path.exists() {
+                std::fs::remove_file(&path)
+                    .map_err(|e| rejected(format!("admin socket: cannot replace {e}")))?;
+            }
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| rejected(format!("admin socket: {e}")))?;
+            }
+            let listener = std::os::unix::net::UnixListener::bind(&path)
+                .map_err(|e| rejected(format!("admin socket: bind: {e}")))?;
+            let mode = {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::Permissions::from_mode(0o600)
+            };
+            std::fs::set_permissions(&path, mode)
+                .map_err(|e| unavailable(format!("admin socket: chmod: {e}")))?;
+            listener
+                .set_nonblocking(true)
+                .map_err(|e| unavailable(format!("admin socket: nonblocking: {e}")))?;
+            Ok(listener)
+        })
+        .await
+        .map_err(|e| unavailable(format!("admin socket: bind task failed: {e}")))??;
+    UnixListener::from_std(listener).map_err(|e| unavailable(format!("admin socket: {e}")))
 }
 
+#[cfg(unix)]
 pub async fn serve_socket(listener: UnixListener, svc: Arc<AuthService>) {
     loop {
         let Ok((stream, _)) = listener.accept().await else {
@@ -220,6 +235,7 @@ pub async fn serve_socket(listener: UnixListener, svc: Arc<AuthService>) {
     }
 }
 
+#[cfg(unix)]
 async fn serve_conn(stream: UnixStream, svc: Arc<AuthService>) -> std::io::Result<()> {
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
@@ -251,6 +267,7 @@ async fn serve_conn(stream: UnixStream, svc: Arc<AuthService>) -> std::io::Resul
     Ok(())
 }
 
+#[cfg(unix)]
 async fn write_line(
     write: &mut tokio::net::unix::OwnedWriteHalf,
     resp: &AdminResponse,
@@ -262,10 +279,12 @@ async fn write_line(
     write.write_all(&buf).await
 }
 
+#[cfg(unix)]
 pub struct AdminClient {
     stream: BufReader<UnixStream>,
 }
 
+#[cfg(unix)]
 impl AdminClient {
     pub async fn connect(path: &Path) -> Result<AdminClient> {
         let stream = UnixStream::connect(path)
@@ -301,12 +320,17 @@ impl AdminClient {
 }
 
 pub enum AdminConn {
-    Direct(AuthService),
+    Direct(Arc<AuthService>),
+    #[cfg(unix)]
     Socket(AdminClient),
 }
 
 impl AdminConn {
+    /// Connect to a running server's admin socket where available, else open
+    /// the auth database directly. Callers must supply at least one of the two;
+    /// naming the flags that carry them is the CLI's job, not core's.
     pub async fn open(admin_socket: Option<&Path>, auth_db: Option<&Path>) -> Result<AdminConn> {
+        #[cfg(unix)]
         if let Some(path) = admin_socket {
             match AdminClient::connect(path).await {
                 Ok(client) => return Ok(AdminConn::Socket(client)),
@@ -317,25 +341,36 @@ impl AdminConn {
                 }
             }
         }
+        #[cfg(not(unix))]
+        let _ = admin_socket;
         let Some(db_path) = auth_db else {
-            return Err(rejected(
-                "--admin-socket or --auth-db (NOTED_ADMIN_SOCKET / NOTED_AUTH_DB) is required",
-            ));
+            return Err(rejected("an admin socket or an auth database is required"));
         };
-        let db = Db::open(db_path).map_err(|e| {
-            rejected(format!(
-                "{e} (if the server is running, use --admin-socket)"
-            ))
-        })?;
-        Ok(AdminConn::Direct(AuthService::new(
+        let db_path = db_path.to_path_buf();
+        let db = tokio::task::spawn_blocking(move || Db::open(&db_path))
+            .await
+            .map_err(|e| unavailable(format!("admin: open task failed: {e}")))?
+            .map_err(|e| {
+                rejected(format!(
+                    "{e} (if the server is running, connect to its admin socket)"
+                ))
+            })?;
+        Ok(AdminConn::Direct(Arc::new(AuthService::new(
             Arc::new(db),
             DEFAULT_CREDENTIAL_TTL,
-        )))
+        ))))
     }
 
     pub async fn call(&mut self, req: AdminRequest) -> Result<Value> {
         match self {
-            AdminConn::Direct(svc) => apply(svc, req).into_result(),
+            AdminConn::Direct(svc) => {
+                let svc = svc.clone();
+                tokio::task::spawn_blocking(move || apply(&svc, req))
+                    .await
+                    .map_err(|e| unavailable(format!("admin task failed: {e}")))?
+                    .into_result()
+            }
+            #[cfg(unix)]
             AdminConn::Socket(client) => client.call(&req).await,
         }
     }

@@ -18,27 +18,27 @@
 - Flag a new or changed `NOTED_*` variable missing from the `README.md` config table.
 - Flag a renamed or removed field in a tool's arg schema. Added fields are fine.
 - Flag a changed default in a tool's arg schema.
-- Flag changed behavior with no test, where `tests/` can cover it.
+- Flag changed behavior with no test, where a crate's `tests/` can cover it.
 
 ## Style guidelines
 
 - Avoid violating clippy under `-D warnings`.
-- `Result<T, NotedError>` → `crate::error::Result<T>`.
-- `NotedError::Variant(m)` → the matching constructor in `error.rs`.
-- A bare `String` holding a domain value → its newtype from `newtype.rs`.
+- `Result<T, NotedError>` → `crate::error::Result<T>` (`noted::error::Result<T>` in `crates/cli`).
+- `NotedError::Variant(m)` → the matching constructor in `crates/core/src/error.rs`.
+- A bare `String` holding a domain value → its newtype from `crates/core/src/newtype.rs`.
 - Tool names are PascalCase.
 - The args struct for tool `Foo` is `FooArgs`.
-- A new test file is `tests/rust_<area>.rs`.
-- A new test helper goes in `tests/common/mod.rs`.
+- A new test file is `tests/rust_<area>.rs`; CLI tests live in `crates/cli/tests/`.
+- A new test helper goes in that crate's `tests/common/mod.rs`.
 
 ## Core code guidelines
 - Constraint: All I/O must be non-blocking
 - Constraint: All files are atomically written
 
 - Non-negotiable:
-  - A new tool is one `<Verb>Args` struct in `tools.rs` plus one `run_tool` arm.
+  - A new tool is one `<Verb>Args` struct in `crates/core/src/tools.rs` plus one `run_tool` arm.
   - Do not add a clap subcommand, an rmcp entry, or an axum route for a tool.
-  - `std::fs::` in `notes.rs` or `tasks.rs` → a path from `get_path()`.
+  - `std::fs::` in `crates/core/src/notes.rs` or `tasks.rs` → a path from `get_path()`.
   - No `TokenScope` or scope check inside a `run_tool` arm.
 
 - Avoid, unless absolutely necessary:
