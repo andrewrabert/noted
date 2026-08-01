@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use noted::credentials::{CredentialStoreConfig, SecretStorage};
 use noted::error::{Result, io_error, rejected};
-use noted::types::{Source, Ttl};
+use noted::types::Ttl;
 
 pub fn expand_home(path: &str) -> PathBuf {
     match path.strip_prefix("~/") {
@@ -33,12 +33,6 @@ pub fn parse_ttl(s: &str) -> std::result::Result<Ttl, String> {
     humantime::parse_duration(s)
         .map(|d| Ttl::from_secs(d.as_secs()))
         .map_err(|e| e.to_string())
-}
-
-/// The canonical `NOTED_SOURCE`: every command that records a source takes it
-/// from here rather than reading the process environment itself.
-pub fn env_source() -> Option<Source> {
-    Source::from_opt(std::env::var("NOTED_SOURCE").ok())
 }
 
 /// Where credentials live. An explicit `NOTED_HOSTS_FILE` also forces plaintext

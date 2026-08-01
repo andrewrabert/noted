@@ -6,6 +6,15 @@ use noted::scope::{RuleSpec, StoredScope};
 
 const DEFAULT_TTL: noted::types::Ttl = noted::types::Ttl::from_secs(30 * 24 * 3600);
 
+fn within(paths: &[&str]) -> noted::caller::Policy {
+    noted::caller::Policy::within(
+        paths
+            .iter()
+            .map(|p| noted::path::RelPath::new(*p).unwrap())
+            .collect(),
+    )
+}
+
 fn service_at(dir: &std::path::Path) -> Arc<AuthService> {
     let db = Arc::new(Db::open(&dir.join("auth.redb")).unwrap());
     Arc::new(AuthService::new(db, DEFAULT_TTL))
@@ -41,7 +50,7 @@ fn new_user_is_unrestricted() {
     svc.user_add(&un("alice"), &pw("pw")).unwrap();
     let scope = svc.resolve_scope("user:alice").unwrap().unwrap();
     assert!(scope.allows("WriteNote"));
-    assert_eq!(scope.folders_for("WriteNote"), None);
+    assert_eq!(scope.policy_for("WriteNote"), noted::caller::Policy::any());
 }
 
 #[test]
@@ -56,10 +65,7 @@ fn grants_narrow_and_never_fail_open() {
     .unwrap();
     let scope = svc.resolve_scope("user:alice").unwrap().unwrap();
     assert!(scope.allows("ReadNote") && !scope.allows("WriteNote"));
-    assert_eq!(
-        scope.folders_for("ReadNote"),
-        Some(vec!["projects".to_string()])
-    );
+    assert_eq!(scope.policy_for("ReadNote"), within(&["projects"]));
 
     svc.user_ungrant(&un("alice"), 1).unwrap();
     let scope = svc.resolve_scope("user:alice").unwrap().unwrap();
@@ -146,16 +152,10 @@ fn key_scope_rides_the_record() {
     let (_, scope) = svc.resolve_bearer(minted.token.expose()).unwrap().unwrap();
     assert!(scope.allows("CreateTask") && scope.allows("ReadNote"));
     assert!(!scope.allows("WriteNote"));
+    assert_eq!(scope.policy_for("CreateTask"), within(&["Tasks/myapp"]));
     assert_eq!(
-        scope.folders_for("CreateTask"),
-        Some(vec!["Tasks/myapp".to_string()])
-    );
-    assert_eq!(
-        scope.folders_for("ReadNote"),
-        Some(vec![
-            "dev/myapp-desktop".to_string(),
-            "dev/myapp-web".to_string()
-        ])
+        scope.policy_for("ReadNote"),
+        within(&["dev/myapp-desktop", "dev/myapp-web"])
     );
     assert!(
         svc.key_create(

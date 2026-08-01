@@ -7,8 +7,9 @@ use tempfile::TempDir;
 
 use noted::backend::Backend;
 use noted::error::{NotedError, Result, io_error, rejected};
-use noted::note::{RelPath, TextNote};
-use noted::tools::{ReadArgs, ToolOutput, WriteArgs, WriteWhen};
+use noted::note::{Condition, TextNote};
+use noted::path::RelPath;
+use noted::tools::{ReadArgs, ToolOutput, WriteArgs};
 
 use crate::GlobalArgs;
 use crate::config::block_on;
@@ -112,7 +113,10 @@ fn edit_note(backend: &Backend, path: RelPath, force: bool) -> Result<ExitCode> 
         Err(NotedError::NotFound(_)) => None,
         Err(e) => return Err(e),
     };
-    let initial = original.as_ref().map(TextNote::content).unwrap_or_default();
+    let initial = original
+        .as_ref()
+        .map(|note| note.body().as_str())
+        .unwrap_or_default();
 
     let basename = path.rsplit('/').next().unwrap_or(path.as_str());
     let mut buffer = EditBuffer::create(basename, initial)?;
@@ -128,7 +132,7 @@ fn edit_note(backend: &Backend, path: RelPath, force: bool) -> Result<ExitCode> 
     }
 
     let edited = match &original {
-        Some(original) => original.clone().with_content(edited),
+        Some(original) => original.clone().with_body(edited),
         None => TextNote::new(path.clone(), edited),
     };
 
@@ -137,8 +141,8 @@ fn edit_note(backend: &Backend, path: RelPath, force: bool) -> Result<ExitCode> 
         None
     } else {
         Some(match &original {
-            None => WriteWhen::Missing,
-            Some(original) => WriteWhen::ExistsMatching(original.etag()),
+            None => Condition::Missing,
+            Some(original) => Condition::Matching(original.etag()),
         })
     };
 
@@ -179,9 +183,9 @@ async fn read_note(backend: &Backend, path: &RelPath) -> Result<TextNote> {
 async fn write_note(
     backend: &Backend,
     note: &TextNote,
-    when: Option<WriteWhen>,
+    when: Option<Condition>,
 ) -> Result<ToolOutput> {
-    let mut args = WriteArgs::new(note.path().clone(), note.content().to_string());
+    let mut args = WriteArgs::new(note.path().clone(), note.body().clone());
     if let Some(when) = when {
         args = args.when(when);
     }

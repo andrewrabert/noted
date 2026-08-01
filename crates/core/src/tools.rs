@@ -1,19 +1,16 @@
-use std::collections::BTreeSet;
-use std::fmt;
-use std::str::FromStr;
-
-use clap::{Args, ValueEnum};
+use clap::Args;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::error::{NotedError, Result, rejected, unavailable};
-use crate::note::{Etag, RelPath, TextNote};
-use crate::notes::Notes;
+use crate::error::{Result, rejected, unavailable};
+use crate::note::{Condition, Edit, TextNote};
+use crate::path::RelPath;
+use crate::root::NotedRoot;
 use crate::scope::TokenScope;
-use crate::search::{CaseMode, MatchOpts, WalkOpts};
-use crate::tasks::{GroupPath, TaskState, TaskTitle, Tasks};
-use crate::types::{LogBody, Source};
+use crate::search::{CaseMode, FileType, GlobPattern, SearchMode, SearchPattern, SearchQuery};
+use crate::tasks::{GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskState, TaskTitle};
+use crate::types::{LogBody, NoteBody, TaskBody};
 use crate::util::slice_lines;
 
 pub struct ToolDef {
@@ -132,8 +129,6 @@ const TOOLS: &[ToolSpec] = &[
     },
 ];
 
-pub const CLI_ONLY_FIELDS: [&str; 1] = ["source"];
-
 pub fn is_tool(name: &str) -> bool {
     TOOLS.iter().any(|t| t.name == name)
 }
@@ -158,31 +153,21 @@ const D_GET_TASKS: &str = "Check this BEFORE starting new work to recover existi
 const D_UPDATE_TASK: &str = "Change an existing task, identified by its Tasks-relative path (e.g. 'dev/noted/task_0001'). Set 'state' to advance it, 'notes' to replace the working body, and/or 'task' to reword the one-liner; omitted fields are left as-is. Returns the updated summary. States: created (not started), started (in progress), blocked (stuck), completed (work finished), rejected (declined/refused), invalid (ill-posed/moot); blocked/completed/rejected/invalid require a non-empty body explaining why. created_at is immutable; updated_at is stamped for you.";
 const D_MOVE_TASK: &str = "Change a task's group. Re-homes the task (identified by its current Tasks-relative path) into another group under Tasks/; a numbered task is given a fresh 'task_NNNN' in the destination (so its path changes), a custom-named task keeps its name. 'group' is the destination subdirectory (nested, auto-created); '' moves it to the top of Tasks/. updated_at is re-stamped. Returns the summary at its new path.";
 
-fn default_pattern() -> String {
-    ".".to_string()
+fn default_pattern() -> SearchPattern {
+    SearchPattern::everything()
 }
 fn default_context() -> i64 {
     1
-}
-
-#[derive(Serialize, Deserialize, JsonSchema, ValueEnum, Default, Clone, Copy)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum Mode {
-    #[default]
-    Any,
-    Line,
-    File,
-    Path,
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct SearchArgs {
     #[arg(default_value = ".")]
     #[serde(default = "default_pattern")]
-    pattern: String,
+    pattern: SearchPattern,
     #[arg(long, default_value = "any")]
     #[serde(default)]
-    mode: Mode,
+    mode: SearchMode,
     #[arg(long, default_value_t = 1)]
     #[serde(default = "default_context")]
     context: i64,
@@ -191,7 +176,7 @@ pub struct SearchArgs {
     fixed: bool,
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    glob: Vec<String>,
+    glob: Vec<GlobPattern>,
     #[arg(long, default_value = "smart")]
     #[serde(default)]
     #[schemars(skip)]
@@ -207,7 +192,7 @@ pub struct SearchArgs {
     #[arg(long = "type")]
     #[serde(rename = "type", default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(skip)]
-    type_: Vec<String>,
+    type_: Vec<FileType>,
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
@@ -234,60 +219,25 @@ impl ReadArgs {
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct WriteArgs {
     path: RelPath,
-    content: String,
+    content: NoteBody,
     #[arg(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(skip)]
-    when: Option<String>,
+    when: Option<Condition>,
 }
 
 impl WriteArgs {
-    pub fn new(path: RelPath, content: String) -> WriteArgs {
+    pub fn new(path: RelPath, content: impl Into<NoteBody>) -> WriteArgs {
         WriteArgs {
             path,
-            content,
+            content: content.into(),
             when: None,
         }
     }
 
-    pub fn when(mut self, when: WriteWhen) -> WriteArgs {
-        self.when = Some(when.to_string());
+    pub fn when(mut self, when: Condition) -> WriteArgs {
+        self.when = Some(when);
         self
-    }
-}
-
-#[derive(Default)]
-pub enum WriteWhen {
-    #[default]
-    Always,
-    Missing,
-    Exists,
-    ExistsMatching(Etag),
-}
-
-impl fmt::Display for WriteWhen {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            WriteWhen::Always => f.write_str("always"),
-            WriteWhen::Missing => f.write_str("missing"),
-            WriteWhen::Exists => f.write_str("exists"),
-            WriteWhen::ExistsMatching(token) => write!(f, "exists:{token}"),
-        }
-    }
-}
-
-impl FromStr for WriteWhen {
-    type Err = NotedError;
-    fn from_str(s: &str) -> Result<WriteWhen> {
-        match s.split_once(':') {
-            Some(("exists", token)) => Ok(WriteWhen::ExistsMatching(token.parse()?)),
-            None | Some(_) => match s {
-                "always" => Ok(WriteWhen::Always),
-                "missing" => Ok(WriteWhen::Missing),
-                "exists" => Ok(WriteWhen::Exists),
-                other => Err(rejected(format!("unknown write condition: '{other}'"))),
-            },
-        }
     }
 }
 
@@ -318,18 +268,6 @@ pub struct DeleteArgs {
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct LogArgs {
     body: LogBody,
-    #[arg(short = 's', long)]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(skip)]
-    source: Option<Source>,
-}
-
-impl LogArgs {
-    /// Fill `source` only when the caller gave none explicitly.
-    pub fn with_default_source(mut self, source: Option<Source>) -> LogArgs {
-        self.source = self.source.or(source);
-        self
-    }
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
@@ -340,14 +278,14 @@ pub struct CreateTaskArgs {
     group: GroupPath,
     #[arg(long, default_value = "")]
     #[serde(default)]
-    notes: String,
+    notes: TaskBody,
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct GetTasksArgs {
     #[arg(default_value = "")]
     #[serde(default)]
-    prefix: String,
+    prefix: TaskRef,
     #[arg(long)]
     #[serde(default)]
     body: bool,
@@ -358,13 +296,13 @@ pub struct GetTasksArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct UpdateTaskArgs {
-    path: RelPath,
+    path: TaskRef,
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     state: Option<TaskState>,
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    notes: Option<String>,
+    notes: Option<TaskBody>,
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     task: Option<TaskTitle>,
@@ -372,7 +310,7 @@ pub struct UpdateTaskArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct MoveTaskArgs {
-    path: RelPath,
+    path: TaskRef,
     #[arg(default_value = "")]
     #[serde(default)]
     group: GroupPath,
@@ -408,62 +346,51 @@ fn parse<T: serde::de::DeserializeOwned>(args: &Value) -> Result<T> {
     serde_json::from_value(args.clone()).map_err(|e| rejected(e.to_string()))
 }
 
-pub async fn run_tool(
-    name: &str,
-    args: &Value,
-    notes: &Notes,
-    tasks: &Tasks,
-) -> Result<ToolOutput> {
+pub async fn run_tool(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOutput> {
     if !TOOLS.iter().any(|t| t.name == name) {
         return Err(rejected(format!("Unknown tool: {name}")));
     }
     if name == "SearchNotes" {
-        return run_search(parse(args)?, notes).await;
+        return run_search(parse(args)?, root).await;
     }
     let name = name.to_string();
     let args = args.clone();
-    let notes = notes.clone();
-    let tasks = tasks.clone();
-    tokio::task::spawn_blocking(move || run_tool_sync(&name, &args, &notes, &tasks))
+    let root = root.clone();
+    tokio::task::spawn_blocking(move || run_tool_sync(&name, &args, &root))
         .await
         .map_err(|e| unavailable(format!("tool task failed: {e}")))?
 }
 
-fn run_tool_sync(name: &str, args: &Value, notes: &Notes, tasks: &Tasks) -> Result<ToolOutput> {
+fn run_tool_sync(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOutput> {
     match name {
         "ReadNote" => {
             let a: ReadArgs = parse(args)?;
-            let note = notes.get(&a.path)?;
+            let note = root.note_read(&a.path)?;
             Ok(ToolOutput::Text(slice_lines(
-                note.content(),
+                note.body().as_str(),
                 a.offset,
                 a.limit,
             )))
         }
         "WriteNote" => {
             let a: WriteArgs = parse(args)?;
-            let when = a
-                .when
-                .as_deref()
-                .map(str::parse)
-                .transpose()?
-                .unwrap_or_default();
-            let path = a.path.clone();
             let note = TextNote::new(a.path, a.content);
-            match when {
-                WriteWhen::Always => notes.put(&note)?,
-                WriteWhen::Missing => notes.create(&note)?,
-                WriteWhen::Exists => notes.replace(&note)?,
-                WriteWhen::ExistsMatching(token) => notes.replace_matching(&note, token)?,
-            }
+            root.note_write(&note, a.when.unwrap_or_default())?;
             Ok(ToolOutput::Written {
-                path: path.to_string(),
+                path: note.path().to_string(),
             })
         }
-        "EditNote" => run_edit(parse(args)?, notes),
+        "EditNote" => {
+            let a: EditArgs = parse(args)?;
+            let edit = Edit::new(a.old_string, a.new_string, a.replace_all);
+            root.note_edit(&a.path, &edit)?;
+            Ok(ToolOutput::Edited {
+                path: a.path.to_string(),
+            })
+        }
         "MoveNote" => {
             let a: MoveArgs = parse(args)?;
-            notes.move_note(&a.path, &a.dest, a.overwrite)?;
+            root.note_move(&a.path, &a.dest, a.overwrite)?;
             Ok(ToolOutput::Moved {
                 from: a.path.to_string(),
                 to: a.dest.to_string(),
@@ -471,136 +398,102 @@ fn run_tool_sync(name: &str, args: &Value, notes: &Notes, tasks: &Tasks) -> Resu
         }
         "DeleteNote" => {
             let a: DeleteArgs = parse(args)?;
-            notes.delete(&a.path)?;
+            root.note_delete(&a.path)?;
             Ok(ToolOutput::Deleted {
                 path: a.path.to_string(),
             })
         }
         "LogNote" => {
             let a: LogArgs = parse(args)?;
-            let note = notes.create_log(a.body.as_str(), a.source.as_ref())?;
+            let note = root.log_note(&a.body)?;
             Ok(ToolOutput::Logged {
                 path: note.path().to_string(),
             })
         }
         "CreateTask" => {
             let a: CreateTaskArgs = parse(args)?;
-            Ok(ToolOutput::Record(
-                tasks.create(&a.task, &a.group, &a.notes)?,
-            ))
+            let task = root.task_create(&a.task, &a.group, &a.notes)?;
+            Ok(ToolOutput::Record(summary(&task, false)))
         }
         "GetTasks" => {
             let a: GetTasksArgs = parse(args)?;
-            Ok(ToolOutput::Record(tasks.query(
-                &a.prefix,
-                a.body,
-                a.include_completed,
-            )?))
+            let query = TaskQuery {
+                prefix: a.prefix,
+                include_completed: a.include_completed,
+            };
+            let records: Vec<Value> = root
+                .task_get(&query)?
+                .iter()
+                .map(|task| summary(task, a.body))
+                .collect();
+            Ok(ToolOutput::Record(Value::Array(records)))
         }
         "UpdateTask" => {
             let a: UpdateTaskArgs = parse(args)?;
-            Ok(ToolOutput::Record(tasks.update(
-                &a.path,
-                a.state,
-                a.notes.as_deref(),
-                a.task.as_ref(),
-            )?))
+            let change = TaskChange {
+                state: a.state,
+                notes: a.notes,
+                task: a.task,
+            };
+            let task = root.task_update(&a.path, &change)?;
+            Ok(ToolOutput::Record(summary(&task, false)))
         }
         "MoveTask" => {
             let a: MoveTaskArgs = parse(args)?;
-            Ok(ToolOutput::Record(tasks.move_task(&a.path, &a.group)?))
+            let task = root.task_move(&a.path, &a.group)?;
+            Ok(ToolOutput::Record(summary(&task, false)))
         }
         _ => Err(rejected(format!("Unknown tool: {name}"))),
     }
 }
 
-fn run_edit(a: EditArgs, notes: &Notes) -> Result<ToolOutput> {
-    let original = notes.get(&a.path)?;
-    let count = original.content().matches(&a.old_string).count();
-    if count == 0 {
-        return Err(rejected("old string not found"));
+fn summary(task: &TaskNote, body: bool) -> Value {
+    let front = task.front();
+    let mut record = json!({
+        "path": task.path(),
+        "task": front.task,
+        "state": front.state,
+        "created_at": front.created_at,
+        "updated_at": front.updated_at,
+    });
+    if body {
+        record["body"] = json!(task.body());
     }
-    if count > 1 && !a.replace_all {
-        return Err(rejected(format!(
-            "old string not unique ({count} matches); pass replace_all"
-        )));
-    }
-    let replacement = original
-        .clone()
-        .with_content(original.content().replace(&a.old_string, &a.new_string));
-    notes.replace_if_unchanged(&original, &replacement)?;
-    Ok(ToolOutput::Edited {
-        path: a.path.to_string(),
-    })
+    record
 }
 
-fn join_paths(paths: BTreeSet<RelPath>) -> String {
-    paths
-        .into_iter()
-        .map(String::from)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-async fn run_search(a: SearchArgs, notes: &Notes) -> Result<ToolOutput> {
-    let SearchArgs {
-        pattern,
+async fn run_search(a: SearchArgs, root: &NotedRoot) -> Result<ToolOutput> {
+    let mode = a.mode;
+    let query = SearchQuery {
+        pattern: a.pattern,
         mode,
-        context,
-        fixed,
-        glob,
-        case,
-        word,
-        multiline,
-        type_,
-    } = a;
-    let match_opts = MatchOpts {
-        fixed_strings: fixed,
-        case,
-        word,
-        multiline,
+        context: a.context.max(0) as u32,
+        fixed: a.fixed,
+        case: a.case,
+        word: a.word,
+        multiline: a.multiline,
+        globs: a.glob,
+        types: a.type_,
     };
-    let walk_opts = WalkOpts {
-        globs: glob,
-        types: type_,
-    };
+    let hits = root.search(&query).await?;
 
-    if matches!(mode, Mode::Line) {
-        use std::fmt::Write;
-        let mut hits = notes
-            .grep(&pattern, context, &match_opts, &walk_opts)
-            .await?;
-        hits.sort_by(|a, b| a.rel().cmp(b.rel()));
-        let mut out = String::new();
-        for (i, hit) in hits.iter().enumerate() {
-            if i > 0 {
-                out.push_str("\n--\n");
-            }
-            for (j, (num, text)) in hit.lines().enumerate() {
-                if j > 0 {
-                    out.push('\n');
-                }
-                let _ = write!(out, "{}:{num}:{text}", hit.rel());
-            }
+    if !matches!(mode, SearchMode::Line) {
+        let paths: Vec<&str> = hits.iter().map(|hit| hit.path.as_str()).collect();
+        return Ok(ToolOutput::Text(paths.join("\n")));
+    }
+
+    use std::fmt::Write;
+    let mut out = String::new();
+    for (i, hit) in hits.iter().enumerate() {
+        if i > 0 {
+            out.push_str("\n--\n");
         }
-        return Ok(ToolOutput::Text(out));
-    }
-
-    if matches!(mode, Mode::File) {
-        let hits = notes.grep(&pattern, 0, &match_opts, &walk_opts).await?;
-        let rels: BTreeSet<RelPath> = hits.into_iter().map(|h| h.into_rel()).collect();
-        return Ok(ToolOutput::Text(join_paths(rels)));
-    }
-
-    let mut paths: BTreeSet<RelPath> = notes
-        .match_path(&pattern, &match_opts, &walk_opts)
-        .await?
-        .into_iter()
-        .collect();
-    if matches!(mode, Mode::Any) {
-        for hit in notes.grep(&pattern, 0, &match_opts, &walk_opts).await? {
-            paths.insert(hit.into_rel());
+        for (j, (num, text)) in hit.lines().enumerate() {
+            if j > 0 {
+                out.push('\n');
+            }
+            let _ = write!(out, "{}:{num}:{text}", hit.path);
         }
     }
-    Ok(ToolOutput::Text(join_paths(paths)))
+    Ok(ToolOutput::Text(out))
 }

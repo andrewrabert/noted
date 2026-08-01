@@ -1,103 +1,18 @@
 use std::fmt;
 use std::str::FromStr;
 
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::{NotedError, Result, rejected};
+use crate::front_matter::dump_front;
+use crate::path::RelPath;
+use crate::types::{NoteBody, Source, Timestamp};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(transparent)]
-#[schemars(transparent)]
-pub struct RelPath(String);
-
-impl RelPath {
-    pub fn new(s: impl Into<String>) -> RelPath {
-        RelPath(s.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl FromStr for RelPath {
-    type Err = NotedError;
-    fn from_str(s: &str) -> Result<RelPath> {
-        Ok(RelPath::new(s))
-    }
-}
-
-impl Ord for RelPath {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0
-            .to_lowercase()
-            .cmp(&other.0.to_lowercase())
-            .then_with(|| self.0.cmp(&other.0))
-    }
-}
-
-impl PartialOrd for RelPath {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl std::ops::Deref for RelPath {
-    type Target = str;
-    fn deref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for RelPath {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl From<RelPath> for String {
-    fn from(r: RelPath) -> String {
-        r.0
-    }
-}
-
-impl AsRef<str> for RelPath {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl PartialEq<str> for RelPath {
-    fn eq(&self, other: &str) -> bool {
-        self.0 == other
-    }
-}
-
-impl PartialEq<&str> for RelPath {
-    fn eq(&self, other: &&str) -> bool {
-        self.0 == *other
-    }
-}
-
-impl PartialEq<String> for RelPath {
-    fn eq(&self, other: &String) -> bool {
-        &self.0 == other
-    }
-}
-
-/// An opaque write validator, compared for equality, never inspected. It is the
-/// fingerprint of a note's serialized bytes — the `If-Match` precondition for a
-/// conditional write. sha256 is a private implementation detail.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Etag([u8; 32]);
 
 impl Etag {
-    /// Mint an etag from a note's serialized bytes. Crate-private on purpose:
-    /// the only public door is `FromStr` (rehydrating a token off the wire), so
-    /// a client can never forge one — an etag is always the fingerprint of a
-    /// note this crate serialized.
     pub(crate) fn of(bytes: &[u8]) -> Etag {
         Etag(Sha256::digest(bytes).into())
     }
@@ -127,6 +42,103 @@ impl FromStr for Etag {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum Condition {
+    #[default]
+    Always,
+    Missing,
+    Exists,
+    Matching(Etag),
+}
+
+impl fmt::Display for Condition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Condition::Always => f.write_str("always"),
+            Condition::Missing => f.write_str("missing"),
+            Condition::Exists => f.write_str("exists"),
+            Condition::Matching(token) => write!(f, "exists:{token}"),
+        }
+    }
+}
+
+impl FromStr for Condition {
+    type Err = NotedError;
+    fn from_str(s: &str) -> Result<Condition> {
+        match s.split_once(':') {
+            Some(("exists", token)) => Ok(Condition::Matching(token.parse()?)),
+            None | Some(_) => match s {
+                "always" => Ok(Condition::Always),
+                "missing" => Ok(Condition::Missing),
+                "exists" => Ok(Condition::Exists),
+                other => Err(rejected(format!("unknown write condition: '{other}'"))),
+            },
+        }
+    }
+}
+
+impl TryFrom<String> for Condition {
+    type Error = NotedError;
+    fn try_from(s: String) -> Result<Condition> {
+        s.parse()
+    }
+}
+
+impl From<Condition> for String {
+    fn from(c: Condition) -> String {
+        c.to_string()
+    }
+}
+
+pub struct Edit {
+    old: String,
+    new: String,
+    replace_all: bool,
+}
+
+impl Edit {
+    pub fn new(old: impl Into<String>, new: impl Into<String>, replace_all: bool) -> Edit {
+        Edit {
+            old: old.into(),
+            new: new.into(),
+            replace_all,
+        }
+    }
+
+    pub(crate) fn apply(&self, body: &NoteBody) -> Result<NoteBody> {
+        let count = body.as_str().matches(&self.old).count();
+        if count == 0 {
+            return Err(rejected("old string not found"));
+        }
+        if count > 1 && !self.replace_all {
+            return Err(rejected(format!(
+                "old string not unique ({count} matches); pass replace_all"
+            )));
+        }
+        Ok(NoteBody::new(body.as_str().replace(&self.old, &self.new)))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Trashed(RelPath);
+
+impl Trashed {
+    pub(crate) fn new(path: RelPath) -> Trashed {
+        Trashed(path)
+    }
+
+    pub fn path(&self) -> &RelPath {
+        &self.0
+    }
+}
+
+impl fmt::Display for Trashed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0.as_str())
+    }
+}
+
 /// The one contract every note kind shares: it can serialize itself to the exact
 /// bytes it persists as. Everything else — mutability, schema, immutability — is
 /// the concern of the specific kind. `to_bytes` is fallible because a kind with
@@ -138,17 +150,17 @@ pub trait Note {
 /// A freeform, mutable, unstructured markdown note — the default kind. No schema,
 /// no lifecycle. It is what remains once you take away a task's state machine and
 /// a log's immutability.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TextNote {
     path: RelPath,
-    content: String,
+    body: NoteBody,
 }
 
 impl TextNote {
-    pub fn new(path: RelPath, content: impl Into<String>) -> TextNote {
+    pub fn new(path: RelPath, body: impl Into<NoteBody>) -> TextNote {
         TextNote {
             path,
-            content: content.into(),
+            body: body.into(),
         }
     }
 
@@ -156,20 +168,16 @@ impl TextNote {
         &self.path
     }
 
-    pub fn content(&self) -> &str {
-        &self.content
+    pub fn body(&self) -> &NoteBody {
+        &self.body
     }
 
     pub fn etag(&self) -> Etag {
-        Etag::of(self.content.as_bytes())
+        Etag::of(self.body.as_str().as_bytes())
     }
 
-    pub fn set_content(&mut self, content: impl Into<String>) {
-        self.content = content.into();
-    }
-
-    pub fn with_content(mut self, content: impl Into<String>) -> TextNote {
-        self.set_content(content);
+    pub fn with_body(mut self, body: impl Into<NoteBody>) -> TextNote {
+        self.body = body.into();
         self
     }
 
@@ -181,13 +189,61 @@ impl TextNote {
 
 impl Note for TextNote {
     fn to_bytes(&self) -> Result<Vec<u8>> {
-        Ok(self.content.clone().into_bytes())
+        Ok(self.body.as_str().as_bytes().to_vec())
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct LogFront {
+    pub created: Timestamp,
+    pub cwd: String,
+    pub host: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<Source>,
+}
+
+#[derive(Debug)]
+pub struct LogNote {
+    path: RelPath,
+    front: LogFront,
+    body: String,
+}
+
+impl LogNote {
+    pub(crate) fn new(path: RelPath, front: LogFront, body: impl Into<String>) -> LogNote {
+        LogNote {
+            path,
+            front,
+            body: body.into(),
+        }
+    }
+
+    pub fn path(&self) -> &RelPath {
+        &self.path
+    }
+
+    pub fn front(&self) -> &LogFront {
+        &self.front
+    }
+
+    pub fn body(&self) -> &str {
+        &self.body
+    }
+
+    pub fn etag(&self) -> Result<Etag> {
+        Ok(Etag::of(&self.to_bytes()?))
+    }
+}
+
+impl Note for LogNote {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
+        Ok(dump_front(&self.front, &self.body)?.into_bytes())
     }
 }
 
 /// Opaque bytes with no text meaning — an image or other attachment. It makes no
 /// utf-8 or markdown assumptions; the bytes are the whole of it.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BinaryNote {
     path: RelPath,
     bytes: Vec<u8>,

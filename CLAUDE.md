@@ -36,9 +36,12 @@
 - Constraint: All files are atomically written
 
 - Non-negotiable:
-  - A new tool is one `<Verb>Args` struct in `crates/core/src/tools.rs` plus one `run_tool` arm.
+  - A new tool is one `<Verb>Args` struct in `crates/core/src/tools.rs`, one `run_tool` arm, and one `NotedRoot` method.
   - Do not add a clap subcommand, an rmcp entry, or an axum route for a tool.
-  - `std::fs::` in `crates/core/src/notes.rs` or `tasks.rs` → a path from `get_path()`.
+  - `std::fs::` outside `crates/core/src/store.rs` → a `Store` method.
+  - An absolute path outside `Store` → a `RelPath`.
+  - A path reached from anywhere but `NotedRoot` → a method on `NotedRoot`.
+  - A `String` or `&str` holding a path → `RelPath`, `TaskRef`, or `GroupPath`.
   - No `TokenScope` or scope check inside a `run_tool` arm.
 
 - Avoid, unless absolutely necessary:

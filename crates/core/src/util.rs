@@ -4,37 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
-use ignore::WalkBuilder;
 use ignore::gitignore::Gitignore;
 use rand::Rng;
 
 use crate::error::{Result, io_error};
-
-pub fn walk_builder(base: &Path) -> WalkBuilder {
-    let filter = IgnoreFilter::new(base);
-    let mut wb = WalkBuilder::new(base);
-    wb.hidden(true)
-        .ignore(false)
-        .git_ignore(false)
-        .git_global(false)
-        .git_exclude(false)
-        .parents(false)
-        .filter_entry(move |entry| !filter.is_ignored(entry.path()));
-    wb
-}
-
-pub fn walk_files(base: &Path) -> Vec<PathBuf> {
-    walk_builder(base)
-        .build()
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            match entry.file_type() {
-                Some(ft) if ft.is_file() => Some(entry.into_path()),
-                _ => None,
-            }
-        })
-        .collect()
-}
 
 #[derive(Clone)]
 pub struct IgnoreFilter {

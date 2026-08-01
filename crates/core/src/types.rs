@@ -150,3 +150,25 @@ impl Source {
 pub struct LogBody(String);
 
 str_newtype!(LogBody);
+
+// Tool-schema field: a rustdoc comment here ships as the wire description.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+#[schemars(transparent)]
+pub struct NoteBody(String);
+
+str_newtype!(NoteBody);
+
+// Tool-schema field: a rustdoc comment here ships as the wire description.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+#[schemars(transparent)]
+pub struct TaskBody(String);
+
+str_newtype!(TaskBody);
+
+impl TaskBody {
+    pub fn is_blank(&self) -> bool {
+        self.0.trim().is_empty()
+    }
+}

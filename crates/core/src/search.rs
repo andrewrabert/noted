@@ -1,18 +1,19 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 
 use clap::ValueEnum;
 use grep::matcher::Matcher;
 use grep::regex::{RegexMatcher, RegexMatcherBuilder};
-use grep::searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
+use grep::searcher::{Searcher, SinkContext, SinkMatch};
+use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
 use ignore::types::TypesBuilder;
-use ignore::{WalkBuilder, WalkState};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Result, rejected, unavailable};
-use crate::util::normalize;
+use crate::error::{Result, rejected};
+use crate::newtype::str_newtype_validated;
+use crate::path::RelPath;
 
 #[derive(Serialize, Deserialize, JsonSchema, ValueEnum, Default, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -23,60 +24,131 @@ pub enum CaseMode {
     Sensitive,
 }
 
+// Tool-schema field: a rustdoc comment here ships as the wire description.
+#[derive(Serialize, Deserialize, JsonSchema, ValueEnum, Default, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchMode {
+    #[default]
+    Any,
+    Line,
+    File,
+    Path,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
+pub struct SearchPattern(String);
+str_newtype_validated!(SearchPattern, validate_pattern);
+
+fn validate_pattern(s: &str) -> Result<()> {
+    if s.is_empty() {
+        return Err(rejected("pattern required"));
+    }
+    Ok(())
+}
+
+impl SearchPattern {
+    pub fn everything() -> SearchPattern {
+        SearchPattern(".".to_string())
+    }
+}
+
+impl Default for SearchPattern {
+    fn default() -> SearchPattern {
+        SearchPattern::everything()
+    }
+}
+
+// Tool-schema field: a rustdoc comment here ships as the wire description.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
+pub struct GlobPattern(String);
+str_newtype_validated!(GlobPattern, validate_glob);
+
+fn validate_glob(s: &str) -> Result<()> {
+    let path = s.strip_prefix('!').unwrap_or(s);
+    if path.is_empty() || path.starts_with('/') || path.split('/').any(|seg| seg == "..") {
+        return Err(rejected(format!("invalid glob: '{s}'")));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
+pub struct FileType(String);
+str_newtype_validated!(FileType, validate_file_type);
+
+fn validate_file_type(s: &str) -> Result<()> {
+    if s.is_empty() {
+        return Err(rejected("file type required"));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Default)]
-pub struct MatchOpts {
-    pub fixed_strings: bool,
+pub struct SearchQuery {
+    pub pattern: SearchPattern,
+    pub mode: SearchMode,
+    pub context: u32,
+    pub fixed: bool,
     pub case: CaseMode,
     pub word: bool,
     pub multiline: bool,
+    pub globs: Vec<GlobPattern>,
+    pub types: Vec<FileType>,
 }
 
-#[derive(Clone, Default)]
-pub struct WalkOpts {
-    pub globs: Vec<String>,
-    pub types: Vec<String>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hit {
+    pub path: RelPath,
+    pub lines: BTreeMap<u64, String>,
 }
 
-fn build_matcher(pattern: &str, opts: &MatchOpts) -> Result<RegexMatcher> {
+impl Hit {
+    pub fn lines(&self) -> impl Iterator<Item = (u64, &str)> {
+        self.lines.iter().map(|(n, t)| (*n, t.as_str()))
+    }
+}
+
+pub(crate) fn build_matcher(query: &SearchQuery) -> Result<RegexMatcher> {
     let mut b = RegexMatcherBuilder::new();
-    match opts.case {
+    match query.case {
         CaseMode::Smart => b.case_smart(true),
         CaseMode::Insensitive => b.case_insensitive(true),
         CaseMode::Sensitive => b.case_smart(false),
     };
-    b.fixed_strings(opts.fixed_strings)
-        .word(opts.word)
-        .multi_line(opts.multiline)
-        .build(pattern)
+    b.fixed_strings(query.fixed)
+        .word(query.word)
+        .multi_line(query.multiline)
+        .build(query.pattern.as_str())
         .map_err(|e| rejected(format!("invalid search pattern: {e}")))
 }
 
-fn expand_glob(entry: &str) -> Result<Vec<String>> {
-    let (bang, path) = match entry.strip_prefix('!') {
+fn expand_glob(entry: &GlobPattern) -> Vec<String> {
+    let raw = entry.as_str();
+    let (bang, path) = match raw.strip_prefix('!') {
         Some(rest) => ("!", rest),
-        None => ("", entry),
+        None => ("", raw),
     };
-    if path.starts_with('/') || path.split('/').any(|seg| seg == "..") {
-        return Err(rejected(format!("invalid glob: '{entry}'")));
-    }
     let has_meta = path
         .chars()
         .any(|c| matches!(c, '*' | '?' | '[' | ']' | '{' | '}'));
     if has_meta {
-        Ok(vec![entry.to_string()])
+        vec![raw.to_string()]
     } else {
         let p = path.trim_end_matches('/');
-        Ok(vec![format!("{bang}{p}"), format!("{bang}{p}/**")])
+        vec![format!("{bang}{p}"), format!("{bang}{p}/**")]
     }
 }
 
-fn build_walker(base: &Path, opts: &WalkOpts) -> Result<WalkBuilder> {
-    let mut wb = crate::util::walk_builder(base);
-
-    if !opts.globs.is_empty() {
+pub(crate) fn narrow(wb: &mut WalkBuilder, base: &Path, query: &SearchQuery) -> Result<()> {
+    if !query.globs.is_empty() {
         let mut ob = OverrideBuilder::new(base);
-        for entry in &opts.globs {
-            for g in expand_glob(entry)? {
+        for entry in &query.globs {
+            for g in expand_glob(entry) {
                 ob.add(&g)
                     .map_err(|e| rejected(format!("invalid glob: '{entry}': {e}")))?;
             }
@@ -87,11 +159,11 @@ fn build_walker(base: &Path, opts: &WalkOpts) -> Result<WalkBuilder> {
         wb.overrides(overrides);
     }
 
-    if !opts.types.is_empty() {
+    if !query.types.is_empty() {
         let mut tb = TypesBuilder::new();
         tb.add_defaults();
-        for t in &opts.types {
-            tb.select(t);
+        for t in &query.types {
+            tb.select(t.as_str());
         }
         let types = tb
             .build()
@@ -99,24 +171,34 @@ fn build_walker(base: &Path, opts: &WalkOpts) -> Result<WalkBuilder> {
         wb.types(types);
     }
 
-    Ok(wb)
+    Ok(())
 }
 
-pub fn walk_search(base: &Path, opts: &WalkOpts) -> Result<Vec<PathBuf>> {
-    Ok(build_walker(base, opts)?
-        .build()
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            match entry.file_type() {
-                Some(ft) if ft.is_file() => Some(entry.into_path()),
-                _ => None,
-            }
-        })
-        .collect())
+pub(crate) fn match_paths(query: &SearchQuery, paths: Vec<RelPath>) -> Result<Vec<RelPath>> {
+    let matcher = build_matcher(query)?;
+    let mut seen: HashSet<RelPath> = HashSet::new();
+    let mut out = Vec::new();
+    for path in paths {
+        if !matcher.is_match(path.as_str().as_bytes()).unwrap_or(false) {
+            continue;
+        }
+        if seen.insert(path.clone()) {
+            out.push(path);
+        }
+    }
+    Ok(out)
 }
 
-struct LineSink {
-    lines: BTreeMap<u64, String>,
+pub(crate) struct LineSink {
+    pub(crate) lines: BTreeMap<u64, String>,
+}
+
+impl LineSink {
+    pub(crate) fn new() -> LineSink {
+        LineSink {
+            lines: BTreeMap::new(),
+        }
+    }
 }
 
 fn record(lines: &mut BTreeMap<u64, String>, line_number: Option<u64>, bytes: &[u8]) {
@@ -129,7 +211,7 @@ fn record(lines: &mut BTreeMap<u64, String>, line_number: Option<u64>, bytes: &[
     }
 }
 
-impl Sink for LineSink {
+impl grep::searcher::Sink for LineSink {
     type Error = std::io::Error;
 
     fn matched(&mut self, _searcher: &Searcher, m: &SinkMatch<'_>) -> std::io::Result<bool> {
@@ -141,82 +223,4 @@ impl Sink for LineSink {
         record(&mut self.lines, c.line_number(), c.bytes());
         Ok(true)
     }
-}
-
-pub async fn ripgrep(
-    pattern: &str,
-    base: &Path,
-    context: i64,
-    match_opts: &MatchOpts,
-    walk_opts: &WalkOpts,
-) -> Result<HashMap<PathBuf, BTreeMap<u64, String>>> {
-    let matcher = build_matcher(pattern, match_opts)?;
-    let multiline = match_opts.multiline;
-    let base = base.to_path_buf();
-    let walk_opts = walk_opts.clone();
-    let ctx = if context > 0 { context as usize } else { 0 };
-
-    tokio::task::spawn_blocking(move || {
-        let walker = build_walker(&base, &walk_opts)?.build_parallel();
-        let hits: std::sync::Mutex<HashMap<PathBuf, BTreeMap<u64, String>>> =
-            std::sync::Mutex::new(HashMap::new());
-
-        walker.run(|| {
-            let mut searcher = SearcherBuilder::new()
-                .line_number(true)
-                .multi_line(multiline)
-                .before_context(ctx)
-                .after_context(ctx)
-                .build();
-            let matcher = &matcher;
-            let hits = &hits;
-            Box::new(move |entry| {
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => return WalkState::Continue,
-                };
-                match entry.file_type() {
-                    Some(ft) if ft.is_file() => {}
-                    _ => return WalkState::Continue,
-                }
-                let path = entry.into_path();
-                let mut sink = LineSink {
-                    lines: BTreeMap::new(),
-                };
-                if searcher.search_path(matcher, &path, &mut sink).is_err() {
-                    return WalkState::Continue;
-                }
-                if !sink.lines.is_empty() {
-                    hits.lock()
-                        .unwrap()
-                        .entry(normalize(&path))
-                        .or_default()
-                        .extend(sink.lines);
-                }
-                WalkState::Continue
-            })
-        });
-
-        Ok(hits.into_inner().unwrap())
-    })
-    .await
-    .map_err(|e| unavailable(format!("search: {e}")))?
-}
-
-pub async fn match_paths(
-    pattern: &str,
-    rel_paths: &[String],
-    match_opts: &MatchOpts,
-) -> Result<HashSet<String>> {
-    if rel_paths.is_empty() {
-        return Ok(HashSet::new());
-    }
-    let matcher = build_matcher(pattern, match_opts)?;
-    let mut out = HashSet::new();
-    for rel in rel_paths {
-        if matcher.is_match(rel.as_bytes()).unwrap_or(false) {
-            out.insert(rel.clone());
-        }
-    }
-    Ok(out)
 }

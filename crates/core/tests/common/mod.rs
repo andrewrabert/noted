@@ -6,11 +6,15 @@ use std::sync::Arc;
 use axum::Router;
 use axum::http::{HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
-use noted::note::{RelPath, TextNote};
-use noted::notes::Notes;
+use noted::caller::{Caller, Policy};
+use noted::note::{Condition, TextNote};
 use noted::oauth::{AuthService, Db};
+use noted::path::RelPath;
+use noted::root::NotedRoot;
 use noted::scope::{RuleSpec, StoredScope, TokenScope};
-use noted::tasks::Tasks;
+use noted::search::{Hit, SearchMode, SearchQuery};
+use noted::store::{NotedDir, Store};
+use noted::types::Source;
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -22,8 +26,38 @@ pub fn note(rel: &str, content: &str) -> TextNote {
     TextNote::new(rp(rel), content)
 }
 
-pub fn read(notes: &Notes, rel: &str) -> noted::Result<String> {
-    notes.get(&rp(rel)).map(|n| n.content().to_string())
+pub fn read(root: &NotedRoot, rel: &str) -> noted::Result<String> {
+    root.note_read(&rp(rel))
+        .map(|n| n.body().as_str().to_string())
+}
+
+pub fn write(root: &NotedRoot, note: &TextNote) -> noted::Result<()> {
+    root.note_write(note, Condition::Always)
+}
+
+pub fn policy(folders: &[&str]) -> Policy {
+    Policy::within(folders.iter().map(|f| rp(f)).collect())
+}
+
+pub fn query(pattern: &str, mode: SearchMode) -> SearchQuery {
+    SearchQuery {
+        pattern: pattern.parse().unwrap(),
+        mode,
+        ..Default::default()
+    }
+}
+
+pub async fn grep(root: &NotedRoot, pattern: &str) -> noted::Result<Vec<Hit>> {
+    root.search(&query(pattern, SearchMode::Line)).await
+}
+
+pub async fn found(root: &NotedRoot, pattern: &str) -> noted::Result<Vec<String>> {
+    Ok(root
+        .search(&query(pattern, SearchMode::Path))
+        .await?
+        .into_iter()
+        .map(|hit| hit.path.to_string())
+        .collect())
 }
 
 pub fn scope(tools: Option<&[&str]>, paths: Option<&[&str]>) -> TokenScope {
@@ -60,8 +94,7 @@ pub fn mint_key(svc: &AuthService, label: &str, scope: StoredScope) -> String {
 }
 
 pub fn app_with_key(dir: &tempfile::TempDir) -> (Router, String) {
-    let (notes, tasks) = cores(dir);
-    let ctx = noted::mcp::context(notes, tasks);
+    let ctx = noted::mcp::context(root(dir));
     let svc = auth_service(dir);
     let token = mint_key(&svc, "test", StoredScope::Unrestricted);
     (noted::http::build_app(ctx, Some(svc), None), token)
@@ -93,11 +126,17 @@ pub fn notes_root(dir: &tempfile::TempDir) -> PathBuf {
     dir.path().join("notes")
 }
 
-pub fn cores(dir: &tempfile::TempDir) -> (Notes, Tasks) {
-    let root = notes_root(dir);
-    let notes = Notes::new(&root, Some("test".into())).unwrap();
-    let tasks = Tasks::new(notes.root());
-    (notes, tasks)
+pub fn root(dir: &tempfile::TempDir) -> NotedRoot {
+    caller_root(dir, Policy::any())
+}
+
+pub fn confined(dir: &tempfile::TempDir, folders: &[&str]) -> NotedRoot {
+    caller_root(dir, policy(folders))
+}
+
+fn caller_root(dir: &tempfile::TempDir, admits: Policy) -> NotedRoot {
+    let store = Store::open(NotedDir::new(notes_root(dir))).unwrap();
+    NotedRoot::new(store, Caller::new(admits, Some(Source::new("test"))))
 }
 
 pub async fn request(

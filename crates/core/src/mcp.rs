@@ -11,9 +11,8 @@ use rmcp::{ErrorData as McpError, ServerHandler};
 use serde_json::Value;
 
 use crate::error::NotedError;
-use crate::notes::Notes;
+use crate::root::NotedRoot;
 use crate::scope::TokenScope;
-use crate::tasks::Tasks;
 use crate::tools::{ToolOutput, allowed_tools, is_tool, run_tool, tool_defs};
 
 pub const INSTRUCTIONS: &str = "This is the user's personal notes — the canonical place where they keep and organize their own notes, ideas, todos, and log entries as a nested tree of Markdown (.md) files. Whenever the user refers to 'my notes', asks to look something up, record or jot something down, or check what they've written before, use these tools instead of guessing or answering from memory. Search, read, write, edit, move, and delete notes by relative path (e.g. 'proj/ideas.md'). Use LogNote to quickly capture an immutable, timestamped log entry (its metadata is auto-generated and it cannot be edited or deleted). Track units of work with the task tools: CreateTask opens a task (optionally in a nested 'group' under Tasks/, e.g. group='dev/noted'); GetTasks reads them (by group prefix, or an exact task path with body=true); UpdateTask advances one (state=created/started/blocked/completed/rejected/invalid); MoveTask changes a task's group. A task is identified by its Tasks-relative path minus '.md' (e.g. 'dev/noted/task_0001'); tasks are searchable notes, but are managed only through these tools — WriteNote/EditNote are refused under Tasks/.";
@@ -30,8 +29,7 @@ pub enum CallScope {
 
 #[derive(Clone)]
 pub struct McpContext {
-    pub notes: Notes,
-    pub tasks: Tasks,
+    pub root: NotedRoot,
     pub process_scope: CallScope,
 }
 
@@ -52,20 +50,19 @@ pub async fn authorize_and_run(
     if !is_tool(name) {
         return Dispatch::Unknown;
     }
-    let (notes, tasks);
-    let (target_notes, target_tasks) = match scope {
+    let confined;
+    let target = match scope {
         CallScope::Invalid(msg) => return Dispatch::Invalid(msg.clone()),
         CallScope::Scoped(scope) => {
             if !scope.allows(name) {
                 return Dispatch::Forbidden;
             }
-            notes = ctx.notes.confined(scope.folders_for(name));
-            tasks = ctx.tasks.confined(scope.folders_for(name));
-            (&notes, &tasks)
+            confined = ctx.root.confined(scope.policy_for(name));
+            &confined
         }
-        CallScope::Unconfined => (&ctx.notes, &ctx.tasks),
+        CallScope::Unconfined => &ctx.root,
     };
-    match run_tool(name, args, target_notes, target_tasks).await {
+    match run_tool(name, args, target).await {
         Ok(output) => Dispatch::Ok(output),
         Err(e) => Dispatch::Failed(e),
     }
@@ -156,10 +153,9 @@ fn tool_error(message: String) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(message)])
 }
 
-pub fn context(notes: Notes, tasks: Tasks) -> McpContext {
+pub fn context(root: NotedRoot) -> McpContext {
     McpContext {
-        notes,
-        tasks,
+        root,
         process_scope: CallScope::Unconfined,
     }
 }

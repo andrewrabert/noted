@@ -1,6 +1,6 @@
 mod common;
 
-use common::{cores, fixture_dir, note, rp};
+use common::{fixture_dir, note, read, root, rp, write};
 use noted::note::{Etag, TextNote};
 
 #[test]
@@ -8,7 +8,7 @@ fn same_content_yields_same_etag() {
     let content = "---\ntask: x\n---\nbody line\n";
     let n = TextNote::new(rp("a.md"), content);
     assert_eq!(n.path(), &rp("a.md"));
-    assert_eq!(n.content(), content);
+    assert_eq!(n.body(), content);
     assert_eq!(n.etag(), TextNote::new(rp("other.md"), content).etag());
 }
 
@@ -24,16 +24,12 @@ fn etag_is_sensitive_to_frontmatter_and_whitespace() {
 }
 
 #[test]
-fn content_replacement_recomputes_etag() {
+fn body_replacement_recomputes_etag() {
     let original = TextNote::new(rp("a.md"), "one");
-    let replaced = original.clone().with_content("two");
-    assert_eq!(replaced.content(), "two");
+    let replaced = original.clone().with_body("two");
+    assert_eq!(replaced.body(), "two");
     assert_eq!(replaced.etag(), TextNote::new(rp("a.md"), "two").etag());
     assert_ne!(original.etag(), replaced.etag());
-
-    let mut mutable = TextNote::new(rp("a.md"), "one");
-    mutable.set_content("three");
-    assert_eq!(mutable.etag(), TextNote::new(rp("a.md"), "three").etag());
 }
 
 #[test]
@@ -41,7 +37,7 @@ fn path_only_change_and_clone_preserve_etag() {
     let original = TextNote::new(rp("a.md"), "same content\n");
     let moved = original.clone().with_path(rp("b/c.md"));
     assert_eq!(moved.path(), &rp("b/c.md"));
-    assert_eq!(moved.content(), original.content());
+    assert_eq!(moved.body(), original.body());
     assert_eq!(moved.etag(), original.etag());
 
     let cloned = original.clone();
@@ -57,13 +53,14 @@ fn etag_wire_roundtrip() {
 }
 
 #[test]
-fn get_returns_a_note_matching_the_file() {
+fn read_returns_a_note_matching_the_file() {
     let dir = fixture_dir();
-    let (notes, _) = cores(&dir);
-    notes.put(&note("g.md", "hello world\n")).unwrap();
-    let got = notes.get(&rp("g.md")).unwrap();
+    let root = root(&dir);
+    write(&root, &note("g.md", "hello world\n")).unwrap();
+    let got = root.note_read(&rp("g.md")).unwrap();
     assert_eq!(got.path(), &rp("g.md"));
-    assert_eq!(got.content(), "hello world\n");
+    assert_eq!(got.body(), "hello world\n");
+    assert_eq!(read(&root, "g.md").unwrap(), "hello world\n");
     assert_eq!(
         got.etag(),
         TextNote::new(rp("g.md"), "hello world\n").etag()

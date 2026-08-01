@@ -7,12 +7,15 @@ use serde_json::Value;
 
 use noted::authclient::Session;
 use noted::backend::{Backend, ToolCall};
+use noted::caller::{Caller, Policy};
 use noted::credentials::CredentialStore;
 use noted::error::Result;
 use noted::httpurl::HttpUrl;
-use noted::notes::Notes;
-use noted::tasks::{TaskState, Tasks};
+use noted::root::NotedRoot;
+use noted::store::{NotedDir, Store};
+use noted::tasks::TaskState;
 use noted::tools::{CreateTaskArgs, GetTasksArgs, MoveTaskArgs, ToolOutput, UpdateTaskArgs};
+use noted::types::Source;
 
 use crate::GlobalArgs;
 use crate::config::{block_on, credential_store_config, resolve_root};
@@ -110,10 +113,9 @@ pub(crate) fn build_backend(globals: &GlobalArgs) -> Result<Backend> {
         let token = block_on(session.bearer())?;
         return Ok(Backend::http(&url, token));
     }
-    let root = resolve_root(globals.dir.as_deref())?;
-    let notes = Notes::new(&root, None)?;
-    let tasks = Tasks::new(notes.root());
-    Ok(Backend::filesystem(notes, tasks))
+    let store = Store::open(NotedDir::new(resolve_root(globals.dir.as_deref())?))?;
+    let caller = Caller::new(Policy::any(), Source::from_opt(globals.source.clone()));
+    Ok(Backend::filesystem(NotedRoot::new(store, caller)))
 }
 
 pub(crate) fn remote_url(globals: &GlobalArgs) -> Result<Option<HttpUrl>> {

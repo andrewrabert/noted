@@ -8,8 +8,9 @@ use noted::mcp::CallScope;
 use noted::oauth::service::DEFAULT_CREDENTIAL_TTL_HUMAN;
 use noted::scope::RuleSpec;
 use noted::serve::{HttpConfig, StdioConfig};
+use noted::store::NotedDir;
 use noted::tools::{DeleteArgs, EditArgs, LogArgs, MoveArgs, ReadArgs, SearchArgs, WriteArgs};
-use noted::types::Ttl;
+use noted::types::{Source, Ttl};
 
 use crate::config::{parse_ttl, resolve_root, setup_logging};
 
@@ -68,6 +69,9 @@ struct GlobalArgs {
     url: Option<String>,
     #[arg(long, env = "NOTED_TOKEN", global = true)]
     token: Option<String>,
+    /// Provenance recorded on log entries
+    #[arg(short = 's', long, env = "NOTED_SOURCE", global = true)]
+    source: Option<String>,
     #[arg(
         long = "log-level",
         env = "NOTED_LOG_LEVEL",
@@ -181,14 +185,12 @@ struct ServeCmd {
     default_ttl: Ttl,
     #[command(flatten)]
     scope: RuleFlags,
-    #[arg(short = 's', long)]
-    source: Option<String>,
 }
 
 impl ServeCmd {
     /// The sole adapter from flags to core's server config. Validations whose
     /// messages name CLI flags belong here, not in core.
-    fn into_config(self, dir: Option<&str>) -> Result<HttpConfig> {
+    fn into_config(self, globals: &GlobalArgs) -> Result<HttpConfig> {
         #[cfg(unix)]
         if self.admin_socket.is_some() && self.auth_db.is_none() {
             return Err(rejected("--admin-socket requires --auth-db"));
@@ -197,10 +199,8 @@ impl ServeCmd {
             return Err(rejected("--public-url requires --auth-db"));
         }
         Ok(HttpConfig {
-            root: resolve_root(dir)?,
-            source: self
-                .source
-                .or_else(|| config::env_source().map(|s| s.as_str().to_string())),
+            dir: NotedDir::new(resolve_root(globals.dir.as_deref())?),
+            source: Source::from_opt(globals.source.clone()),
             host: self.host,
             port: self.port,
             public_url: self.public_url,
@@ -219,17 +219,13 @@ impl ServeCmd {
 struct McpCmd {
     #[command(flatten)]
     scope: RuleFlags,
-    #[arg(short = 's', long)]
-    source: Option<String>,
 }
 
 impl McpCmd {
-    fn into_config(self, dir: Option<&str>) -> Result<StdioConfig> {
+    fn into_config(self, globals: &GlobalArgs) -> Result<StdioConfig> {
         Ok(StdioConfig {
-            root: resolve_root(dir)?,
-            source: self
-                .source
-                .or_else(|| config::env_source().map(|s| s.as_str().to_string())),
+            dir: NotedDir::new(resolve_root(globals.dir.as_deref())?),
+            source: Source::from_opt(globals.source.clone()),
             scope: self.scope.to_call_scope()?,
         })
     }
@@ -263,23 +259,20 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Delete(c) => {
             dispatch::run_dispatch(&globals, dispatch::passthrough_of("DeleteNote", c))
         }
-        Command::Log(c) => dispatch::run_dispatch(
-            &globals,
-            dispatch::passthrough_of("LogNote", c.with_default_source(config::env_source())),
-        ),
+        Command::Log(c) => dispatch::run_dispatch(&globals, dispatch::passthrough_of("LogNote", c)),
         Command::Task(c) => dispatch::run_dispatch(&globals, dispatch::build_task(c)),
         Command::Auth(c) => auth::run_auth(c, &globals),
-        Command::Server(c) => run_server(c, globals.dir),
+        Command::Server(c) => run_server(c, &globals),
     }
 }
 
-fn run_server(cmd: ServerCmd, dir: Option<String>) -> Result<ExitCode> {
+fn run_server(cmd: ServerCmd, globals: &GlobalArgs) -> Result<ExitCode> {
     match cmd.sub {
         ServerSub::Http(c) => {
-            noted::serve::serve_http(c.into_config(dir.as_deref())?).map(|()| ExitCode::SUCCESS)
+            noted::serve::serve_http(c.into_config(globals)?).map(|()| ExitCode::SUCCESS)
         }
         ServerSub::Mcp(c) => {
-            noted::serve::serve_stdio(c.into_config(dir.as_deref())?).map(|()| ExitCode::SUCCESS)
+            noted::serve::serve_stdio(c.into_config(globals)?).map(|()| ExitCode::SUCCESS)
         }
         ServerSub::User(c) => admin::run_user(c).map(|()| ExitCode::SUCCESS),
         ServerSub::Key(c) => admin::run_key(c).map(|()| ExitCode::SUCCESS),
@@ -288,7 +281,14 @@ fn run_server(cmd: ServerCmd, dir: Option<String>) -> Result<ExitCode> {
 
 #[cfg(test)]
 mod tests {
+    use noted::caller::Policy;
+    use noted::path::RelPath;
+
     use super::*;
+
+    fn within(paths: &[&str]) -> Policy {
+        Policy::within(paths.iter().map(|p| RelPath::new(*p).unwrap()).collect())
+    }
 
     fn flags(tools: Option<&str>, path: Option<&str>, rules: Option<&str>) -> RuleFlags {
         RuleFlags {
@@ -313,7 +313,7 @@ mod tests {
             panic!("expected a scoped process scope");
         };
         assert!(s.allows("ReadNote") && !s.allows("WriteNote"));
-        assert_eq!(s.folders_for("ReadNote"), None);
+        assert_eq!(s.policy_for("ReadNote"), Policy::any());
     }
 
     #[test]
@@ -323,10 +323,7 @@ mod tests {
             panic!("expected a scoped process scope");
         };
         assert!(s.allows("WriteNote"));
-        assert_eq!(
-            s.folders_for("WriteNote"),
-            Some(vec!["projects".to_string()])
-        );
+        assert_eq!(s.policy_for("WriteNote"), within(&["projects"]));
     }
 
     #[test]
@@ -337,10 +334,7 @@ mod tests {
             panic!("expected a scoped process scope");
         };
         assert!(s.allows("ReadNote") && s.allows("CreateTask") && !s.allows("WriteNote"));
-        assert_eq!(
-            s.folders_for("CreateTask"),
-            Some(vec!["Tasks/dev".to_string()])
-        );
+        assert_eq!(s.policy_for("CreateTask"), within(&["Tasks/dev"]));
     }
 
     #[test]

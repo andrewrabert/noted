@@ -1,21 +1,22 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmcp::serve_server;
 use rmcp::transport::stdio;
 
+use crate::caller::{Caller, Policy};
 use crate::error::{Result, io_error, rejected};
 use crate::mcp::{CallScope, context};
-use crate::notes::Notes;
 use crate::oauth::{AuthService, OAuthProvider};
-use crate::tasks::Tasks;
-use crate::types::Ttl;
+use crate::root::NotedRoot;
+use crate::store::{NotedDir, Store};
+use crate::types::{Source, Ttl};
 
 /// Everything the HTTP server needs, already resolved: no clap type, flag
 /// spelling, or environment lookup crosses this boundary.
 pub struct HttpConfig {
-    pub root: PathBuf,
-    pub source: Option<String>,
+    pub dir: NotedDir,
+    pub source: Option<Source>,
     pub host: String,
     pub port: u16,
     pub public_url: Option<String>,
@@ -28,15 +29,16 @@ pub struct HttpConfig {
 
 /// The resolved counterpart of [`HttpConfig`] for the stdio MCP server.
 pub struct StdioConfig {
-    pub root: PathBuf,
-    pub source: Option<String>,
+    pub dir: NotedDir,
+    pub source: Option<Source>,
     pub scope: CallScope,
 }
 
-fn build_cores(root: &Path, source: Option<String>) -> Result<(Notes, Tasks)> {
-    let notes = Notes::new(root, source.filter(|s| !s.is_empty()))?;
-    let tasks = Tasks::new(notes.root());
-    Ok((notes, tasks))
+fn build_root(dir: NotedDir, source: Option<Source>) -> Result<NotedRoot> {
+    Ok(NotedRoot::new(
+        Store::open(dir)?,
+        Caller::new(Policy::any(), source),
+    ))
 }
 
 fn block_on<F, T>(fut: F) -> Result<T>
@@ -68,8 +70,7 @@ pub fn serve_http(cfg: HttpConfig) -> Result<()> {
         (path, _) => path.clone(),
     };
 
-    let (notes, tasks) = build_cores(&cfg.root, cfg.source)?;
-    let mut ctx = context(notes, tasks);
+    let mut ctx = context(build_root(cfg.dir, cfg.source)?);
     ctx.process_scope = cfg.scope;
     let auth_for_socket = auth.clone();
     let app = crate::http::build_app(ctx, auth, oauth.clone());
@@ -122,8 +123,7 @@ pub fn serve_http(cfg: HttpConfig) -> Result<()> {
 }
 
 pub fn serve_stdio(cfg: StdioConfig) -> Result<()> {
-    let (notes, tasks) = build_cores(&cfg.root, cfg.source)?;
-    let mut ctx = context(notes, tasks);
+    let mut ctx = context(build_root(cfg.dir, cfg.source)?);
     ctx.process_scope = cfg.scope;
 
     block_on(async move {

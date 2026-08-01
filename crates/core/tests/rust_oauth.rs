@@ -55,8 +55,11 @@ fn build(dir: &tempfile::TempDir, users: &[(&str, UserSpec)]) -> (Router, Arc<Au
         }
     }
     let provider = Arc::new(OAuthProvider::new(PUBLIC, svc.clone()).unwrap());
-    let (notes, tasks) = common::cores(dir);
-    let app = build_app(context(notes, tasks), Some(svc.clone()), Some(provider));
+    let app = build_app(
+        context(common::root(dir)),
+        Some(svc.clone()),
+        Some(provider),
+    );
     (app, svc)
 }
 

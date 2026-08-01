@@ -1,5 +1,8 @@
+mod areas;
+
 pub mod authclient;
 pub mod backend;
+pub mod caller;
 pub mod credentials;
 pub mod error;
 pub mod front_matter;
@@ -8,19 +11,24 @@ pub mod httpurl;
 pub mod mcp;
 pub mod newtype;
 pub mod note;
-pub mod notes;
 pub mod oauth;
 pub mod password;
+pub mod path;
+pub mod root;
 pub mod scope;
 pub mod search;
 pub mod serve;
+pub mod store;
 pub mod tasks;
 pub mod tools;
 pub mod types;
 pub mod util;
 
+pub use caller::{Caller, Policy};
 pub use error::{NotedError, Result};
 pub use mcp::{McpContext, context};
-pub use note::{BinaryNote, Etag, Note, RelPath, TextNote};
-pub use notes::{LogNote, Notes};
-pub use tasks::{TaskNote, Tasks};
+pub use note::{BinaryNote, Etag, LogNote, Note, TextNote, Trashed};
+pub use path::RelPath;
+pub use root::NotedRoot;
+pub use store::{NotedDir, Store};
+pub use tasks::TaskNote;

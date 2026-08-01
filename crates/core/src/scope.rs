@@ -2,13 +2,15 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::caller::Policy;
 use crate::error::{Result, rejected};
+use crate::path::RelPath;
 use crate::tools::is_tool;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rule {
     pub tools: Option<BTreeSet<String>>,
-    pub paths: Option<Vec<String>>,
+    pub paths: Option<Vec<RelPath>>,
 }
 
 impl Rule {
@@ -65,16 +67,18 @@ impl TokenScope {
         self.rules.iter().any(|r| r.grants_tool(tool))
     }
 
-    pub fn folders_for(&self, tool: &str) -> Option<Vec<String>> {
+    pub fn policy_for(&self, tool: &str) -> Policy {
         let mut acc = Vec::new();
         for r in &self.rules {
             if !r.grants_tool(tool) {
                 continue;
             }
-            let ps = r.paths.as_ref()?;
-            acc.extend(ps.iter().cloned());
+            match &r.paths {
+                None => return Policy::any(),
+                Some(ps) => acc.extend(ps.iter().cloned()),
+            }
         }
-        Some(acc)
+        Policy::within(acc)
     }
 
     pub fn single_rule(
@@ -99,30 +103,25 @@ impl TokenScope {
     }
 }
 
-fn intersect_prefixes(a: &[String], b: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+fn intersect_prefixes(a: &[RelPath], b: &[RelPath]) -> Vec<RelPath> {
+    let mut out: Vec<RelPath> = Vec::new();
     for x in a {
         for y in b {
-            let pick = if is_within(x, y) {
+            let pick = if x.under(y) {
                 Some(x)
-            } else if is_within(y, x) {
+            } else if y.under(x) {
                 Some(y)
             } else {
                 None
             };
             if let Some(p) = pick
-                && seen.insert(p.as_str())
+                && !out.contains(p)
             {
                 out.push(p.clone());
             }
         }
     }
     out
-}
-
-fn is_within(path: &str, base: &str) -> bool {
-    path == base || path.starts_with(&format!("{base}/"))
 }
 
 pub fn compile_rules(specs: &[RuleSpec]) -> Result<TokenScope> {
@@ -133,21 +132,12 @@ pub fn compile_rules(specs: &[RuleSpec]) -> Result<TokenScope> {
     Ok(TokenScope { rules })
 }
 
-pub fn normalize_folder(raw: &str) -> Result<String> {
+pub fn normalize_folder(raw: &str) -> Result<RelPath> {
     let rel = raw.trim().trim_matches('/');
-    let parts: Vec<&str> = if rel.is_empty() {
-        Vec::new()
-    } else {
-        rel.split('/').collect()
-    };
-    if parts.is_empty()
-        || parts
-            .iter()
-            .any(|p| p.is_empty() || *p == "." || *p == "..")
-    {
-        return Err(rejected(format!("invalid folder in policy: '{raw}'")));
-    }
-    Ok(parts.join("/"))
+    RelPath::new(rel)
+        .ok()
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| rejected(format!("invalid folder in policy: '{raw}'")))
 }
 
 fn build_rule(tools: Option<&[String]>, paths: Option<&[String]>) -> Result<Rule> {
@@ -220,15 +210,16 @@ mod tests {
         .unwrap()
     }
 
+    fn within(paths: &[&str]) -> Policy {
+        Policy::within(paths.iter().map(|p| RelPath::new(*p).unwrap()).collect())
+    }
+
     #[test]
     fn intersect_full_is_identity() {
         let child = rule(Some(&["ReadNote"]), Some(&["projects"]));
         let got = child.intersect(&TokenScope::full());
         assert!(got.allows("ReadNote") && !got.allows("WriteNote"));
-        assert_eq!(
-            got.folders_for("ReadNote"),
-            Some(vec!["projects".to_string()])
-        );
+        assert_eq!(got.policy_for("ReadNote"), within(&["projects"]));
     }
 
     #[test]
@@ -244,10 +235,7 @@ mod tests {
         let a = rule(None, Some(&["projects"]));
         let b = rule(None, Some(&["projects/drafts"]));
         let got = a.intersect(&b);
-        assert_eq!(
-            got.folders_for("ReadNote"),
-            Some(vec!["projects/drafts".to_string()])
-        );
+        assert_eq!(got.policy_for("ReadNote"), within(&["projects/drafts"]));
     }
 
     #[test]

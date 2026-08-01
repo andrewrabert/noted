@@ -9,10 +9,12 @@ use serde_json::json;
 use common::{json_body, post_json, post_mcp};
 
 fn keyed_app(dir: &tempfile::TempDir, scope: StoredScope) -> (axum::Router, String) {
-    let (notes, tasks) = common::cores(dir);
     let svc = common::auth_service(dir);
     let token = common::mint_key(&svc, "t", scope);
-    (build_app(context(notes, tasks), Some(svc), None), token)
+    (
+        build_app(context(common::root(dir)), Some(svc), None),
+        token,
+    )
 }
 
 fn spec(tools: Option<&[&str]>, paths: Option<&[&str]>) -> RuleSpec {
@@ -208,7 +210,6 @@ async fn mcp_scope_refuses_out_of_scope_tool() {
 #[tokio::test]
 async fn resolver_rejects_everything_but_a_live_prefixed_bearer() {
     let dir = common::fixture_dir();
-    let (notes, tasks) = common::cores(&dir);
     let svc = common::auth_service(&dir);
     let live = common::mint_key(&svc, "live", StoredScope::Unrestricted);
     let pending = svc
@@ -220,7 +221,7 @@ async fn resolver_rejects_everything_but_a_live_prefixed_bearer() {
     let revoked = common::mint_key(&svc, "dead", StoredScope::Unrestricted);
     svc.key_revoke(&noted::oauth::service::RevokeBy::Label(lb("dead")))
         .unwrap();
-    let app = build_app(context(notes, tasks), Some(svc), None);
+    let app = build_app(context(common::root(&dir)), Some(svc), None);
 
     let probe = |tok: Option<String>| {
         let app = app.clone();
@@ -334,10 +335,9 @@ async fn tool_multi_grant_confines_notes_per_tool_but_not_tasks() {
 #[tokio::test]
 async fn live_grant_edit_is_visible_to_the_next_request() {
     let dir = common::fixture_dir();
-    let (notes, tasks) = common::cores(&dir);
     let svc = common::auth_service(&dir);
     let token = common::mint_key(&svc, "agent", common::grants(Some(&["ReadNote"]), None));
-    let app = build_app(context(notes, tasks), Some(svc.clone()), None);
+    let app = build_app(context(common::root(&dir)), Some(svc.clone()), None);
 
     let (s, _) = post_json(
         &app,
@@ -367,8 +367,7 @@ async fn live_grant_edit_is_visible_to_the_next_request() {
 #[tokio::test]
 async fn mcp_initialize_returns_server_info() {
     let dir = common::fixture_dir();
-    let (notes, tasks) = common::cores(&dir);
-    let app = build_app(context(notes, tasks), None, None);
+    let app = build_app(context(common::root(&dir)), None, None);
     let (s, _headers, b) = post_mcp(
         &app,
         None,
@@ -384,8 +383,7 @@ async fn mcp_initialize_returns_server_info() {
 #[tokio::test]
 async fn mcp_stateless_needs_no_session() {
     let dir = common::fixture_dir();
-    let (notes, tasks) = common::cores(&dir);
-    let app = build_app(context(notes, tasks), None, None);
+    let app = build_app(context(common::root(&dir)), None, None);
     let (s, _h, b) = post_mcp(
         &app,
         None,

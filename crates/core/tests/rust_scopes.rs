@@ -1,17 +1,35 @@
 mod common;
 
-use common::{note, read, rp};
-use noted::notes::Notes;
+use common::{confined, found, grep, note, read, rp, write};
+use noted::caller::Policy;
 use noted::scope::{RuleSpec, StoredScope, TokenScope, compile_rules};
-use noted::search::{MatchOpts, WalkOpts};
-use noted::tasks::Tasks;
+use noted::tasks::{GroupPath, TaskNote, TaskQuery, TaskRef, TaskTitle};
 
-fn folders(list: &[&str]) -> Option<Vec<String>> {
-    Some(list.iter().map(|s| s.to_string()).collect())
+fn policy(list: &[&str]) -> Policy {
+    Policy::within(list.iter().map(|p| rp(p)).collect())
 }
 
 fn specs(json: &str) -> Vec<RuleSpec> {
     serde_json::from_str(json).unwrap()
+}
+
+fn gp(s: &str) -> GroupPath {
+    s.parse().unwrap()
+}
+fn tt(s: &str) -> TaskTitle {
+    s.parse().unwrap()
+}
+
+fn create(root: &noted::root::NotedRoot, task: &str, group: &str) -> noted::Result<TaskNote> {
+    root.task_create(&tt(task), &gp(group), &"".into())
+}
+
+fn all_tasks(root: &noted::root::NotedRoot) -> Vec<String> {
+    root.task_get(&TaskQuery::default())
+        .unwrap()
+        .iter()
+        .map(|t| t.path().to_string())
+        .collect()
 }
 
 #[test]
@@ -22,10 +40,10 @@ fn rule_json_compiles_to_per_tool_scopes() {
     ))
     .unwrap();
     assert!(scope.allows("SearchNotes") && scope.allows("ReadNote"));
-    assert_eq!(scope.folders_for("ReadNote"), None);
+    assert_eq!(scope.policy_for("ReadNote"), Policy::any());
     assert_eq!(
-        scope.folders_for("WriteNote"),
-        folders(&["proj", "notes/ideas"])
+        scope.policy_for("WriteNote"),
+        policy(&["proj", "notes/ideas"])
     );
     assert!(!scope.allows("DeleteNote"));
 }
@@ -34,12 +52,20 @@ fn rule_json_compiles_to_per_tool_scopes() {
 fn rule_json_is_fail_closed() {
     assert!(compile_rules(&specs(r#"[{"tools": ["Bogus"]}]"#)).is_err());
     assert!(compile_rules(&specs(r#"[{"paths": ["../evil"]}]"#)).is_err());
+    assert!(compile_rules(&specs(r#"[{"paths": [".hidden"]}]"#)).is_err());
     // "path" is a deliberate misspelling of "paths": an unknown key must be a
     // deserialization error, or a typo would silently widen a credential
     assert!(serde_json::from_str::<Vec<RuleSpec>>(r#"[{"path": ["a"]}]"#).is_err());
     assert!(serde_json::from_str::<Vec<RuleSpec>>(r#"[{"tools": "ReadNote"}]"#).is_err());
     let scope = compile_rules(&specs(r#"[{"tools": []}]"#)).unwrap();
     assert!(!scope.allows("ReadNote"));
+}
+
+#[test]
+fn an_empty_grant_admits_nothing_and_the_identity_admits_everything() {
+    assert!(Policy::any().admits(&rp("anything/at/all.md")));
+    let none = Policy::within(Vec::new());
+    assert!(!none.admits(&rp("Inbox.md")));
 }
 
 #[test]
@@ -59,21 +85,18 @@ fn stored_scope_modes_are_distinct() {
 }
 
 #[test]
-fn notes_confine_allows_inside_rejects_outside() {
+fn confine_allows_inside_rejects_outside() {
     let dir = common::fixture_dir();
-    let notes = Notes::new(&common::notes_root(&dir), None)
-        .unwrap()
-        .confined(folders(&["projects"]));
-    assert!(read(&notes, "projects/ideas.md").is_ok());
+    let root = confined(&dir, &["projects"]);
+    assert!(read(&root, "projects/ideas.md").is_ok());
     assert!(
-        read(&notes, "Inbox.md")
+        read(&root, "Inbox.md")
             .unwrap_err()
             .to_string()
             .contains("allowed folders")
     );
     assert!(
-        notes
-            .put(&note("people/x.md", "y"))
+        write(&root, &note("people/x.md", "y"))
             .unwrap_err()
             .to_string()
             .contains("allowed folders")
@@ -81,76 +104,62 @@ fn notes_confine_allows_inside_rejects_outside() {
 }
 
 #[test]
-fn notes_confine_allows_log_writes() {
+fn confine_never_blocks_a_log_entry() {
     let dir = common::fixture_dir();
-    let notes = Notes::new(&common::notes_root(&dir), Some("test".into()))
-        .unwrap()
-        .confined(folders(&["projects"]));
-    let logged = notes.create_log("entry\n-- t · s", None).unwrap();
+    let root = confined(&dir, &["projects"]);
+    let logged = root.log_note(&"entry\n-- t · s".into()).unwrap();
     assert!(logged.path().starts_with("Log/"));
 }
 
 #[test]
-fn notes_confine_move_guarded_both_ends() {
+fn confine_move_guarded_both_ends() {
     let dir = common::fixture_dir();
-    let notes = Notes::new(&common::notes_root(&dir), None)
-        .unwrap()
-        .confined(folders(&["projects"]));
+    let root = confined(&dir, &["projects"]);
     assert!(
-        notes
-            .move_note(&rp("projects/ideas.md"), &rp("people/moved.md"), false)
+        root.note_move(&rp("projects/ideas.md"), &rp("people/moved.md"), false)
             .unwrap_err()
             .to_string()
             .contains("allowed folders")
     );
     assert!(
-        notes
-            .move_note(&rp("projects/ideas.md"), &rp("projects/moved.md"), false)
+        root.note_move(&rp("projects/ideas.md"), &rp("projects/moved.md"), false)
             .is_ok()
     );
 }
 
 #[tokio::test]
-async fn notes_confine_search_only_returns_inside() {
+async fn confine_search_only_returns_inside() {
     let dir = common::fixture_dir();
-    let notes = Notes::new(&common::notes_root(&dir), None)
-        .unwrap()
-        .confined(folders(&["projects"]));
-    let m = MatchOpts::default();
-    let w = WalkOpts::default();
-    let paths = notes.match_path(".", &m, &w).await.unwrap();
+    let root = confined(&dir, &["projects"]);
+    let paths = found(&root, ".").await.unwrap();
     assert!(!paths.is_empty() && paths.iter().all(|p| p.starts_with("projects/")));
-    let grep = notes.grep(".", 1, &m, &w).await.unwrap();
-    assert!(grep.iter().all(|h| h.rel().starts_with("projects/")));
+    let hits = grep(&root, ".").await.unwrap();
+    assert!(hits.iter().all(|h| h.path.starts_with("projects/")));
 }
 
 #[test]
-fn notes_confined_none_is_full() {
+fn a_task_grant_is_spelled_root_relative() {
     let dir = common::fixture_dir();
-    let notes = Notes::new(&common::notes_root(&dir), None).unwrap();
-    assert!(read(&notes.confined(None), "Inbox.md").is_ok());
-}
+    create(&common::root(&dir), "seed", "dev").unwrap();
 
-#[test]
-fn tasks_confine_create_and_reject() {
-    let dir = common::fixture_dir();
-    let root = common::notes_root(&dir);
-    Tasks::new(&root)
-        .create(&tt("seed"), &gp("dev"), "")
-        .unwrap();
-    let tasks = Tasks::new(&root).confined(folders(&["dev"]));
-    let made = tasks.create(&tt("scoped work"), &gp("dev"), "").unwrap();
-    assert!(made["path"].as_str().unwrap().starts_with("dev/"));
+    let root = confined(&dir, &["Tasks/dev"]);
+    let made = create(&root, "scoped work", "dev").unwrap();
+    assert!(made.path().as_str().starts_with("dev/"));
+
     assert!(
-        tasks
-            .create(&tt("nope"), &gp("ops"), "")
+        create(&root, "nope", "ops")
             .unwrap_err()
             .to_string()
             .contains("allowed folders")
     );
     assert!(
-        tasks
-            .create(&tt("nope"), &gp(""), "")
+        create(&root, "nope", "")
+            .unwrap_err()
+            .to_string()
+            .contains("allowed folders")
+    );
+    assert!(
+        root.task_update(&TaskRef::new("ops/task_0001").unwrap(), &Default::default())
             .unwrap_err()
             .to_string()
             .contains("allowed folders")
@@ -158,32 +167,12 @@ fn tasks_confine_create_and_reject() {
 }
 
 #[test]
-fn tasks_confine_query_filters() {
+fn a_task_grant_filters_a_listing() {
     let dir = common::fixture_dir();
-    let root = common::notes_root(&dir);
-    let seed = Tasks::new(&root);
-    seed.create(&tt("in dev"), &gp("dev"), "").unwrap();
-    seed.create(&tt("in ops"), &gp("ops"), "").unwrap();
-    let tasks = Tasks::new(&root).confined(folders(&["dev"]));
-    let listed = tasks.query("", false, false).unwrap();
-    let paths: Vec<&str> = listed
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| r["path"].as_str().unwrap())
-        .collect();
+    let seed = common::root(&dir);
+    create(&seed, "in dev", "dev").unwrap();
+    create(&seed, "in ops", "ops").unwrap();
+
+    let paths = all_tasks(&confined(&dir, &["Tasks/dev"]));
     assert!(!paths.is_empty() && paths.iter().all(|p| p.starts_with("dev/")));
-}
-
-#[allow(dead_code)]
-fn gp(s: &str) -> noted::tasks::GroupPath {
-    s.parse().unwrap()
-}
-#[allow(dead_code)]
-fn tt(s: &str) -> noted::tasks::TaskTitle {
-    s.parse().unwrap()
-}
-#[allow(dead_code)]
-fn ts(s: &str) -> noted::tasks::TaskState {
-    s.parse().unwrap()
 }

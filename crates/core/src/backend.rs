@@ -2,9 +2,8 @@ use serde_json::Value;
 
 use crate::error::{Result, conflict, forbidden, json_error, not_found, rejected, unavailable};
 use crate::httpurl::HttpUrl;
-use crate::notes::Notes;
-use crate::tasks::Tasks;
-use crate::tools::{CLI_ONLY_FIELDS, ToolOutput, run_tool};
+use crate::root::NotedRoot;
+use crate::tools::{ToolOutput, run_tool};
 
 pub struct ToolCall {
     pub name: String,
@@ -19,8 +18,7 @@ pub enum Transport {
 
 pub enum Backend {
     Filesystem {
-        notes: Notes,
-        tasks: Tasks,
+        root: NotedRoot,
     },
     Http {
         url: HttpUrl,
@@ -30,8 +28,8 @@ pub enum Backend {
 }
 
 impl Backend {
-    pub fn filesystem(notes: Notes, tasks: Tasks) -> Backend {
-        Backend::Filesystem { notes, tasks }
+    pub fn filesystem(root: NotedRoot) -> Backend {
+        Backend::Filesystem { root }
     }
 
     pub fn http(url: &HttpUrl, token: Option<String>) -> Backend {
@@ -53,9 +51,7 @@ impl Backend {
 
     pub async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput> {
         match self {
-            Backend::Filesystem { notes, tasks } => {
-                run_tool(&call.name, &call.args, notes, tasks).await
-            }
+            Backend::Filesystem { root } => run_tool(&call.name, &call.args, root).await,
             Backend::Http {
                 url,
                 token,
@@ -72,8 +68,7 @@ async fn roundtrip(
     name: &str,
     args: &Value,
 ) -> Result<ToolOutput> {
-    let payload = strip_cli_only(args);
-    let body = serde_json::to_vec(&payload).unwrap_or_default();
+    let body = serde_json::to_vec(args).unwrap_or_default();
     let target = url.join(&format!("tool/{name}"));
     let (status, resp_body) = match send(transport, target.as_str(), token, body).await {
         Ok(pair) => pair,
@@ -100,16 +95,6 @@ async fn roundtrip(
             .map_err(|e| json_error(format!("{url}: malformed response"), e)),
         None => Err(unavailable(format!("{url}: malformed response"))),
     }
-}
-
-fn strip_cli_only(args: &Value) -> Value {
-    let mut out = args.clone();
-    if let Value::Object(map) = &mut out {
-        for field in CLI_ONLY_FIELDS {
-            map.remove(field);
-        }
-    }
-    out
 }
 
 fn detail(body: &[u8]) -> Option<String> {

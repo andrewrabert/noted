@@ -1,18 +1,18 @@
 mod common;
 
 use noted::backend::{Backend, ToolCall, Transport};
+use noted::caller::{Caller, Policy};
 use noted::error::NotedError;
 use noted::http::build_app;
 use noted::httpurl::HttpUrl;
 use noted::mcp::context;
-use noted::notes::Notes;
+use noted::root::NotedRoot;
 use noted::scope::StoredScope;
-use noted::tasks::Tasks;
+use noted::store::{NotedDir, Store};
 use serde_json::json;
 
 fn open_app(dir: &tempfile::TempDir) -> axum::Router {
-    let (notes, tasks) = common::cores(dir);
-    build_app(context(notes, tasks), None, None)
+    build_app(context(common::root(dir)), None, None)
 }
 
 fn url(s: &str) -> HttpUrl {
@@ -77,10 +77,9 @@ async fn http_invalid_pattern_maps_from_4xx() {
 #[tokio::test]
 async fn http_sends_and_checks_bearer_token() {
     let dir = common::fixture_dir();
-    let (notes, tasks) = common::cores(&dir);
     let svc = common::auth_service(&dir);
     let token = common::mint_key(&svc, "test", StoredScope::Unrestricted);
-    let authed_app = build_app(context(notes, tasks), Some(svc), None);
+    let authed_app = build_app(context(common::root(&dir)), Some(svc), None);
 
     let ok = Backend::http_with(
         &url("http://test"),
@@ -105,16 +104,17 @@ async fn http_sends_and_checks_bearer_token() {
 }
 
 #[tokio::test]
-async fn http_strips_cli_only_source() {
+async fn http_log_records_the_servers_provenance() {
     let dir = common::fixture_dir();
     let out = remote(&dir)
-        .invoke(&call(
-            "LogNote",
-            json!({"body": "hi\n-- t · s", "source": "dropped"}),
-        ))
+        .invoke(&call("LogNote", json!({"body": "hi\n-- t · s"})))
         .await
         .unwrap();
-    assert!(out.render().starts_with("logged Log/"));
+    let noted::tools::ToolOutput::Logged { path } = &out else {
+        panic!("expected a log receipt, got {}", out.render());
+    };
+    let text = std::fs::read_to_string(common::notes_root(&dir).join(path)).unwrap();
+    assert!(text.contains("source: test"), "{text}");
 }
 
 fn canned(status: u16, body: &'static str) -> axum::Router {
@@ -197,10 +197,10 @@ fn backend_selects_http_when_remote_url_set() {
 #[test]
 fn backend_selects_filesystem_locally() {
     let dir = common::fixture_dir();
-    let notes = Notes::new(&common::notes_root(&dir), None).unwrap();
-    let tasks = Tasks::new(notes.root());
+    let store = Store::open(NotedDir::new(common::notes_root(&dir))).unwrap();
+    let root = NotedRoot::new(store, Caller::new(Policy::any(), None));
     assert!(matches!(
-        Backend::filesystem(notes, tasks),
+        Backend::filesystem(root),
         Backend::Filesystem { .. }
     ));
 }

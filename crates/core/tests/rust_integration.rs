@@ -2,14 +2,13 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{note, read, rp};
+use common::{found, grep, note, read, rp, write};
 
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use noted::mcp::context;
-use noted::notes::Notes;
-use noted::search::{MatchOpts, WalkOpts};
-use noted::tasks::Tasks;
+use noted::root::NotedRoot;
+use noted::tasks::{GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskState, TaskTitle};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -35,133 +34,155 @@ fn fixture_dir() -> tempfile::TempDir {
     tmp
 }
 
-fn cores(dir: &tempfile::TempDir) -> (Notes, Tasks) {
-    let root = dir.path().join("notes");
-    let notes = Notes::new(&root, Some("test".into())).unwrap();
-    let tasks = Tasks::new(notes.root());
-    (notes, tasks)
+fn cores(dir: &tempfile::TempDir) -> NotedRoot {
+    common::root(dir)
+}
+
+fn gp(s: &str) -> GroupPath {
+    s.parse().unwrap()
+}
+fn tt(s: &str) -> TaskTitle {
+    s.parse().unwrap()
+}
+fn tr(s: &str) -> TaskRef {
+    s.parse().unwrap()
+}
+fn ts(s: &str) -> TaskState {
+    s.parse().unwrap()
+}
+
+fn create(root: &NotedRoot, task: &str, group: &str) -> noted::Result<TaskNote> {
+    root.task_create(&tt(task), &gp(group), &"".into())
+}
+
+fn get(root: &NotedRoot, prefix: &str, include_completed: bool) -> Vec<TaskNote> {
+    root.task_get(&TaskQuery {
+        prefix: tr(prefix),
+        include_completed,
+    })
+    .unwrap()
+}
+
+fn advance(
+    root: &NotedRoot,
+    reference: &str,
+    state: &str,
+    notes: Option<&str>,
+) -> noted::Result<TaskNote> {
+    root.task_update(
+        &tr(reference),
+        &TaskChange {
+            state: Some(ts(state)),
+            notes: notes.map(Into::into),
+            task: None,
+        },
+    )
 }
 
 #[test]
 fn read_existing_and_missing() {
     let dir = fixture_dir();
-    let (notes, _) = cores(&dir);
-    assert!(read(&notes, "Inbox.md").unwrap().contains("# Inbox"));
-    assert!(read(&notes, "nope.md").is_err());
+    let root = cores(&dir);
+    assert!(read(&root, "Inbox.md").unwrap().contains("# Inbox"));
+    assert!(read(&root, "nope.md").is_err());
 }
 
 #[test]
 fn write_roundtrip_and_path_escape() {
     let dir = fixture_dir();
-    let (notes, _) = cores(&dir);
-    notes.put(&note("sub/new.md", "hello")).unwrap();
-    assert_eq!(read(&notes, "sub/new.md").unwrap(), "hello");
-    assert!(notes.put(&note("../escape.md", "x")).is_err());
-    assert!(read(&notes, "../../etc/passwd").is_err());
+    let root = cores(&dir);
+    write(&root, &note("sub/new.md", "hello")).unwrap();
+    assert_eq!(read(&root, "sub/new.md").unwrap(), "hello");
+    assert!("../escape.md".parse::<noted::path::RelPath>().is_err());
+    assert!("../../etc/passwd".parse::<noted::path::RelPath>().is_err());
 }
 
 #[test]
 fn log_is_immutable_and_recoverable_delete() {
     let dir = fixture_dir();
-    let (notes, _) = cores(&dir);
-    let rel = notes
-        .create_log("entry\n-- t · s", None)
+    let root = cores(&dir);
+    let rel = root
+        .log_note(&"entry\n-- t · s".into())
         .unwrap()
         .path()
         .to_string();
     assert!(rel.starts_with("Log/"));
-    let err = notes.put(&note(&rel, "x")).unwrap_err();
+    let err = write(&root, &note(&rel, "x")).unwrap_err();
     assert!(err.to_string().contains("immutable"));
-    assert!(notes.delete(&rp(&rel)).is_err());
-    assert!(notes.move_note(&rp(&rel), &rp("moved.md"), false).is_err());
+    assert!(root.note_delete(&rp(&rel)).is_err());
+    assert!(root.note_move(&rp(&rel), &rp("moved.md"), false).is_err());
 
-    let trash = notes.delete(&rp("Inbox.md")).unwrap();
-    assert!(trash.starts_with(".trash/"));
-    assert!(read(&notes, "Inbox.md").is_err());
+    let trashed = root.note_delete(&rp("Inbox.md")).unwrap();
+    assert!(trashed.path().starts_with(".trash/"));
+    assert!(read(&root, "Inbox.md").is_err());
 }
 
 #[tokio::test]
 async fn search_content_and_path_exclude_trash() {
     let dir = fixture_dir();
-    let (notes, _) = cores(&dir);
-    let m = MatchOpts::default();
-    let w = WalkOpts::default();
+    let root = cores(&dir);
 
-    let hits = notes.grep("XYZZY", 1, &m, &w).await.unwrap();
-    assert!(hits.iter().any(|h| h.rel().as_str() == "projects/ideas.md"));
+    let hits = grep(&root, "XYZZY").await.unwrap();
+    assert!(hits.iter().any(|h| h.path == "projects/ideas.md"));
 
-    let normal = notes.match_path("idea", &m, &w).await.unwrap();
+    let normal = found(&root, "idea").await.unwrap();
     assert!(!normal.iter().any(|p| p.starts_with(".trash/")));
     // FROBNICATE appears only in the fixture's trashed note
-    let frob = notes.grep("FROBNICATE", 1, &m, &w).await.unwrap();
-    assert!(frob.is_empty());
+    assert!(grep(&root, "FROBNICATE").await.unwrap().is_empty());
 }
 
 #[test]
 fn task_lifecycle_numbering_and_states() {
     let dir = fixture_dir();
-    let (_, tasks) = cores(&dir);
+    let root = cores(&dir);
 
-    let a = tasks.create(&tt("first"), &gp("dev/noted"), "").unwrap();
-    let b = tasks.create(&tt("second"), &gp("dev/noted"), "").unwrap();
-    assert_eq!(a["path"], "dev/noted/task_0001");
-    assert_eq!(b["path"], "dev/noted/task_0002");
-    assert_eq!(a["state"], "created");
+    let a = create(&root, "first", "dev/noted").unwrap();
+    let b = create(&root, "second", "dev/noted").unwrap();
+    assert_eq!(a.path(), "dev/noted/task_0001");
+    assert_eq!(b.path(), "dev/noted/task_0002");
+    assert_eq!(a.front().state, TaskState::Created);
 
-    assert!(
-        tasks
-            .update(
-                &rp("dev/noted/task_0001"),
-                Some(ts("completed")),
-                None,
-                None
-            )
-            .is_err()
-    );
-    let done = tasks
-        .update(
-            &rp("dev/noted/task_0001"),
-            Some(ts("completed")),
-            Some("shipped it"),
-            None,
-        )
+    assert!(advance(&root, "dev/noted/task_0001", "completed", None).is_err());
+    let done = advance(
+        &root,
+        "dev/noted/task_0001",
+        "completed",
+        Some("shipped it"),
+    )
+    .unwrap();
+    assert_eq!(done.front().state, TaskState::Completed);
+
+    assert_eq!(get(&root, "dev/noted", false).len(), 1);
+    assert_eq!(get(&root, "dev/noted", true).len(), 2);
+
+    let exact = get(&root, "dev/noted/task_0001", false);
+    assert_eq!(exact.len(), 1);
+    assert!(exact[0].body().as_str().contains("shipped it"));
+
+    let moved = root
+        .task_move(&tr("dev/noted/task_0002"), &gp("dev/other"))
         .unwrap();
-    assert_eq!(done["state"], "completed");
-
-    let open = tasks.query("dev/noted", false, false).unwrap();
-    assert_eq!(open.as_array().unwrap().len(), 1);
-    let all = tasks.query("dev/noted", false, true).unwrap();
-    assert_eq!(all.as_array().unwrap().len(), 2);
-
-    let exact = tasks.query("dev/noted/task_0001", true, false).unwrap();
-    assert_eq!(exact.as_array().unwrap().len(), 1);
-    assert!(exact[0]["body"].as_str().unwrap().contains("shipped it"));
-
-    let moved = tasks
-        .move_task(&rp("dev/noted/task_0002"), &gp("dev/other"))
-        .unwrap();
-    assert_eq!(moved["path"], "dev/other/task_0001");
-    let gone = tasks.query("dev/noted/task_0002", false, false).unwrap();
-    assert!(gone.as_array().unwrap().is_empty());
+    assert_eq!(moved.path(), "dev/other/task_0001");
+    assert!(get(&root, "dev/noted/task_0002", false).is_empty());
 }
 
 #[test]
 fn task_name_validation_and_escape() {
     let dir = fixture_dir();
-    let (_, tasks) = cores(&dir);
-    assert!(tasks.create(&tt("x"), &gp("bad name"), "").is_err());
-    assert!(tasks.create(&tt("x"), &gp("1leading"), "").is_err());
-    assert!(tasks.create(&tt("x"), &gp("../escape"), "").is_err());
-    assert!(tasks.create(&tt("x"), &gp("ok-group_2"), "").is_ok());
+    let root = cores(&dir);
+    assert!("bad name".parse::<GroupPath>().is_err());
+    assert!("1leading".parse::<GroupPath>().is_err());
+    assert!("../escape".parse::<GroupPath>().is_err());
+    assert!(create(&root, "x", "ok-group_2").is_ok());
 }
 
 #[test]
 fn write_and_edit_refused_under_tasks() {
     let dir = fixture_dir();
-    let (notes, tasks) = cores(&dir);
-    tasks.create(&tt("t"), &gp("grp"), "").unwrap();
-    assert!(notes.put(&note("Tasks/grp/task_0001.md", "x")).is_err());
-    assert!(notes.delete(&rp("Tasks/grp/task_0001.md")).is_err());
+    let root = cores(&dir);
+    create(&root, "t", "grp").unwrap();
+    assert!(write(&root, &note("Tasks/grp/task_0001.md", "x")).is_err());
+    assert!(root.note_delete(&rp("Tasks/grp/task_0001.md")).is_err());
 }
 
 async fn mcp_raw(app: &axum::Router, body: &Value) -> axum::response::Response {
@@ -205,8 +226,8 @@ fn tool_text(result: &Value) -> String {
 #[tokio::test]
 async fn mcp_initialize_list_and_call() {
     let dir = fixture_dir();
-    let (notes, tasks) = cores(&dir);
-    let app = noted::http::build_app(context(notes, tasks), None, None);
+    let root = cores(&dir);
+    let app = noted::http::build_app(context(root), None, None);
 
     let init = mcp_post(&app, &init_msg()).await;
     assert_eq!(init["result"]["serverInfo"]["name"], "noted");
@@ -265,8 +286,8 @@ async fn mcp_initialize_list_and_call() {
 #[tokio::test]
 async fn mcp_read_only_hides_and_refuses_mutators() {
     let dir = fixture_dir();
-    let (notes, tasks) = cores(&dir);
-    let mut ctx = context(notes, tasks);
+    let root = cores(&dir);
+    let mut ctx = context(root);
     ctx.process_scope = noted::mcp::CallScope::Scoped(
         noted::scope::TokenScope::single_rule(
             Some(vec!["SearchNotes".into(), "ReadNote".into()]),
@@ -297,8 +318,8 @@ async fn mcp_read_only_hides_and_refuses_mutators() {
 #[tokio::test]
 async fn mcp_notification_has_no_response() {
     let dir = fixture_dir();
-    let (notes, tasks) = cores(&dir);
-    let app = noted::http::build_app(context(notes, tasks), None, None);
+    let root = cores(&dir);
+    let app = noted::http::build_app(context(root), None, None);
     let resp = mcp_raw(
         &app,
         &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
@@ -315,8 +336,8 @@ async fn body_json(resp: axum::response::Response) -> Value {
 #[tokio::test]
 async fn http_tool_route_and_errors() {
     let dir = fixture_dir();
-    let (notes, tasks) = cores(&dir);
-    let app = noted::http::build_app(context(notes, tasks), None, None);
+    let root = cores(&dir);
+    let app = noted::http::build_app(context(root), None, None);
 
     let resp = app
         .clone()
@@ -393,25 +414,12 @@ async fn http_bearer_auth_gates_requests() {
 #[tokio::test]
 async fn http_mcp_endpoint_roundtrip() {
     let dir = fixture_dir();
-    let (notes, tasks) = cores(&dir);
-    let app = noted::http::build_app(context(notes, tasks), None, None);
+    let root = cores(&dir);
+    let app = noted::http::build_app(context(root), None, None);
 
     let req = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": "SearchNotes", "arguments": {"pattern": "XYZZY", "mode": "line"}}});
     let value = mcp_post(&app, &req).await;
     let text = value["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("projects/ideas.md"));
-}
-
-#[allow(dead_code)]
-fn gp(s: &str) -> noted::tasks::GroupPath {
-    s.parse().unwrap()
-}
-#[allow(dead_code)]
-fn tt(s: &str) -> noted::tasks::TaskTitle {
-    s.parse().unwrap()
-}
-#[allow(dead_code)]
-fn ts(s: &str) -> noted::tasks::TaskState {
-    s.parse().unwrap()
 }
