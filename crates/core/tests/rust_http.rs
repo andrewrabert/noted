@@ -69,19 +69,11 @@ fn search_schema_is_lean_and_surface_clean() {
     for expected in ["pattern", "mode", "context", "fixed", "glob"] {
         assert!(props.contains_key(expected), "schema missing {expected}");
     }
-    for hidden in [
-        "case",
-        "word",
-        "multiline",
-        "type",
-        "prefix",
-        "trash",
-        "meta",
-    ] {
+    for hidden in ["case", "word", "multiline", "type", "prefix", "trash"] {
         assert!(!props.contains_key(hidden), "schema exposes {hidden}");
     }
     let blob = serde_json::to_string(&search.input_schema).unwrap() + search.description;
-    for banned in ["ripgrep", "trash", ".md.meta"] {
+    for banned in ["ripgrep", "trash"] {
         assert!(
             !blob.contains(banned),
             "SearchNotes surface leaks '{banned}'"

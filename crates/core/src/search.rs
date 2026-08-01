@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
+use std::hash::Hash;
 use std::path::Path;
 
 use clap::ValueEnum;
@@ -14,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Result, rejected};
 use crate::newtype::str_newtype_validated;
 use crate::path::RelPath;
+use crate::types::Date;
 
 #[derive(Serialize, Deserialize, JsonSchema, ValueEnum, Default, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -102,14 +104,67 @@ pub struct SearchQuery {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Hit {
-    pub path: RelPath,
+pub struct Hit<A = RelPath> {
+    pub path: A,
     pub lines: BTreeMap<u64, String>,
 }
 
-impl Hit {
+impl<A> Hit<A> {
     pub fn lines(&self) -> impl Iterator<Item = (u64, &str)> {
         self.lines.iter().map(|(n, t)| (*n, t.as_str()))
+    }
+
+    pub(crate) fn matched(path: A) -> Hit<A> {
+        Hit {
+            path,
+            lines: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LogWindow {
+    since: Option<Date>,
+    until: Option<Date>,
+}
+
+impl LogWindow {
+    pub fn new(since: Option<Date>, until: Option<Date>) -> Result<LogWindow> {
+        if let (Some(from), Some(to)) = (since, until)
+            && from > to
+        {
+            return Err(rejected(format!(
+                "since '{from}' is later than until '{to}'"
+            )));
+        }
+        Ok(LogWindow { since, until })
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.since.is_none() && self.until.is_none()
+    }
+
+    pub fn admits(&self, day: Date) -> bool {
+        self.since.is_none_or(|from| day >= from) && self.until.is_none_or(|to| day <= to)
+    }
+
+    pub(crate) fn admits_dir(&self, under_log: &str) -> bool {
+        let mut parts = under_log.split('/').filter(|p| !p.is_empty());
+        let Some(year) = parts.next().and_then(|p| p.parse::<i32>().ok()) else {
+            return true;
+        };
+        let Some(month) = parts.next() else {
+            return self.since.is_none_or(|from| year >= from.year())
+                && self.until.is_none_or(|to| year <= to.year());
+        };
+        let Ok(month) = month.parse::<u32>() else {
+            return true;
+        };
+        let Ok(key) = Date::new(year, month, 1).map(Date::month_key) else {
+            return true;
+        };
+        self.since.is_none_or(|from| key >= from.month_key())
+            && self.until.is_none_or(|to| key <= to.month_key())
     }
 }
 
@@ -174,12 +229,15 @@ pub(crate) fn narrow(wb: &mut WalkBuilder, base: &Path, query: &SearchQuery) -> 
     Ok(())
 }
 
-pub(crate) fn match_paths(query: &SearchQuery, paths: Vec<RelPath>) -> Result<Vec<RelPath>> {
+pub(crate) fn match_paths<A>(query: &SearchQuery, paths: Vec<A>) -> Result<Vec<A>>
+where
+    A: AsRef<str> + Clone + Eq + Hash,
+{
     let matcher = build_matcher(query)?;
-    let mut seen: HashSet<RelPath> = HashSet::new();
+    let mut seen: HashSet<A> = HashSet::new();
     let mut out = Vec::new();
     for path in paths {
-        if !matcher.is_match(path.as_str().as_bytes()).unwrap_or(false) {
+        if !matcher.is_match(path.as_ref().as_bytes()).unwrap_or(false) {
             continue;
         }
         if seen.insert(path.clone()) {
@@ -187,6 +245,27 @@ pub(crate) fn match_paths(query: &SearchQuery, paths: Vec<RelPath>) -> Result<Ve
         }
     }
     Ok(out)
+}
+
+pub(crate) fn assemble<A>(
+    query: &SearchQuery,
+    hits: Vec<Hit<A>>,
+    walked: Vec<A>,
+) -> Result<Vec<Hit<A>>>
+where
+    A: AsRef<str> + Clone + Eq + Hash,
+{
+    let mut hits = hits;
+    if !matches!(query.mode, SearchMode::Any | SearchMode::Path) {
+        return Ok(hits);
+    }
+    let seen: HashSet<A> = hits.iter().map(|hit| hit.path.clone()).collect();
+    for path in match_paths(query, walked)? {
+        if !seen.contains(&path) {
+            hits.push(Hit::matched(path));
+        }
+    }
+    Ok(hits)
 }
 
 pub(crate) struct LineSink {

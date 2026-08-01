@@ -217,8 +217,8 @@ mod tests {
     use super::parse_paths;
 
     #[test]
-    fn parse_paths_keeps_notes_and_drops_blanks_and_sidecars() {
-        let text = "Inbox.md\n\n  projects/ideas.md  \nLog/2026/07/x.md.meta\n";
+    fn parse_paths_keeps_notes_and_drops_blanks_and_non_notes() {
+        let text = "Inbox.md\n\n  projects/ideas.md  \nprojects/diagram.png\n";
         assert_eq!(
             parse_paths(text),
             vec!["Inbox.md".to_string(), "projects/ideas.md".to_string()]

@@ -48,12 +48,12 @@ pub fn query(pattern: &str, mode: SearchMode) -> SearchQuery {
 }
 
 pub async fn grep(root: &NotedRoot, pattern: &str) -> noted::Result<Vec<Hit>> {
-    root.search(&query(pattern, SearchMode::Line)).await
+    root.note_search(&query(pattern, SearchMode::Line)).await
 }
 
 pub async fn found(root: &NotedRoot, pattern: &str) -> noted::Result<Vec<String>> {
     Ok(root
-        .search(&query(pattern, SearchMode::Path))
+        .note_search(&query(pattern, SearchMode::Path))
         .await?
         .into_iter()
         .map(|hit| hit.path.to_string())

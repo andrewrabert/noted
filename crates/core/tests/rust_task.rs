@@ -525,3 +525,131 @@ fn symlinked_group_dir_is_ignored() {
     assert!(get(&root, "escape", false).unwrap().is_empty());
     assert_eq!(paths(&get(&root, "", true).unwrap()), vec!["task_0001"]);
 }
+
+async fn find(root: &NotedRoot, args: serde_json::Value) -> String {
+    noted::tools::run_tool("SearchTasks", &args, root)
+        .await
+        .unwrap()
+        .render()
+}
+
+#[tokio::test]
+async fn search_returns_task_refs_newest_updated_first() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    create(&root, "older", "dev", "SHARED marker\n").unwrap();
+    create(&root, "newer", "dev", "SHARED marker\n").unwrap();
+    advance(&root, "dev/task_0002", "started", None).unwrap();
+
+    let out = find(&root, serde_json::json!({"pattern": "SHARED"})).await;
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        vec!["dev/task_0002", "dev/task_0001"]
+    );
+
+    let listed = find(&root, serde_json::json!({"mode": "path"})).await;
+    assert_eq!(
+        listed.lines().collect::<Vec<_>>(),
+        vec!["dev/task_0002", "dev/task_0001"],
+        "the most recently updated task comes first"
+    );
+}
+
+#[tokio::test]
+async fn search_line_mode_addresses_matches_by_task_ref() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    create(&root, "t", "dev", "NEEDLE here\n").unwrap();
+
+    let out = find(
+        &root,
+        serde_json::json!({"pattern": "NEEDLE", "mode": "line"}),
+    )
+    .await;
+    assert!(out.starts_with("dev/task_0001:"), "{out}");
+    assert!(!out.contains("Tasks/"), "{out}");
+    assert!(!out.contains(".md"), "{out}");
+}
+
+#[tokio::test]
+async fn search_narrows_to_a_group_and_hides_closed_tasks() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    create(&root, "kept", "dev", "MARK\n").unwrap();
+    create(&root, "elsewhere", "ops", "MARK\n").unwrap();
+    create(&root, "done", "dev", "MARK\n").unwrap();
+    advance(&root, "dev/task_0002", "completed", Some("MARK finished\n")).unwrap();
+
+    let scoped = find(
+        &root,
+        serde_json::json!({"pattern": "MARK", "prefix": "dev"}),
+    )
+    .await;
+    assert_eq!(scoped.lines().collect::<Vec<_>>(), vec!["dev/task_0001"]);
+
+    let closed = find(
+        &root,
+        serde_json::json!({"pattern": "MARK", "prefix": "dev", "include_completed": true}),
+    )
+    .await;
+    assert_eq!(closed.lines().count(), 2, "{closed}");
+
+    let everywhere = find(&root, serde_json::json!({"pattern": "MARK"})).await;
+    assert!(everywhere.contains("ops/task_0001"), "{everywhere}");
+}
+
+#[tokio::test]
+async fn search_is_scoped_to_tasks_and_validates_its_prefix() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    create(&root, "t", "dev", "body\n").unwrap();
+
+    // "contacts" appears only in the open region
+    assert!(
+        find(&root, serde_json::json!({"pattern": "contacts"}))
+            .await
+            .is_empty()
+    );
+    for args in [
+        serde_json::json!({"prefix": "../escape"}),
+        serde_json::json!({"prefix": "0bad"}),
+        serde_json::json!({"pattern": "("}),
+    ] {
+        assert!(
+            noted::tools::run_tool("SearchTasks", &args, &root)
+                .await
+                .is_err(),
+            "{args} should be rejected"
+        );
+    }
+}
+
+#[tokio::test]
+async fn search_admits_only_what_the_grant_allows() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    create(&root, "visible", "dev", "MARK\n").unwrap();
+    create(&root, "hidden", "ops", "MARK\n").unwrap();
+
+    let confined = common::confined(&dir, &["Tasks/dev"]);
+    let out = find(&confined, serde_json::json!({"pattern": "MARK"})).await;
+    assert_eq!(out.lines().collect::<Vec<_>>(), vec!["dev/task_0001"]);
+    assert_eq!(
+        find(&root, serde_json::json!({"pattern": "MARK"}))
+            .await
+            .lines()
+            .count(),
+        2,
+        "the unconfined caller sees both"
+    );
+    assert!(
+        noted::tools::run_tool(
+            "SearchTasks",
+            &serde_json::json!({"prefix": "ops"}),
+            &confined,
+        )
+        .await
+        .is_err(),
+        "a prefix disjoint from the grant is refused"
+    );
+}

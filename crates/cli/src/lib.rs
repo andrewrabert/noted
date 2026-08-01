@@ -9,7 +9,7 @@ use noted::oauth::service::DEFAULT_CREDENTIAL_TTL_HUMAN;
 use noted::scope::RuleSpec;
 use noted::serve::{HttpConfig, StdioConfig};
 use noted::store::NotedDir;
-use noted::tools::{DeleteArgs, EditArgs, LogArgs, MoveArgs, ReadArgs, SearchArgs, WriteArgs};
+use noted::tools::{DeleteArgs, EditArgs, MoveArgs, ReadArgs, SearchNotesArgs, WriteArgs};
 use noted::types::{Source, Ttl};
 
 use crate::config::{parse_ttl, resolve_root, setup_logging};
@@ -24,7 +24,7 @@ mod text_editor;
 
 use admin::{KeyCmd, UserCmd};
 use auth::AuthCmd;
-use dispatch::TaskCmd;
+use dispatch::{LogCmd, TaskCmd};
 
 pub fn main() -> ExitCode {
     config::load_env_file();
@@ -86,7 +86,7 @@ struct GlobalArgs {
 #[derive(Subcommand)]
 enum Command {
     /// Find notes by regex
-    Search(SearchArgs),
+    Search(SearchNotesArgs),
     /// Read a note's text by relative path
     Read(ReadArgs),
     /// Write a note, overwriting it
@@ -100,8 +100,8 @@ enum Command {
     Move(MoveArgs),
     /// Move a note to trash
     Delete(DeleteArgs),
-    /// Append an immutable, timestamped log entry
-    Log(LogArgs),
+    /// Immutable, timestamped log entries
+    Log(LogCmd),
     /// Task tracker
     Task(TaskCmd),
     /// Log in to a remote server and mint agent credentials
@@ -242,7 +242,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     };
     match command {
-        Command::Search(c) => dispatch::run_dispatch(&globals, dispatch::search(c)),
+        Command::Search(c) => dispatch::run_dispatch(&globals, dispatch::search("SearchNotes", c)),
         Command::Read(c) => {
             dispatch::run_dispatch(&globals, dispatch::passthrough_of("ReadNote", c))
         }
@@ -259,7 +259,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Delete(c) => {
             dispatch::run_dispatch(&globals, dispatch::passthrough_of("DeleteNote", c))
         }
-        Command::Log(c) => dispatch::run_dispatch(&globals, dispatch::passthrough_of("LogNote", c)),
+        Command::Log(c) => dispatch::run_dispatch(&globals, dispatch::build_log(c)),
         Command::Task(c) => dispatch::run_dispatch(&globals, dispatch::build_task(c)),
         Command::Auth(c) => auth::run_auth(c, &globals),
         Command::Server(c) => run_server(c, &globals),

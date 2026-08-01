@@ -128,16 +128,48 @@ fn delete_recoverable() {
 }
 
 #[test]
-fn log_writes_entry() {
+fn log_writes_entry_then_lists_and_searches_it() {
     let d = fixture();
     let r = run(
         &d,
         true,
         &[],
-        &["log", "did a thing\n-- claude-code · sess"],
+        &["log", "create", "did a thing\n-- claude-code · sess"],
     );
     assert_eq!(r.code, 0);
     assert!(r.stdout.starts_with("logged Log/"));
+
+    let listed = run(&d, true, &[], &["log", "get", "--body"]);
+    assert_eq!(listed.code, 0);
+    assert!(listed.stdout.contains("did a thing"), "{}", listed.stdout);
+
+    let found = run(&d, true, &[], &["log", "search", "did a thing"]);
+    assert_eq!(found.code, 0);
+    assert!(found.stdout.contains("Log/"), "{}", found.stdout);
+
+    let missing = run(&d, true, &[], &["log", "search", "NoSuchEntryAnywhere"]);
+    assert_ne!(missing.code, 0);
+    assert!(missing.stdout.is_empty());
+}
+
+#[test]
+fn log_get_rejects_a_backwards_window() {
+    let d = fixture();
+    let r = run(
+        &d,
+        true,
+        &[],
+        &[
+            "log",
+            "get",
+            "--since",
+            "2026-08-01",
+            "--until",
+            "2026-07-01",
+        ],
+    );
+    assert_ne!(r.code, 0);
+    assert!(r.stderr.contains("later than"), "{}", r.stderr);
 }
 
 #[test]

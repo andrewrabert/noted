@@ -14,7 +14,10 @@ use noted::httpurl::HttpUrl;
 use noted::root::NotedRoot;
 use noted::store::{NotedDir, Store};
 use noted::tasks::TaskState;
-use noted::tools::{CreateTaskArgs, GetTasksArgs, MoveTaskArgs, ToolOutput, UpdateTaskArgs};
+use noted::tools::{
+    CreateTaskArgs, GetLogArgs, GetTasksArgs, LogArgs, MoveTaskArgs, SearchLogArgs,
+    SearchTasksArgs, ToolOutput, UpdateTaskArgs,
+};
 use noted::types::Source;
 
 use crate::GlobalArgs;
@@ -34,12 +37,35 @@ enum TaskSub {
     Update(UpdateTaskArgs),
     #[command(name = "move")]
     Move(MoveTaskArgs),
+    Search(SearchTasksArgs),
 }
 
 #[derive(Args)]
 struct TaskGetCmd {
     #[command(flatten)]
     args: GetTasksArgs,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+pub(crate) struct LogCmd {
+    #[command(subcommand)]
+    sub: LogSub,
+}
+
+#[derive(Subcommand)]
+enum LogSub {
+    Create(LogArgs),
+    #[command(alias = "list")]
+    Get(LogGetCmd),
+    Search(SearchLogArgs),
+}
+
+#[derive(Args)]
+struct LogGetCmd {
+    #[command(flatten)]
+    args: GetLogArgs,
     #[arg(long)]
     json: bool,
 }
@@ -53,6 +79,7 @@ pub(crate) struct Dispatch {
 enum Render {
     Passthrough,
     Tasks { as_json: bool },
+    Log { as_json: bool },
 }
 
 pub(crate) fn call_of(name: &str, args: impl Serialize) -> ToolCall {
@@ -70,8 +97,8 @@ pub(crate) fn passthrough_of(name: &str, args: impl Serialize) -> Dispatch {
     }
 }
 
-pub(crate) fn search(args: impl Serialize) -> Dispatch {
-    let mut d = passthrough_of("SearchNotes", args);
+pub(crate) fn search(name: &str, args: impl Serialize) -> Dispatch {
+    let mut d = passthrough_of(name, args);
     d.empty_is_failure = true;
     d
 }
@@ -80,15 +107,25 @@ pub(crate) fn build_task(cmd: TaskCmd) -> Dispatch {
     match cmd.sub {
         TaskSub::Create(c) => passthrough_of("CreateTask", c),
         TaskSub::Get(c) => Dispatch {
-            call: ToolCall {
-                name: "GetTasks".into(),
-                args: serde_json::to_value(c.args).expect("cli args serialize to json"),
-            },
+            call: call_of("GetTasks", c.args),
             render: Render::Tasks { as_json: c.json },
             empty_is_failure: false,
         },
         TaskSub::Update(c) => passthrough_of("UpdateTask", c),
         TaskSub::Move(c) => passthrough_of("MoveTask", c),
+        TaskSub::Search(c) => search("SearchTasks", c),
+    }
+}
+
+pub(crate) fn build_log(cmd: LogCmd) -> Dispatch {
+    match cmd.sub {
+        LogSub::Create(c) => passthrough_of("LogNote", c),
+        LogSub::Get(c) => Dispatch {
+            call: call_of("GetLog", c.args),
+            render: Render::Log { as_json: c.json },
+            empty_is_failure: false,
+        },
+        LogSub::Search(c) => search("SearchLog", c),
     }
 }
 
@@ -126,13 +163,15 @@ pub(crate) fn remote_url(globals: &GlobalArgs) -> Result<Option<HttpUrl>> {
 }
 
 fn render(render: &Render, result: &ToolOutput, color: bool) -> String {
-    match render {
-        Render::Passthrough => result.render(),
-        Render::Tasks { as_json } => match result.record() {
-            Some(records) if *as_json => serde_json::to_string_pretty(records).unwrap_or_default(),
-            Some(records) => format_tasks(records, color),
-            None => result.render(),
-        },
+    let (as_json, format): (bool, fn(&Value, bool) -> String) = match render {
+        Render::Passthrough => return result.render(),
+        Render::Tasks { as_json } => (*as_json, format_tasks),
+        Render::Log { as_json } => (*as_json, format_log),
+    };
+    match result.record() {
+        Some(records) if as_json => serde_json::to_string_pretty(records).unwrap_or_default(),
+        Some(records) => format(records, color),
+        None => result.render(),
     }
 }
 
@@ -155,6 +194,28 @@ fn paint(text: &str, style: Style, color: bool) -> String {
     } else {
         text.to_string()
     }
+}
+
+fn format_log(records: &Value, color: bool) -> String {
+    let items = records.as_array().cloned().unwrap_or_default();
+    if items.is_empty() {
+        return "no log entries".to_string();
+    }
+    let dim = Style::new().dimmed();
+    let mut lines = Vec::new();
+    for r in &items {
+        let created = r["created"].as_str().unwrap_or("");
+        let path = paint(r["path"].as_str().unwrap_or(""), Style::new().bold(), color);
+        lines.push(format!("{} {path}", paint(created, dim, color)));
+        if let Some(body) = r.get("body").and_then(|b| b.as_str())
+            && !body.trim().is_empty()
+        {
+            for line in body.trim_end_matches('\n').lines() {
+                lines.push(paint(&format!("    {line}"), dim, color));
+            }
+        }
+    }
+    lines.join("\n")
 }
 
 fn format_tasks(records: &Value, color: bool) -> String {

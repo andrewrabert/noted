@@ -8,6 +8,9 @@ A tree of `.md` notes exposed three ways over one set of file operations:
 
 Features: regex search across the tree, quick timestamped log entries, and a scoped task tracker.
 
+The tree has one open region plus two reserved ones, and each gets its own search:
+`SearchNotes` for ordinary notes, `SearchLog` for `Log/`, `SearchTasks` for `Tasks/`.
+
 ## Usage
 
 ```
@@ -20,11 +23,30 @@ noted <command>
   open    Open a note in $EDITOR; with no path, fuzzy-pick one
   move    Move or rename a note or folder
   delete  Move a note to .trash/ (recoverable)
-  log     Append an immutable, timestamped log entry
-  task    Task tracker (create/get/update/move)
+  log     Log entries (create/get/search)
+  task    Task tracker (create/get/update/move/search)
   auth    Log in to a remote server, mint agent credentials
   server  Run and manage the server (http/mcp/user/key)
 ```
+
+Tools, as the MCP and HTTP interfaces expose them:
+
+| Tool | What it does |
+| --- | --- |
+| `SearchNotes` | Find notes by regex, outside `Log/` and `Tasks/` |
+| `SearchLog` | Find log entries by regex, within a date window |
+| `SearchTasks` | Find tasks by regex, within a group |
+| `ReadNote` | Read a note's text by relative path |
+| `WriteNote` | Write a note, overwriting it |
+| `EditNote` | Revise a note via string-replace |
+| `MoveNote` | Move or rename a note or folder |
+| `DeleteNote` | Move a note to `.trash/` |
+| `LogNote` | Append an immutable, timestamped entry |
+| `GetLog` | List log entries newest first |
+| `CreateTask` | Open a task under `Tasks/` |
+| `GetTasks` | Read tasks as summary records |
+| `UpdateTask` | Change a task's state, notes or title |
+| `MoveTask` | Change a task's group |
 
 ## Configuration
 

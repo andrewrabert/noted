@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::{NotedError, Result, rejected};
-use crate::front_matter::dump_front;
+use crate::front_matter::{dump_front, split_front};
 use crate::path::RelPath;
+use crate::search::LogWindow;
 use crate::types::{NoteBody, Source, Timestamp};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -193,13 +194,21 @@ impl Note for TextNote {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LogFront {
     pub created: Timestamp,
+    #[serde(default)]
     pub cwd: String,
+    #[serde(default)]
     pub host: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<Source>,
+}
+
+pub struct LogQuery {
+    pub window: LogWindow,
+    pub offset: u64,
+    pub limit: u32,
 }
 
 #[derive(Debug)]
@@ -216,6 +225,14 @@ impl LogNote {
             front,
             body: body.into(),
         }
+    }
+
+    pub(crate) fn from_bytes(path: RelPath, bytes: &[u8]) -> Result<LogNote> {
+        let text = std::str::from_utf8(bytes).map_err(|_| rejected("not a log entry"))?;
+        let (block, body) = split_front(text).ok_or_else(|| rejected("not a log entry"))?;
+        let front: LogFront =
+            serde_yaml::from_str(block).map_err(|_| rejected("not a log entry"))?;
+        Ok(LogNote::new(path, front, body))
     }
 
     pub fn path(&self) -> &RelPath {

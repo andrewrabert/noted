@@ -74,7 +74,7 @@ fn log_entries_are_immutable() {
 }
 
 #[test]
-fn log_note_writes_front_matter_no_sidecar() {
+fn log_note_writes_one_file_with_front_matter() {
     let dir = fixture_dir();
     let root = root(&dir);
     let logged = root.log_note(&"did a thing\n-- t · s".into()).unwrap();
@@ -95,7 +95,12 @@ fn log_note_writes_front_matter_no_sidecar() {
     assert!(text.contains("source: test"));
     assert!(text.contains("did a thing"));
 
-    assert!(!notes_root(&dir).join(format!("{rel}.meta")).exists());
+    let entry = notes_root(&dir).join(&rel);
+    let written: Vec<String> = std::fs::read_dir(entry.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(written, vec![entry.file_name().unwrap().to_string_lossy()]);
 }
 
 #[test]
@@ -199,15 +204,25 @@ fn move_onto_nonempty_folder_is_rejected() {
 }
 
 #[tokio::test]
-async fn search_excludes_trash_but_meta_is_ordinary() {
+async fn note_search_walks_the_open_region_only() {
     let dir = fixture_dir();
     let root = root(&dir);
 
     // FROBNICATE appears only in the fixture's trashed note
     assert!(grep(&root, "FROBNICATE").await.unwrap().is_empty());
 
-    let meta_hits = grep(&root, "testhost").await.unwrap();
-    assert!(meta_hits.iter().any(|h| h.path.ends_with(".md.meta")));
+    // testhost appears only in the fixture's log entries
+    assert!(grep(&root, "testhost").await.unwrap().is_empty());
+    assert!(found(&root, "Log").await.unwrap().is_empty());
+
+    root.task_create(
+        &"reserved from notes".parse().unwrap(),
+        &Default::default(),
+        &"UNIQUETASKBODY\n".into(),
+    )
+    .unwrap();
+    assert!(grep(&root, "UNIQUETASKBODY").await.unwrap().is_empty());
+    assert!(found(&root, "Tasks").await.unwrap().is_empty());
 
     let contacts = found(&root, "contacts").await.unwrap();
     assert!(contacts.iter().any(|p| p == "people/contacts.md"));
@@ -345,12 +360,15 @@ async fn search_pattern_and_glob_edges() {
         ..query(pattern, SearchMode::Path)
     };
     assert!(
-        root.search(&scoped("emptydir", "x"))
+        root.note_search(&scoped("emptydir", "x"))
             .await
             .unwrap()
             .is_empty()
     );
-    let hits = root.search(&scoped("Inbox.md", "Inbox")).await.unwrap();
+    let hits = root
+        .note_search(&scoped("Inbox.md", "Inbox"))
+        .await
+        .unwrap();
     assert!(hits.iter().any(|h| h.path == "Inbox.md"));
 }
 
@@ -371,31 +389,31 @@ async fn search_feature_flags() {
         fixed: true,
         ..query("a.b", SearchMode::Line)
     };
-    assert_eq!(lines(&root.search(&fixed).await.unwrap()), 1);
+    assert_eq!(lines(&root.note_search(&fixed).await.unwrap()), 1);
 
     let word = SearchQuery {
         word: true,
         ..query("Inbo", SearchMode::Line)
     };
-    assert!(root.search(&word).await.unwrap().is_empty());
+    assert!(root.note_search(&word).await.unwrap().is_empty());
 
     std::fs::write(notes_root(&dir).join("case.md"), "Hello\n").unwrap();
     let sensitive = SearchQuery {
         case: CaseMode::Sensitive,
         ..query("HELLO", SearchMode::Line)
     };
-    assert!(root.search(&sensitive).await.unwrap().is_empty());
+    assert!(root.note_search(&sensitive).await.unwrap().is_empty());
     let insensitive = SearchQuery {
         case: CaseMode::Insensitive,
         ..query("HELLO", SearchMode::Line)
     };
-    assert!(!root.search(&insensitive).await.unwrap().is_empty());
+    assert!(!root.note_search(&insensitive).await.unwrap().is_empty());
 
     let excluded = SearchQuery {
         globs: vec!["!people/**".parse().unwrap()],
         ..query(".", SearchMode::Path)
     };
-    let paths = root.search(&excluded).await.unwrap();
+    let paths = root.note_search(&excluded).await.unwrap();
     assert!(!paths.iter().any(|h| h.path.starts_with("people/")));
     assert!(paths.iter().any(|h| h.path == "Inbox.md"));
 
@@ -403,7 +421,7 @@ async fn search_feature_flags() {
         types: vec!["md".parse().unwrap()],
         ..query(".", SearchMode::Path)
     };
-    let md_paths = root.search(&markdown).await.unwrap();
+    let md_paths = root.note_search(&markdown).await.unwrap();
     assert!(md_paths.iter().any(|h| h.path == "Inbox.md"));
 }
 

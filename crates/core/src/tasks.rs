@@ -9,6 +9,7 @@ use crate::front_matter::{dump_front, split_front};
 use crate::newtype::{str_newtype_validated, str_surface};
 use crate::note::Note;
 use crate::path::RelPath;
+use crate::search::SearchQuery;
 use crate::types::{TaskBody, Timestamp};
 
 #[derive(
@@ -266,6 +267,13 @@ pub struct TaskChange {
 pub struct TaskQuery {
     pub prefix: TaskRef,
     pub include_completed: bool,
+}
+
+#[derive(Default)]
+pub struct TaskSearch {
+    pub prefix: GroupPath,
+    pub include_completed: bool,
+    pub query: SearchQuery,
 }
 
 #[derive(Debug)]

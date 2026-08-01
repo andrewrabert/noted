@@ -113,7 +113,7 @@ async fn http_log_records_the_servers_provenance() {
     let noted::tools::ToolOutput::Logged { path } = &out else {
         panic!("expected a log receipt, got {}", out.render());
     };
-    let text = std::fs::read_to_string(common::notes_root(&dir).join(path)).unwrap();
+    let text = std::fs::read_to_string(common::notes_root(&dir).join(path.as_str())).unwrap();
     assert!(text.contains("source: test"), "{text}");
 }
 
@@ -220,7 +220,7 @@ async fn search_path_mode_lists_every_note_for_the_picker() {
     assert!(paths.contains(&"Inbox.md"));
     assert!(paths.contains(&"projects/ideas.md"));
     assert!(
-        paths.iter().any(|p| p.ends_with(".md.meta")),
-        "path mode also lists log sidecars, so the picker filters them out"
+        !paths.iter().any(|p| p.starts_with("Log/")),
+        "the picker offers the open region only, never the log"
     );
 }

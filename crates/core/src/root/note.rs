@@ -3,8 +3,10 @@ use crate::caller::Caller;
 use crate::error::{Result, conflict, forbidden, io_error, not_found, rejected};
 use crate::note::{Condition, Edit, Etag, Note as _, TextNote, Trashed};
 use crate::path::RelPath;
-use crate::store::Store;
+use crate::search::{Hit, SearchQuery, assemble};
+use crate::store::{Store, Sweep};
 
+use super::find::Find;
 use super::trash::Trash;
 
 #[derive(Clone)]
@@ -12,17 +14,36 @@ pub(super) struct Note {
     store: Store,
     areas: Areas,
     caller: Caller,
+    find: Find,
     trash: Trash,
 }
 
 impl Note {
-    pub(super) fn new(store: Store, areas: Areas, caller: Caller, trash: Trash) -> Note {
+    pub(super) fn new(
+        store: Store,
+        areas: Areas,
+        caller: Caller,
+        find: Find,
+        trash: Trash,
+    ) -> Note {
         Note {
             store,
             areas,
             caller,
+            find,
             trash,
         }
+    }
+
+    pub(super) async fn search(&self, query: &SearchQuery) -> Result<Vec<Hit>> {
+        let areas = self.areas.clone();
+        let sweep = Sweep::new(RelPath::default(), query)
+            .descending(move |path| !path.under(&areas.log) && !path.under(&areas.tasks));
+        let hits = self.find.content(&sweep).await?;
+        let walked = self.find.paths(&sweep).await?;
+        let mut hits = assemble(query, hits, walked)?;
+        hits.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(hits)
     }
 
     fn addressable(&self, path: &RelPath) -> Result<()> {

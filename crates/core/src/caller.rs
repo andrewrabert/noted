@@ -25,6 +25,15 @@ impl Policy {
             Grant::Within(folders) => folders.iter().any(|folder| path.under(folder)),
         }
     }
+
+    pub fn reaches(&self, folder: &RelPath) -> bool {
+        match &self.0 {
+            Grant::Any => true,
+            Grant::Within(folders) => folders
+                .iter()
+                .any(|granted| folder.under(granted) || granted.under(folder)),
+        }
+    }
 }
 
 impl Default for Policy {
@@ -46,6 +55,10 @@ impl Caller {
 
     pub(crate) fn admits(&self, path: &RelPath) -> bool {
         self.admits.admits(path)
+    }
+
+    pub(crate) fn reaches(&self, folder: &RelPath) -> bool {
+        self.admits.reaches(folder)
     }
 
     pub(crate) fn source(&self) -> Option<&Source> {

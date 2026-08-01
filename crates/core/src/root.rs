@@ -9,11 +9,11 @@ mod trash;
 use crate::areas::Areas;
 use crate::caller::{Caller, Policy};
 use crate::error::Result;
-use crate::note::{Condition, Edit, LogNote, TextNote, Trashed};
+use crate::note::{Condition, Edit, LogNote, LogQuery, TextNote, Trashed};
 use crate::path::RelPath;
-use crate::search::{Hit, SearchQuery};
+use crate::search::{Hit, LogWindow, SearchQuery};
 use crate::store::Store;
-use crate::tasks::{GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskTitle};
+use crate::tasks::{GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskTitle};
 use crate::types::{LogBody, TaskBody};
 
 use self::find::Find;
@@ -25,7 +25,6 @@ use self::trash::Trash;
 struct Root {
     store: Store,
     caller: Caller,
-    find: Find,
     note: Note,
     log: Log,
     task: Task,
@@ -37,12 +36,18 @@ pub struct NotedRoot(Arc<Root>);
 impl NotedRoot {
     pub fn new(store: Store, caller: Caller) -> NotedRoot {
         let areas = Areas::new();
+        let find = Find::new(store.clone(), caller.clone());
         let trash = Trash::new(store.clone(), areas.clone());
         NotedRoot(Arc::new(Root {
-            find: Find::new(store.clone(), caller.clone()),
-            note: Note::new(store.clone(), areas.clone(), caller.clone(), trash),
-            log: Log::new(store.clone(), areas.clone(), caller.clone()),
-            task: Task::new(store.clone(), areas, caller.clone()),
+            note: Note::new(
+                store.clone(),
+                areas.clone(),
+                caller.clone(),
+                find.clone(),
+                trash,
+            ),
+            log: Log::new(store.clone(), areas.clone(), caller.clone(), find.clone()),
+            task: Task::new(store.clone(), areas, caller.clone(), find),
             store,
             caller,
         }))
@@ -52,8 +57,16 @@ impl NotedRoot {
         NotedRoot::new(self.0.store.clone(), self.0.caller.with_policy(admits))
     }
 
-    pub async fn search(&self, query: &SearchQuery) -> Result<Vec<Hit>> {
-        self.0.find.search(query).await
+    pub async fn note_search(&self, query: &SearchQuery) -> Result<Vec<Hit>> {
+        self.0.note.search(query).await
+    }
+
+    pub async fn log_search(&self, window: &LogWindow, query: &SearchQuery) -> Result<Vec<Hit>> {
+        self.0.log.search(window, query).await
+    }
+
+    pub async fn task_search(&self, search: &TaskSearch) -> Result<Vec<Hit<TaskRef>>> {
+        self.0.task.search(search).await
     }
 
     pub fn note_read(&self, path: &RelPath) -> Result<TextNote> {
@@ -78,6 +91,10 @@ impl NotedRoot {
 
     pub fn log_note(&self, body: &LogBody) -> Result<LogNote> {
         self.0.log.note(body)
+    }
+
+    pub fn log_get(&self, query: &LogQuery) -> Result<Vec<LogNote>> {
+        self.0.log.get(query)
     }
 
     pub fn task_create(

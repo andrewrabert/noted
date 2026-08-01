@@ -50,6 +50,17 @@ fn arg_schema_defaults_are_pinned() {
         ("SearchNotes", "mode", json!("any")),
         ("SearchNotes", "context", json!(1)),
         ("SearchNotes", "fixed", json!(false)),
+        ("SearchLog", "pattern", json!(".")),
+        ("SearchLog", "mode", json!("line")),
+        ("SearchLog", "context", json!(1)),
+        ("SearchLog", "fixed", json!(false)),
+        ("SearchTasks", "pattern", json!(".")),
+        ("SearchTasks", "mode", json!("any")),
+        ("SearchTasks", "prefix", json!("")),
+        ("SearchTasks", "include_completed", json!(false)),
+        ("GetLog", "body", json!(false)),
+        ("GetLog", "offset", json!(0)),
+        ("GetLog", "limit", json!(20)),
         ("EditNote", "replace_all", json!(false)),
         ("MoveNote", "overwrite", json!(false)),
         ("CreateTask", "group", json!("")),
@@ -62,6 +73,46 @@ fn arg_schema_defaults_are_pinned() {
         assert_eq!(
             by_name[tool]["properties"][field]["default"], want,
             "{tool}.{field} default changed"
+        );
+    }
+}
+
+#[test]
+fn the_registry_is_the_fourteen_tools() {
+    let names: Vec<&str> = noted::tools::tool_defs()
+        .into_iter()
+        .map(|d| d.name)
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "SearchNotes",
+            "SearchLog",
+            "SearchTasks",
+            "ReadNote",
+            "WriteNote",
+            "EditNote",
+            "MoveNote",
+            "DeleteNote",
+            "LogNote",
+            "GetLog",
+            "CreateTask",
+            "GetTasks",
+            "UpdateTask",
+            "MoveTask",
+        ]
+    );
+}
+
+#[test]
+fn only_the_open_region_search_takes_a_glob() {
+    for def in noted::tools::tool_defs() {
+        let props = def.input_schema["properties"].as_object().unwrap();
+        assert_eq!(
+            props.contains_key("glob"),
+            def.name == "SearchNotes",
+            "{} disagrees with the spec about carrying a glob field",
+            def.name
         );
     }
 }

@@ -5,23 +5,30 @@ use crate::caller::Caller;
 use crate::error::{Result, forbidden, io_error, not_found, rejected};
 use crate::note::Note as _;
 use crate::path::RelPath;
-use crate::store::Store;
-use crate::tasks::{GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskTitle, numbered};
+use crate::search::{Hit, assemble};
+use crate::store::{Store, Sweep};
+use crate::tasks::{
+    GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskTitle, numbered,
+};
 use crate::types::TaskBody;
+
+use super::find::Find;
 
 #[derive(Clone)]
 pub(super) struct Task {
     store: Store,
     areas: Areas,
     caller: Caller,
+    find: Find,
 }
 
 impl Task {
-    pub(super) fn new(store: Store, areas: Areas, caller: Caller) -> Task {
+    pub(super) fn new(store: Store, areas: Areas, caller: Caller, find: Find) -> Task {
         Task {
             store,
             areas,
             caller,
+            find,
         }
     }
 
@@ -40,6 +47,19 @@ impl Task {
     fn group_dir(&self, group: &GroupPath) -> Result<RelPath> {
         let dir = group.to_rel(&self.areas.tasks);
         self.reachable(&dir, group.as_str())?;
+        Ok(dir)
+    }
+
+    fn searchable(&self, group: &GroupPath) -> Result<RelPath> {
+        let dir = group.to_rel(&self.areas.tasks);
+        if self.store.is_ignored(&dir) {
+            return Err(rejected(format!("invalid path: '{group}'")));
+        }
+        if !self.caller.reaches(&dir) {
+            return Err(forbidden(format!(
+                "task path outside allowed folders: '{group}'"
+            )));
+        }
         Ok(dir)
     }
 
@@ -145,6 +165,49 @@ impl Task {
             )
         });
         Ok(found)
+    }
+
+    pub(super) async fn search(&self, search: &TaskSearch) -> Result<Vec<Hit<TaskRef>>> {
+        let dir = self.searchable(&search.prefix)?;
+        let sweep = Sweep::new(dir, &search.query);
+        let hits: Vec<Hit<TaskRef>> = self
+            .find
+            .content(&sweep)
+            .await?
+            .into_iter()
+            .map(|hit| Hit {
+                path: self.reference(&hit.path),
+                lines: hit.lines,
+            })
+            .collect();
+        let walked: Vec<TaskRef> = self
+            .find
+            .paths(&sweep)
+            .await?
+            .iter()
+            .map(|path| self.reference(path))
+            .collect();
+
+        let mut ordered = Vec::new();
+        for hit in assemble(&search.query, hits, walked)? {
+            let path = hit.path.to_rel(&self.areas.tasks);
+            if !self.real_file(&path) {
+                continue;
+            }
+            let Ok(task) = self.read(&path) else {
+                continue;
+            };
+            if !search.include_completed && task.front().state.is_closed() {
+                continue;
+            }
+            ordered.push((
+                Reverse(task.front().updated_at.parse_rfc3339()),
+                hit.path.clone(),
+                hit,
+            ));
+        }
+        ordered.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        Ok(ordered.into_iter().map(|(_, _, hit)| hit).collect())
     }
 
     fn group_files(&self, prefix: &TaskRef) -> Result<Vec<RelPath>> {

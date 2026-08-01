@@ -18,6 +18,35 @@ impl NotedDir {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct Sweep {
+    base: RelPath,
+    query: SearchQuery,
+    admits: Arc<dyn Fn(&RelPath) -> bool + Send + Sync>,
+}
+
+impl Sweep {
+    pub(crate) fn new(base: RelPath, query: &SearchQuery) -> Sweep {
+        Sweep {
+            base,
+            query: query.clone(),
+            admits: Arc::new(|_| true),
+        }
+    }
+
+    pub(crate) fn descending(
+        mut self,
+        admits: impl Fn(&RelPath) -> bool + Send + Sync + 'static,
+    ) -> Sweep {
+        self.admits = Arc::new(admits);
+        self
+    }
+
+    pub(crate) fn query(&self) -> &SearchQuery {
+        &self.query
+    }
+}
+
 struct StoreInner {
     root: PathBuf,
     writes: Mutex<()>,
@@ -204,30 +233,35 @@ impl Store {
         }
     }
 
-    fn walk_builder(&self) -> WalkBuilder {
+    fn walk_builder(&self, sweep: &Sweep) -> WalkBuilder {
         let filter = self.0.ignore.clone();
-        let mut wb = WalkBuilder::new(&self.0.root);
+        let store = self.clone();
+        let admits = sweep.admits.clone();
+        let mut wb = WalkBuilder::new(self.abs(&sweep.base));
         wb.hidden(true)
             .ignore(false)
             .git_ignore(false)
             .git_global(false)
             .git_exclude(false)
             .parents(false)
-            .filter_entry(move |entry| !filter.is_ignored(entry.path()));
+            .filter_entry(move |entry| {
+                !filter.is_ignored(entry.path())
+                    && store.rel(entry.path()).is_some_and(|rel| admits(&rel))
+            });
         wb
     }
 
-    pub(crate) async fn walk_search(&self, query: &SearchQuery) -> Result<Vec<RelPath>> {
+    pub(crate) async fn walk_search(&self, sweep: &Sweep) -> Result<Vec<RelPath>> {
         let store = self.clone();
-        let query = query.clone();
-        tokio::task::spawn_blocking(move || store.walk_files(&query))
+        let sweep = sweep.clone();
+        tokio::task::spawn_blocking(move || store.walk_files(&sweep))
             .await
             .map_err(|e| unavailable(format!("search: {e}")))?
     }
 
-    fn walk_files(&self, query: &SearchQuery) -> Result<Vec<RelPath>> {
-        let mut wb = self.walk_builder();
-        narrow(&mut wb, &self.0.root, query)?;
+    fn walk_files(&self, sweep: &Sweep) -> Result<Vec<RelPath>> {
+        let mut wb = self.walk_builder(sweep);
+        narrow(&mut wb, &self.abs(&sweep.base), sweep.query())?;
         Ok(wb
             .build()
             .filter_map(|entry| {
@@ -240,14 +274,15 @@ impl Store {
             .collect())
     }
 
-    pub(crate) async fn grep(&self, query: &SearchQuery) -> Result<Vec<Hit>> {
-        let matcher = build_matcher(query)?;
+    pub(crate) async fn grep(&self, sweep: &Sweep) -> Result<Vec<Hit>> {
+        let matcher = build_matcher(sweep.query())?;
         let store = self.clone();
-        let query = query.clone();
+        let sweep = sweep.clone();
 
         tokio::task::spawn_blocking(move || {
-            let mut wb = store.walk_builder();
-            narrow(&mut wb, &store.0.root, &query)?;
+            let query = sweep.query().clone();
+            let mut wb = store.walk_builder(&sweep);
+            narrow(&mut wb, &store.abs(&sweep.base), &query)?;
             let hits: Mutex<HashMap<RelPath, BTreeMap<u64, String>>> = Mutex::new(HashMap::new());
 
             wb.build_parallel().run(|| {
