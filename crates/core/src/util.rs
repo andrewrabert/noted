@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Path as StdPath, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
@@ -16,14 +16,14 @@ pub struct IgnoreFilter {
 }
 
 impl IgnoreFilter {
-    pub fn new(root: &Path) -> IgnoreFilter {
+    pub fn new(root: &StdPath) -> IgnoreFilter {
         IgnoreFilter {
             root: root.to_path_buf(),
             cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub fn is_ignored(&self, path: &Path) -> bool {
+    pub fn is_ignored(&self, path: &StdPath) -> bool {
         if path == self.root {
             return false;
         }
@@ -50,7 +50,7 @@ impl IgnoreFilter {
         false
     }
 
-    fn matchers(&self, d: &Path) -> Arc<Vec<Gitignore>> {
+    fn matchers(&self, d: &StdPath) -> Arc<Vec<Gitignore>> {
         if let Some(hit) = self.cache.lock().unwrap().get(d) {
             return hit.clone();
         }
@@ -76,7 +76,7 @@ pub fn random_token(n_bytes: usize) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&bytes)
 }
 
-fn new_temp(parent: &Path) -> Result<tempfile::NamedTempFile> {
+fn new_temp(parent: &StdPath) -> Result<tempfile::NamedTempFile> {
     std::fs::create_dir_all(parent).map_err(|e| io_error("mkdir failed", e))?;
     tempfile::Builder::new()
         .prefix(".noted-tmp-")
@@ -84,8 +84,8 @@ fn new_temp(parent: &Path) -> Result<tempfile::NamedTempFile> {
         .map_err(|e| io_error("write failed", e))
 }
 
-pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+pub fn atomic_write(path: &StdPath, data: &[u8]) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| StdPath::new("."));
     let mut tmp = new_temp(parent)?;
     tmp.write_all(data)
         .and_then(|_| tmp.flush())
@@ -95,15 +95,15 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
         .map_err(|e| io_error("write failed", e.error))
 }
 
-pub fn atomic_create(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+pub fn atomic_create(path: &StdPath, data: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| StdPath::new("."));
     let mut tmp = new_temp(parent).map_err(std::io::Error::other)?;
     tmp.write_all(data)?;
     tmp.flush()?;
     tmp.persist_noclobber(path).map(|_| ()).map_err(|e| e.error)
 }
 
-pub fn normalize(path: &Path) -> PathBuf {
+pub fn normalize(path: &StdPath) -> PathBuf {
     path_clean::clean(path)
 }
 

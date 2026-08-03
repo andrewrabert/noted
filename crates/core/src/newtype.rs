@@ -1,3 +1,4 @@
+#[macro_export]
 macro_rules! str_surface {
     ($ty:ident) => {
         impl $ty {
@@ -38,6 +39,7 @@ macro_rules! str_surface {
     };
 }
 
+#[macro_export]
 macro_rules! str_newtype {
     ($ty:ident) => {
         $crate::newtype::str_surface!($ty);
@@ -65,6 +67,7 @@ macro_rules! str_newtype {
     };
 }
 
+#[macro_export]
 macro_rules! str_newtype_validated {
     ($ty:ident, $validate:path) => {
         $crate::newtype::str_surface!($ty);
@@ -90,6 +93,7 @@ macro_rules! str_newtype_validated {
     };
 }
 
+#[macro_export]
 macro_rules! secret_newtype {
     ($ty:ident) => {
         impl $ty {
@@ -131,7 +135,7 @@ macro_rules! secret_newtype {
     };
 }
 
-pub(crate) use secret_newtype;
-pub(crate) use str_newtype;
-pub(crate) use str_newtype_validated;
-pub(crate) use str_surface;
+pub use secret_newtype;
+pub use str_newtype;
+pub use str_newtype_validated;
+pub use str_surface;

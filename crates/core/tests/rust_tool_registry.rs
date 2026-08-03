@@ -1,20 +1,40 @@
 mod common;
 
-use common::{fixture_dir, root};
+use common::{backend, fixture_dir, invoke};
+use noted::authorization::Authorization;
+use noted::Backend;
 use serde_json::json;
 
 /// Must match `run_tool`'s unknown-tool sentinel message verbatim.
 const UNKNOWN_PREFIX: &str = "Unknown tool:";
+
+fn tool_names(backend: &Backend) -> Vec<&'static str> {
+    backend
+        .with_authority(None)
+        .unwrap()
+        .tools()
+        .iter()
+        .map(|t| t.name)
+        .collect()
+}
+
+fn tool_listings(dir: &tempfile::TempDir) -> Vec<noted::ToolListing> {
+    let backend = backend(dir);
+    let authorization = Authorization::new(vec![], None).unwrap();
+    backend
+        .with_authority(Some(&authorization))
+        .unwrap()
+        .tools()
+}
 
 /// Empty args may legitimately yield a validation `Rejected`; only the
 /// unknown-tool sentinel indicates a missing dispatch arm.
 #[tokio::test]
 async fn every_registry_name_is_dispatchable() {
     let dir = fixture_dir();
-    let root = root(&dir);
-    for def in noted::tools::tool_defs() {
-        let name = def.name;
-        let result = noted::tools::run_tool(name, &json!({}), &root).await;
+    let bknd = backend(&dir);
+    for name in tool_names(&bknd) {
+        let result = invoke(&bknd, name, json!({})).await;
         if let Err(e) = &result {
             assert!(
                 !e.message().starts_with(UNKNOWN_PREFIX),
@@ -27,7 +47,8 @@ async fn every_registry_name_is_dispatchable() {
 
 #[test]
 fn arg_schemas_carry_no_prose() {
-    for def in noted::tools::tool_defs() {
+    let dir = fixture_dir();
+    for def in tool_listings(&dir) {
         let props = def.input_schema["properties"].as_object().unwrap();
         for (field, schema) in props {
             assert!(
@@ -41,7 +62,8 @@ fn arg_schemas_carry_no_prose() {
 
 #[test]
 fn arg_schema_defaults_are_pinned() {
-    let by_name: std::collections::HashMap<&str, serde_json::Value> = noted::tools::tool_defs()
+    let dir = fixture_dir();
+    let by_name: std::collections::HashMap<&str, serde_json::Value> = tool_listings(&dir)
         .into_iter()
         .map(|d| (d.name, d.input_schema))
         .collect();
@@ -79,10 +101,8 @@ fn arg_schema_defaults_are_pinned() {
 
 #[test]
 fn the_registry_is_the_fourteen_tools() {
-    let names: Vec<&str> = noted::tools::tool_defs()
-        .into_iter()
-        .map(|d| d.name)
-        .collect();
+    let dir = fixture_dir();
+    let names = tool_names(&backend(&dir));
     assert_eq!(
         names,
         vec![
@@ -106,7 +126,8 @@ fn the_registry_is_the_fourteen_tools() {
 
 #[test]
 fn only_the_open_region_search_takes_a_glob() {
-    for def in noted::tools::tool_defs() {
+    let dir = fixture_dir();
+    for def in tool_listings(&dir) {
         let props = def.input_schema["properties"].as_object().unwrap();
         assert_eq!(
             props.contains_key("glob"),
@@ -120,12 +141,11 @@ fn only_the_open_region_search_takes_a_glob() {
 #[tokio::test]
 async fn unregistered_name_is_rejected() {
     let dir = fixture_dir();
-    let root = root(&dir);
-    let result = noted::tools::run_tool("NotARealTool", &json!({}), &root).await;
+    let bknd = backend(&dir);
+    let result = invoke(&bknd, "NotARealTool", json!({})).await;
     let err = result.expect_err("unknown tool must be rejected");
     assert!(
-        err.message().starts_with(UNKNOWN_PREFIX),
-        "expected the unknown-tool sentinel, got: {}",
-        err.message()
+        matches!(err, noted::NotedError::NotFound),
+        "expected an unknown tool name to be not-found, got: {err:?}"
     );
 }

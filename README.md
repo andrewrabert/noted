@@ -58,6 +58,8 @@ environment wins. CLI flags override both.
 | `NOTED_DIR`          | -                | *(required locally)*  | Notes root directory.                                |
 | `NOTED_ENV_FILE`     | -                | `~/.config/noted.env` | Dotenv file to load settings from.                   |
 | `NOTED_SOURCE`       | `-s`/`--source`  | -                     | `source` metadata recorded on log entries.           |
+| `NOTED_POLICY`       | `--policy`       | *(everything)*        | A policy fragment as JSON, or `@<path>` to a file holding one. |
+| `NOTED_SCOPE`        | `--scope`        | *(whole tree)*        | The scope the process is anchored at.                |
 | `NOTED_URL`          | `--url`          | -                     | Drive a remote server instead of local files.        |
 | `NOTED_TOKEN`        | `--token`        | *(stored login)*      | Bearer for the remote server.                        |
 | `NOTED_HOST`         | `--host`         | `127.0.0.1`           | `server http` bind address.                          |
@@ -79,15 +81,38 @@ Setting `--auth-db`/`NOTED_AUTH_DB` enables auth. Keep the DB and admin socket o
 - An **API key** is a labeled, scoped, expiring bearer. Labels are group handles
   (duplicates allowed); identity is the `credential-id`.
 
+Both carry a **policy**: a scope plus per-path read/write entries. Every policy flag
+builds one fragment — `--scope` anchors it, `--in /path=read,write` names an entry
+inside the scope, `--in /=read` sets the access over the scope itself, `--out
+/path=read` names one outside it, and `--policy` takes the whole fragment as JSON. An
+omitted `=<modes>` means both; an empty one denies. A fragment can only narrow what the
+holder already has, and one that reaches further is refused rather than trimmed.
+
+A fragment is written as JSON, and prints back the same way:
+
+```json
+{
+  "scope": "dev/myproject",
+  "access": { "read": true, "write": false },
+  "paths": { "vendor": { "read": false, "write": false } },
+  "extra": { "finance": { "read": true, "write": false } }
+}
+```
+
+`scope` is optional and omitting it means the whole tree. `access` is the access over
+the scope itself, `paths` is read from the scope, and `extra` is read from the notes
+root and must fall outside the scope.
+
 Both can mint narrowed child credentials (see [Delegation](#delegation)).
 
 ```sh
 noted server user add myname                             # prompts for a password
-noted server key create claude --tools GetTasks,UpdateTask --path Tasks/dev/myproject
-noted server key create logger --rules '[{"tools": ["LogNote"]}]' --ttl 90d
-noted server key list claude                             # grants, fingerprint, expiry
+noted server key create claude --scope /dev/myproject    # scoped to one project
+noted server key create logger --in /= --in /Log=write --ttl 90d
+noted server key list claude                             # policy, fingerprint, expiry
 noted server key revoke --label claude                   # sweep every live match
-noted server user grant ar --all                         # back to unrestricted
+noted server user policy ar --scope /dev --in /secrets=  # set the whole fragment
+noted server key policy claude --in /=read               # set a key's fragment
 ```
 
 ## Delegation
@@ -98,7 +123,7 @@ revoke the login and every child narrows or dies with it.
 
 ```sh
 noted auth login --url https://notes.example.com         # browser OAuth; stores tokens + root macaroon
-noted auth mint --ttl 1h --session claude:session123 --tools GetTasks,UpdateTask --path Tasks/dev/myproject
+noted auth mint --ttl 1h --session claude:session123 --scope /dev/myproject --in /=read --in /Tasks=read,write
 noted auth revoke --session claude:session123            # kill that whole run
 noted auth revoke --all                                  # kill every outstanding child
 ```

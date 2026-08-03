@@ -1,46 +1,43 @@
 mod common;
 
-use common::{confined, fixture_dir, root};
-use noted::root::NotedRoot;
+use common::{confined_backend, backend, fixture_dir, invoke};
+use noted::Backend;
 use serde_json::{Value, json};
 
-const JUNE: &str = "Log/2026/06/2026-06-15T08-30-00.000000.md";
-const JULY: &str = "Log/2026/07/2026-07-01T09-00-00.000000.md";
+const JUNE: &str = "2026/06/2026-06-15T08-30-00.000000.md";
+const JULY: &str = "2026/07/2026-07-01T09-00-00.000000.md";
 
-async fn records(root: &NotedRoot, args: Value) -> Vec<Value> {
-    let out = noted::tools::run_tool("GetLog", &args, root).await.unwrap();
+async fn records(backend: &Backend, args: Value) -> Vec<Value> {
+    let out = invoke(backend, "GetLog", args).await.unwrap();
     out.record()
         .and_then(|v| v.as_array())
         .expect("GetLog always returns an array")
         .clone()
 }
 
-async fn paths(root: &NotedRoot, args: Value) -> Vec<String> {
-    records(root, args)
+async fn paths(backend: &Backend, args: Value) -> Vec<String> {
+    records(backend, args)
         .await
         .iter()
         .map(|r| r["path"].as_str().unwrap_or_default().to_string())
         .collect()
 }
 
-async fn search(root: &NotedRoot, args: Value) -> String {
-    noted::tools::run_tool("SearchLog", &args, root)
-        .await
-        .unwrap()
-        .render()
+async fn search(backend: &Backend, args: Value) -> String {
+    invoke(backend, "SearchLog", args).await.unwrap().render()
 }
 
 #[tokio::test]
 async fn get_lists_the_window_newest_first() {
     let dir = fixture_dir();
-    let root = root(&dir);
+    let root = backend(&dir);
     assert_eq!(paths(&root, json!({})).await, vec![JULY, JUNE]);
 }
 
 #[tokio::test]
 async fn get_summaries_carry_the_minted_metadata() {
     let dir = fixture_dir();
-    let root = root(&dir);
+    let root = backend(&dir);
     let bare = &records(&root, json!({})).await[0];
     assert_eq!(bare["created"], json!("2026-07-01T09:00:00.000000-07:00"));
     assert_eq!(bare["host"], json!("testhost"));
@@ -57,7 +54,7 @@ async fn get_summaries_carry_the_minted_metadata() {
 #[tokio::test]
 async fn get_window_bounds_are_inclusive_local_dates() {
     let dir = fixture_dir();
-    let root = root(&dir);
+    let root = backend(&dir);
     assert_eq!(
         paths(&root, json!({"since": "2026-07-01"})).await,
         vec![JULY]
@@ -80,16 +77,14 @@ async fn get_window_bounds_are_inclusive_local_dates() {
 #[tokio::test]
 async fn get_refuses_a_backwards_window_and_bad_dates() {
     let dir = fixture_dir();
-    let root = root(&dir);
+    let root = backend(&dir);
     for args in [
         json!({"since": "2026-08-01", "until": "2026-07-01"}),
         json!({"since": "yesterday"}),
         json!({"until": "2026-13-40"}),
     ] {
         assert!(
-            noted::tools::run_tool("GetLog", &args, &root)
-                .await
-                .is_err(),
+            invoke(&root, "GetLog", args.clone()).await.is_err(),
             "{args} should be rejected"
         );
     }
@@ -98,7 +93,7 @@ async fn get_refuses_a_backwards_window_and_bad_dates() {
 #[tokio::test]
 async fn get_pages_the_ordered_result() {
     let dir = fixture_dir();
-    let root = root(&dir);
+    let root = backend(&dir);
     assert_eq!(paths(&root, json!({"limit": 1})).await, vec![JULY]);
     assert_eq!(
         paths(&root, json!({"offset": 1, "limit": 1})).await,
@@ -110,15 +105,25 @@ async fn get_pages_the_ordered_result() {
 }
 
 #[tokio::test]
-async fn get_applies_the_grant_per_file_instead_of_refusing() {
+async fn get_applies_the_policy_per_file_instead_of_refusing() {
     let dir = fixture_dir();
     assert!(
-        paths(&confined(&dir, &["people"]), json!({}))
-            .await
-            .is_empty()
+        paths(
+            &confined_backend(&dir, r#"{"paths":{"Log":{"read":false,"write":false}}}"#),
+            json!({})
+        )
+        .await
+        .is_empty()
     );
     assert_eq!(
-        paths(&confined(&dir, &["Log/2026/06"]), json!({})).await,
+        paths(
+            &confined_backend(
+                &dir,
+                r#"{"paths":{"Log/2026/07":{"read":false,"write":false}}}"#
+            ),
+            json!({})
+        )
+        .await,
         vec![JUNE]
     );
 }
@@ -126,7 +131,7 @@ async fn get_applies_the_grant_per_file_instead_of_refusing() {
 #[tokio::test]
 async fn search_matches_log_text_newest_first() {
     let dir = fixture_dir();
-    let root = root(&dir);
+    let root = backend(&dir);
     let out = search(&root, json!({"pattern": "claude-code"})).await;
     let first = out.lines().next().unwrap();
     assert!(first.starts_with(JULY), "{out}");
@@ -137,7 +142,7 @@ async fn search_matches_log_text_newest_first() {
 #[tokio::test]
 async fn search_is_scoped_to_the_log() {
     let dir = fixture_dir();
-    let root = root(&dir);
+    let root = backend(&dir);
     // "contacts" appears only in the open region
     assert!(
         search(&root, json!({"pattern": "contacts"}))
@@ -145,13 +150,14 @@ async fn search_is_scoped_to_the_log() {
             .is_empty()
     );
     let listed = search(&root, json!({"mode": "path"})).await;
-    assert!(listed.lines().all(|p| p.starts_with("Log/")), "{listed}");
+    assert!(listed.lines().all(|p| p.starts_with("20")), "{listed}");
+    assert_eq!(listed.lines().count(), 2, "{listed}");
 }
 
 #[tokio::test]
 async fn search_narrows_by_the_same_window_as_get() {
     let dir = fixture_dir();
-    let root = root(&dir);
+    let root = backend(&dir);
     let june = search(
         &root,
         json!({"pattern": "claude-code", "until": "2026-06-30"}),
@@ -159,10 +165,10 @@ async fn search_narrows_by_the_same_window_as_get() {
     .await;
     assert!(june.contains(JUNE) && !june.contains(JULY), "{june}");
     assert!(
-        noted::tools::run_tool(
-            "SearchLog",
-            &json!({"since": "2026-08-01", "until": "2026-07-01"}),
+        invoke(
             &root,
+            "SearchLog",
+            json!({"since": "2026-08-01", "until": "2026-07-01"}),
         )
         .await
         .is_err()
@@ -172,9 +178,9 @@ async fn search_narrows_by_the_same_window_as_get() {
 #[tokio::test]
 async fn search_refuses_an_unusable_pattern() {
     let dir = fixture_dir();
-    let root = root(&dir);
+    let root = backend(&dir);
     assert!(
-        noted::tools::run_tool("SearchLog", &json!({"pattern": "("}), &root)
+        invoke(&root, "SearchLog", json!({"pattern": "("}))
             .await
             .is_err()
     );

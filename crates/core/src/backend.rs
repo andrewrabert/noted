@@ -1,63 +1,251 @@
+use std::future::Future;
+use std::pin::Pin;
+
 use serde_json::Value;
 
-use crate::error::{Result, conflict, forbidden, json_error, not_found, rejected, unavailable};
+use crate::authority::Authority;
+use crate::authorization::{Authorization, Bearer};
+use crate::error::{NotedError, Result, json_error, rejected, unavailable};
 use crate::httpurl::HttpUrl;
+use crate::policyargs::PolicyArgs;
 use crate::root::NotedRoot;
-use crate::tools::{ToolOutput, run_tool};
+use crate::store::NotedDir;
+use crate::tools::{ToolArgs, ToolOutput, allowed_tools, is_tool, run_tool, tool_defs};
+use crate::types::Source;
 
-pub struct ToolCall {
-    pub name: String,
-    pub args: Value,
+const INSTRUCTIONS: &str = "This is the user's personal notes — the canonical place where they keep and organize their own notes, ideas, todos, and log entries as a nested tree of Markdown (.md) files. Whenever the user refers to 'my notes', asks to look something up, record or jot something down, or check what they've written before, use these tools instead of guessing or answering from memory. Search, read, write, edit, move, and delete notes by relative path (e.g. 'proj/ideas.md'). The tree has three regions and each has its own search tool: SearchNotes covers ordinary notes, SearchLog covers Log/, and SearchTasks covers Tasks/ — none of them reaches into another's region. Use LogNote to quickly capture an immutable, timestamped log entry (its metadata is auto-generated and it cannot be edited or deleted), then GetLog to list entries newest first or SearchLog to match their text. Track units of work with the task tools: CreateTask opens a task (optionally in a nested 'group' under Tasks/, e.g. group='dev/noted'); GetTasks reads them (by group prefix, or an exact task path with body=true); UpdateTask advances one (state=created/started/blocked/completed/rejected/invalid); MoveTask changes a task's group. A task is identified by its Tasks-relative path minus '.md' (e.g. 'dev/noted/task_0001'); tasks are managed only through these tools — WriteNote/EditNote are refused under Tasks/.";
+
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+#[derive(Default)]
+pub struct BackendArgs {
+    pub dir: Option<String>,
+    pub url: Option<String>,
+    pub token: Option<Bearer>,
+    pub source: Option<String>,
+    pub policy: PolicyArgs,
+    pub transport: Option<Transport>,
 }
 
+#[derive(Clone)]
 pub enum Transport {
     Real,
-    #[cfg(feature = "test-util")]
-    Test(axum::Router),
+    Router(axum::Router),
 }
 
-pub enum Backend {
-    Filesystem {
-        root: NotedRoot,
-    },
-    Http {
-        url: HttpUrl,
-        token: Option<String>,
-        transport: Transport,
-    },
+pub struct ToolCall {
+    name: String,
+    args: Value,
+}
+
+impl ToolCall {
+    pub fn new<A: ToolArgs>(args: A) -> Result<ToolCall> {
+        Ok(ToolCall {
+            name: A::TOOL.to_string(),
+            args: serde_json::to_value(args).map_err(|e| json_error("tool arguments", e))?,
+        })
+    }
+
+    pub fn raw(name: &str, args: Value) -> Result<ToolCall> {
+        if !is_tool(name) {
+            return Err(NotedError::NotFound);
+        }
+        Ok(ToolCall {
+            name: name.to_string(),
+            args,
+        })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+pub struct ToolListing {
+    pub name: &'static str,
+    pub title: &'static str,
+    pub description: String,
+    pub input_schema: Value,
+}
+
+pub struct Backend {
+    inner: Box<dyn BackendImpl>,
+    held: Vec<Authority>,
 }
 
 impl Backend {
-    pub fn filesystem(root: NotedRoot) -> Backend {
-        Backend::Filesystem { root }
-    }
-
-    pub fn http(url: &HttpUrl, token: Option<String>) -> Backend {
-        Backend::Http {
-            url: url.clone(),
+    pub fn new(args: BackendArgs) -> Result<Backend> {
+        let BackendArgs {
+            dir,
+            url,
             token,
-            transport: Transport::Real,
-        }
-    }
-
-    #[cfg(feature = "test-util")]
-    pub fn http_with(url: &HttpUrl, token: Option<String>, transport: Transport) -> Backend {
-        Backend::Http {
-            url: url.clone(),
-            token,
+            source,
+            policy,
             transport,
+        } = args;
+        match url.filter(|s| !s.is_empty()) {
+            Some(url) => {
+                if policy != PolicyArgs::default() {
+                    return Err(rejected(
+                        "a remote server holds its own policy: a policy cannot be set here",
+                    ));
+                }
+                Ok(Backend {
+                    inner: Box::new(RemoteBackend {
+                        url: url.parse()?,
+                        token,
+                        transport: transport.unwrap_or(Transport::Real),
+                    }),
+                    held: Vec::new(),
+                })
+            }
+            None => {
+                let held = policy.chain()?;
+                let dir = dir
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| rejected("no notes dir set (set NOTED_DIR)"))?;
+                let root = NotedRoot::open(NotedDir::new(dir), &held, Source::from_opt(source))?;
+                Ok(Backend {
+                    inner: Box::new(LocalBackend { root }),
+                    held,
+                })
+            }
         }
     }
 
+    pub fn with_authority(
+        &self,
+        authorization: Option<&Authorization>,
+    ) -> Result<AuthorizedBackend<'_>> {
+        let grants = match authorization {
+            Some(authorization) => authorization.grants().to_vec(),
+            None => self.held.clone(),
+        };
+        Ok(AuthorizedBackend {
+            inner: self.inner.with_authority(authorization)?,
+            grants,
+        })
+    }
+}
+
+pub struct AuthorizedBackend<'a> {
+    inner: Box<dyn AuthorizedBackendImpl + 'a>,
+    grants: Vec<Authority>,
+}
+
+impl AuthorizedBackend<'_> {
     pub async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput> {
-        match self {
-            Backend::Filesystem { root } => run_tool(&call.name, &call.args, root).await,
-            Backend::Http {
-                url,
-                token,
-                transport,
-            } => roundtrip(url, token.as_deref(), transport, &call.name, &call.args).await,
+        self.inner.invoke(call).await
+    }
+
+    pub fn tools(&self) -> Vec<ToolListing> {
+        let allowed = allowed_tools(&self.grants);
+        tool_defs()
+            .into_iter()
+            .filter(|def| allowed.contains(&def.name))
+            .map(|def| ToolListing {
+                name: def.name,
+                title: def.title,
+                description: def.described(&self.grants),
+                input_schema: def.input_schema,
+            })
+            .collect()
+    }
+
+    pub fn instructions(&self) -> String {
+        let mut out = String::from(INSTRUCTIONS);
+        match Authority::scope_of(&self.grants).ok().flatten().as_ref() {
+            None => out.push_str(
+                " Notes live at the top of the tree. Tasks are under Tasks/, log entries under Log/.",
+            ),
+            Some(scope) => out.push_str(&format!(
+                " You are working in {scope}. Every path you write is relative to it. \
+Tasks you create land in its task region; log entries you write are stamped with it."
+            )),
         }
+        out
+    }
+}
+
+trait BackendImpl: Send + Sync {
+    fn with_authority<'a>(
+        &'a self,
+        authorization: Option<&Authorization>,
+    ) -> Result<Box<dyn AuthorizedBackendImpl + 'a>>;
+}
+
+trait AuthorizedBackendImpl: Send + Sync {
+    fn invoke<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, Result<ToolOutput>>;
+}
+
+struct LocalBackend {
+    root: NotedRoot,
+}
+
+impl BackendImpl for LocalBackend {
+    fn with_authority<'a>(
+        &'a self,
+        authorization: Option<&Authorization>,
+    ) -> Result<Box<dyn AuthorizedBackendImpl + 'a>> {
+        let root = match authorization {
+            Some(authorization) => self.root.with_authority(authorization.grants())?,
+            None => self.root.clone(),
+        };
+        Ok(Box::new(AuthorizedLocalBackend { root }))
+    }
+}
+
+struct AuthorizedLocalBackend {
+    root: NotedRoot,
+}
+
+impl AuthorizedBackendImpl for AuthorizedLocalBackend {
+    fn invoke<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, Result<ToolOutput>> {
+        Box::pin(async move { run_tool(&call.name, &call.args, &self.root).await })
+    }
+}
+
+struct RemoteBackend {
+    url: HttpUrl,
+    token: Option<Bearer>,
+    transport: Transport,
+}
+
+impl BackendImpl for RemoteBackend {
+    fn with_authority<'a>(
+        &'a self,
+        authorization: Option<&Authorization>,
+    ) -> Result<Box<dyn AuthorizedBackendImpl + 'a>> {
+        let bearer = match authorization {
+            None => self.token.clone(),
+            Some(authorization) => Some(authorization.bearer().cloned().ok_or_else(|| {
+                rejected("a call carried to another server needs a bearer to carry")
+            })?),
+        };
+        Ok(Box::new(AuthorizedRemoteBackend {
+            remote: self,
+            bearer,
+        }))
+    }
+}
+
+struct AuthorizedRemoteBackend<'a> {
+    remote: &'a RemoteBackend,
+    bearer: Option<Bearer>,
+}
+
+impl AuthorizedBackendImpl for AuthorizedRemoteBackend<'_> {
+    fn invoke<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, Result<ToolOutput>> {
+        Box::pin(async move {
+            roundtrip(
+                &self.remote.url,
+                self.bearer.as_ref().map(Bearer::expose),
+                &self.remote.transport,
+                &call.name,
+                &call.args,
+            )
+            .await
+        })
     }
 }
 
@@ -82,9 +270,9 @@ async fn roundtrip(
     if status >= 400 {
         let msg = detail(&resp_body).unwrap_or_else(|| format!("HTTP {status}"));
         return Err(match status {
-            404 => not_found(msg),
-            403 => forbidden(msg),
-            409 => conflict(msg),
+            404 => NotedError::NotFound,
+            403 => NotedError::Forbidden,
+            409 => NotedError::Conflict,
             _ => rejected(msg),
         });
     }
@@ -114,8 +302,7 @@ async fn send(
 ) -> std::result::Result<(u16, Vec<u8>), String> {
     match transport {
         Transport::Real => send_reqwest(target, token, body).await,
-        #[cfg(feature = "test-util")]
-        Transport::Test(router) => send_router(router.clone(), target, token, body).await,
+        Transport::Router(router) => send_router(router.clone(), target, token, body).await,
     }
 }
 
@@ -138,7 +325,6 @@ async fn send_reqwest(
     Ok((status, bytes.to_vec()))
 }
 
-#[cfg(feature = "test-util")]
 async fn send_router(
     router: axum::Router,
     target: &str,

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::hash::Hash;
-use std::path::Path;
+use std::path::Path as StdPath;
 
 use clap::ValueEnum;
 use grep::matcher::Matcher;
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, rejected};
 use crate::newtype::str_newtype_validated;
-use crate::path::RelPath;
+use crate::path::Path;
 use crate::types::Date;
 
 #[derive(Serialize, Deserialize, JsonSchema, ValueEnum, Default, Clone, Copy, PartialEq)]
@@ -104,7 +104,7 @@ pub struct SearchQuery {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Hit<A = RelPath> {
+pub struct Hit<A = Path> {
     pub path: A,
     pub lines: BTreeMap<u64, String>,
 }
@@ -112,13 +112,6 @@ pub struct Hit<A = RelPath> {
 impl<A> Hit<A> {
     pub fn lines(&self) -> impl Iterator<Item = (u64, &str)> {
         self.lines.iter().map(|(n, t)| (*n, t.as_str()))
-    }
-
-    pub(crate) fn matched(path: A) -> Hit<A> {
-        Hit {
-            path,
-            lines: BTreeMap::new(),
-        }
     }
 }
 
@@ -199,7 +192,7 @@ fn expand_glob(entry: &GlobPattern) -> Vec<String> {
     }
 }
 
-pub(crate) fn narrow(wb: &mut WalkBuilder, base: &Path, query: &SearchQuery) -> Result<()> {
+pub(crate) fn narrow(wb: &mut WalkBuilder, base: &StdPath, query: &SearchQuery) -> Result<()> {
     if !query.globs.is_empty() {
         let mut ob = OverrideBuilder::new(base);
         for entry in &query.globs {
@@ -229,43 +222,26 @@ pub(crate) fn narrow(wb: &mut WalkBuilder, base: &Path, query: &SearchQuery) -> 
     Ok(())
 }
 
-pub(crate) fn match_paths<A>(query: &SearchQuery, paths: Vec<A>) -> Result<Vec<A>>
+pub(crate) fn assemble<A>(query: &SearchQuery, hits: Vec<Hit<A>>) -> Result<Vec<Hit<A>>>
 where
-    A: AsRef<str> + Clone + Eq + Hash,
+    A: std::fmt::Display + Clone + Eq + Hash,
 {
-    let matcher = build_matcher(query)?;
-    let mut seen: HashSet<A> = HashSet::new();
-    let mut out = Vec::new();
-    for path in paths {
-        if !matcher.is_match(path.as_ref().as_bytes()).unwrap_or(false) {
-            continue;
-        }
-        if seen.insert(path.clone()) {
-            out.push(path);
-        }
-    }
-    Ok(out)
-}
-
-pub(crate) fn assemble<A>(
-    query: &SearchQuery,
-    hits: Vec<Hit<A>>,
-    walked: Vec<A>,
-) -> Result<Vec<Hit<A>>>
-where
-    A: AsRef<str> + Clone + Eq + Hash,
-{
-    let mut hits = hits;
     if !matches!(query.mode, SearchMode::Any | SearchMode::Path) {
         return Ok(hits);
     }
-    let seen: HashSet<A> = hits.iter().map(|hit| hit.path.clone()).collect();
-    for path in match_paths(query, walked)? {
-        if !seen.contains(&path) {
-            hits.push(Hit::matched(path));
+    let matcher = build_matcher(query)?;
+    let mut seen: HashSet<A> = HashSet::new();
+    let mut out = Vec::new();
+    for hit in hits {
+        let keep = !hit.lines.is_empty()
+            || matcher
+                .is_match(hit.path.to_string().as_bytes())
+                .unwrap_or(false);
+        if keep && seen.insert(hit.path.clone()) {
+            out.push(hit);
         }
     }
-    Ok(hits)
+    Ok(out)
 }
 
 pub(crate) struct LineSink {

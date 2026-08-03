@@ -1,24 +1,18 @@
 #![allow(dead_code)]
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::{Path as StdPath, PathBuf};
 
-use axum::Router;
-use axum::http::{HeaderMap, Request, StatusCode};
-use http_body_util::BodyExt;
-use noted::caller::{Caller, Policy};
+use noted::authority::Authority;
 use noted::note::{Condition, TextNote};
-use noted::oauth::{AuthService, Db};
-use noted::path::RelPath;
-use noted::root::NotedRoot;
-use noted::scope::{RuleSpec, StoredScope, TokenScope};
+use noted::path::Path;
 use noted::search::{Hit, SearchMode, SearchQuery};
-use noted::store::{NotedDir, Store};
+use noted::store::NotedDir;
+use noted::tools::ToolOutput;
 use noted::types::Source;
+use noted::{Backend, BackendArgs, NotedRoot, PolicyArgs, ToolCall};
 use serde_json::Value;
-use tower::ServiceExt;
 
-pub fn rp(s: &str) -> RelPath {
+pub fn rp(s: &str) -> Path {
     s.parse().unwrap()
 }
 
@@ -35,8 +29,8 @@ pub fn write(root: &NotedRoot, note: &TextNote) -> noted::Result<()> {
     root.note_write(note, Condition::Always)
 }
 
-pub fn policy(folders: &[&str]) -> Policy {
-    Policy::within(folders.iter().map(|f| rp(f)).collect())
+pub fn held(text: &str) -> Authority {
+    text.parse().unwrap()
 }
 
 pub fn query(pattern: &str, mode: SearchMode) -> SearchQuery {
@@ -60,47 +54,7 @@ pub async fn found(root: &NotedRoot, pattern: &str) -> noted::Result<Vec<String>
         .collect())
 }
 
-pub fn scope(tools: Option<&[&str]>, paths: Option<&[&str]>) -> TokenScope {
-    let to_vec = |o: Option<&[&str]>| o.map(|s| s.iter().map(|x| x.to_string()).collect());
-    TokenScope::single_rule(to_vec(tools), to_vec(paths)).unwrap()
-}
-
-pub fn grants(tools: Option<&[&str]>, paths: Option<&[&str]>) -> StoredScope {
-    let to_vec = |o: Option<&[&str]>| o.map(|s: &[&str]| s.iter().map(|x| x.to_string()).collect());
-    StoredScope::Grants(vec![RuleSpec {
-        tools: to_vec(tools),
-        paths: to_vec(paths),
-    }])
-}
-
-pub fn auth_service(dir: &tempfile::TempDir) -> Arc<AuthService> {
-    let db = Arc::new(Db::open(&dir.path().join("auth.redb")).unwrap());
-    Arc::new(AuthService::new(
-        db,
-        noted::types::Ttl::from_secs(30 * 24 * 3600),
-    ))
-}
-
-pub fn mint_key(svc: &AuthService, label: &str, scope: StoredScope) -> String {
-    let minted = svc
-        .key_create(
-            &noted::oauth::types::Label::new(label).unwrap(),
-            scope,
-            None,
-        )
-        .unwrap();
-    svc.key_finalize(&minted.credential_id).unwrap();
-    minted.token.expose().to_string()
-}
-
-pub fn app_with_key(dir: &tempfile::TempDir) -> (Router, String) {
-    let ctx = noted::mcp::context(root(dir));
-    let svc = auth_service(dir);
-    let token = mint_key(&svc, "test", StoredScope::Unrestricted);
-    (noted::http::build_app(ctx, Some(svc), None), token)
-}
-
-pub fn copy_tree(src: &Path, dst: &Path) {
+pub fn copy_tree(src: &StdPath, dst: &StdPath) {
     std::fs::create_dir_all(dst).unwrap();
     for entry in std::fs::read_dir(src).unwrap() {
         let entry = entry.unwrap();
@@ -127,116 +81,44 @@ pub fn notes_root(dir: &tempfile::TempDir) -> PathBuf {
 }
 
 pub fn root(dir: &tempfile::TempDir) -> NotedRoot {
-    caller_root(dir, Policy::any())
+    policed_root(dir, Authority::default())
 }
 
-pub fn confined(dir: &tempfile::TempDir, folders: &[&str]) -> NotedRoot {
-    caller_root(dir, policy(folders))
+pub fn confined(dir: &tempfile::TempDir, policy: &str) -> NotedRoot {
+    policed_root(dir, held(policy))
 }
 
-fn caller_root(dir: &tempfile::TempDir, admits: Policy) -> NotedRoot {
-    let store = Store::open(NotedDir::new(notes_root(dir))).unwrap();
-    NotedRoot::new(store, Caller::new(admits, Some(Source::new("test"))))
-}
-
-pub async fn request(
-    router: &Router,
-    method: &str,
-    path: &str,
-    token: Option<&str>,
-    content_type: &str,
-    body: Vec<u8>,
-) -> (StatusCode, HeaderMap, Vec<u8>) {
-    let mut builder = Request::builder()
-        .method(method)
-        .uri(path)
-        .header("content-type", content_type);
-    if let Some(t) = token {
-        builder = builder.header("authorization", format!("Bearer {t}"));
-    }
-    let req = builder.body(axum::body::Body::from(body)).unwrap();
-    let resp = router.clone().oneshot(req).await.unwrap();
-    let status = resp.status();
-    let headers = resp.headers().clone();
-    let bytes = resp
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes()
-        .to_vec();
-    (status, headers, bytes)
-}
-
-pub async fn post_json(
-    router: &Router,
-    path: &str,
-    token: Option<&str>,
-    body: &Value,
-) -> (StatusCode, Vec<u8>) {
-    let (s, _h, b) = request(
-        router,
-        "POST",
-        path,
-        token,
-        "application/json",
-        serde_json::to_vec(body).unwrap(),
+pub fn policed_root(dir: &tempfile::TempDir, policy: Authority) -> NotedRoot {
+    NotedRoot::open(
+        NotedDir::new(notes_root(dir)),
+        &[policy],
+        Some(Source::new("test")),
     )
-    .await;
-    (s, b)
+    .unwrap()
 }
 
-/// rmcp requires the caller to accept both `application/json` and
-/// `text/event-stream`, even though the stateless JSON reply is plain JSON.
-pub async fn post_mcp(
-    router: &Router,
-    token: Option<&str>,
-    body: &Value,
-) -> (StatusCode, HeaderMap, Vec<u8>) {
-    let mut builder = Request::builder()
-        .method("POST")
-        .uri("/mcp")
-        .header("host", "localhost")
-        .header("content-type", "application/json")
-        .header("accept", "application/json, text/event-stream");
-    if let Some(t) = token {
-        builder = builder.header("authorization", format!("Bearer {t}"));
-    }
-    let req = builder
-        .body(axum::body::Body::from(serde_json::to_vec(body).unwrap()))
-        .unwrap();
-    let resp = router.clone().oneshot(req).await.unwrap();
-    let status = resp.status();
-    let headers = resp.headers().clone();
-    let bytes = resp
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes()
-        .to_vec();
-    (status, headers, bytes)
+pub fn backend(dir: &tempfile::TempDir) -> Backend {
+    policed_backend(dir, Authority::default())
 }
 
-pub async fn post_form(
-    router: &Router,
-    path: &str,
-    fields: &[(&str, &str)],
-) -> (StatusCode, HeaderMap, Vec<u8>) {
-    let body = url::form_urlencoded::Serializer::new(String::new())
-        .extend_pairs(fields.iter().copied())
-        .finish();
-    request(
-        router,
-        "POST",
-        path,
-        None,
-        "application/x-www-form-urlencoded",
-        body.into_bytes(),
-    )
-    .await
+pub fn confined_backend(dir: &tempfile::TempDir, policy: &str) -> Backend {
+    policed_backend(dir, held(policy))
 }
 
-pub fn json_body(bytes: &[u8]) -> Value {
-    serde_json::from_slice(bytes).unwrap()
+pub fn policed_backend(dir: &tempfile::TempDir, policy: Authority) -> Backend {
+    Backend::new(BackendArgs {
+        dir: Some(notes_root(dir).display().to_string()),
+        source: Some("test".to_string()),
+        policy: PolicyArgs {
+            policy: Some(policy.to_string()),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+pub async fn invoke(backend: &Backend, name: &str, args: Value) -> noted::Result<ToolOutput> {
+    let call = ToolCall::raw(name, args)?;
+    backend.with_authority(None)?.invoke(&call).await
 }

@@ -1,15 +1,15 @@
 mod common;
 
 use common::{fixture_dir, note, notes_root, read, root, rp, write};
-use noted::path::{RelPath, Segment};
+use noted::path::{Path, Segment};
 
 #[test]
 fn escapes_are_unrepresentable() {
     for escape in ["../evil.md", "../../etc/passwd", "a/../b.md"] {
-        let err = RelPath::new(escape).unwrap_err().to_string();
+        let err = Path::new(escape).unwrap_err().to_string();
         assert!(err.contains("escapes notes root"), "{escape}: {err}");
     }
-    let err = RelPath::new("/etc/passwd").unwrap_err().to_string();
+    let err = Path::new("/etc/passwd").unwrap_err().to_string();
     assert!(err.contains("escapes notes root"), "{err}");
 }
 
@@ -20,10 +20,8 @@ fn dotted_and_malformed_paths_are_unrepresentable() {
         ".git/config",
         "secret/.env",
         ".hidden",
-        "foo/",
-        "a//b.md",
     ] {
-        let err = RelPath::new(bad).unwrap_err().to_string();
+        let err = Path::new(bad).unwrap_err().to_string();
         assert!(err.contains("invalid path"), "{bad}: {err}");
         assert!(
             !err.contains("recover") && !err.contains("already in"),
@@ -33,12 +31,23 @@ fn dotted_and_malformed_paths_are_unrepresentable() {
 }
 
 #[test]
-fn the_root_is_a_path_and_ordinary_paths_survive() {
-    assert!(RelPath::new("").unwrap().is_empty());
-    assert_eq!(
-        RelPath::new("projects/ideas.md").unwrap(),
-        "projects/ideas.md"
-    );
+fn every_path_has_exactly_one_spelling() {
+    for (written, canonical) in [
+        ("foo/", "foo"),
+        ("a//b.md", "a/b.md"),
+        ("./a/./b.md", "a/b.md"),
+    ] {
+        assert_eq!(Path::new(written).unwrap(), canonical, "{written}");
+    }
+    for empty in ["", ".", "./."] {
+        assert!(Path::new(empty).is_err(), "accepted '{empty}'");
+    }
+}
+
+#[test]
+fn the_root_is_no_path_and_ordinary_paths_survive() {
+    assert!(Path::new("").is_err());
+    assert_eq!(Path::new("projects/ideas.md").unwrap(), "projects/ideas.md");
 }
 
 #[test]

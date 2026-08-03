@@ -1,18 +1,16 @@
 use std::process::ExitCode;
 
 use clap::{Args, Subcommand};
-use serde_json::json;
 
-use noted::authclient::{self, RevokeSelector, Session};
-use noted::credentials::CredentialStore;
+use noted::HttpUrl;
 use noted::error::{Result, rejected};
-use noted::httpurl::HttpUrl;
-use noted::oauth::macaroon;
-use noted::scope::RuleSpec;
 use noted::types::Ttl;
+use noted_auth::oauth::types::SessionId;
+use noted_client::authclient::{self, RevokeSelector, Session};
+use noted_client::credentials::CredentialStore;
 
 use crate::config::{block_on, credential_store_config, parse_ttl};
-use crate::{GlobalArgs, RuleFlags};
+use crate::{EntryFlags, GlobalArgs};
 
 #[derive(Args)]
 pub(crate) struct AuthCmd {
@@ -40,7 +38,7 @@ struct MintCmd {
     #[arg(long)]
     url: Option<String>,
     #[command(flatten)]
-    flags: RuleFlags,
+    entries: EntryFlags,
     #[arg(long, value_parser = parse_ttl, default_value = "1h")]
     ttl: Ttl,
     #[arg(long)]
@@ -113,25 +111,10 @@ fn run_mint(store: &CredentialStore, m: MintCmd, globals: &GlobalArgs) -> Result
         .as_ref()
         .ok_or_else(|| rejected("no root macaroon stored; run `noted auth login` again"))?;
 
-    let policy: Option<Vec<RuleSpec>> = m.flags.to_specs()?;
+    let held = globals.policy_args(&m.entries).held()?;
 
-    let (token, id, expires_at) = macaroon::mint_child(
-        root.expose(),
-        policy.as_deref(),
-        m.ttl,
-        m.session.as_deref(),
-    )?;
-    if m.json {
-        let out = json!({
-            "token": token,
-            "id": id,
-            "session": m.session,
-            "expires_at": expires_at,
-        });
-        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
-    } else {
-        println!("{token}");
-    }
+    let session = m.session.as_deref().map(SessionId::new);
+    let _child = root.to_descendant(Some(&held), m.ttl, session.as_ref())?;
     Ok(ExitCode::SUCCESS)
 }
 

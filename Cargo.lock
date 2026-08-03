@@ -2032,8 +2032,11 @@ dependencies = [
  "dirs",
  "dotenvy",
  "humantime",
+ "noted-auth",
+ "noted-client",
  "noted-core",
  "noted-picker",
+ "noted-server",
  "serde",
  "serde_json",
  "shell-words",
@@ -2046,34 +2049,70 @@ dependencies = [
 ]
 
 [[package]]
+name = "noted-auth"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "governor",
+ "humantime",
+ "macaroon",
+ "maud",
+ "noted-core",
+ "oxide-auth",
+ "phf",
+ "rand 0.10.2",
+ "redb",
+ "scrypt",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "noted-client"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.0",
+ "http-body-util",
+ "keyring",
+ "noted-auth",
+ "noted-core",
+ "noted-server",
+ "open",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "tower",
+ "url",
+]
+
+[[package]]
 name = "noted-core"
 version = "0.1.0"
 dependencies = [
  "axum",
- "axum-extra",
  "base64 0.23.0",
  "chrono",
  "clap",
- "governor",
  "grep",
  "hostname",
- "http",
  "http-body-util",
  "humantime",
  "ignore",
- "keyring",
- "macaroon",
- "maud",
- "noted-core",
- "open",
- "oxide-auth",
  "path-clean",
  "rand 0.10.2",
- "redb",
  "reqwest",
- "rmcp",
  "schemars",
- "scrypt",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2091,6 +2130,27 @@ name = "noted-picker"
 version = "0.1.0"
 dependencies = [
  "nucleo-matcher",
+]
+
+[[package]]
+name = "noted-server"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "axum-extra",
+ "base64 0.23.0",
+ "http",
+ "http-body-util",
+ "noted-auth",
+ "noted-core",
+ "rmcp",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -2331,6 +2391,49 @@ dependencies = [
  "base64ct",
  "ctutils",
  "getrandom 0.4.3",
+]
+
+[[package]]
+name = "phf"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1562dc717473dbaa4c1f85a36410e03c047b2e7df7f45ee938fbef64ae7fadf"
+dependencies = [
+ "phf_macros",
+ "phf_shared",
+ "serde",
+]
+
+[[package]]
+name = "phf_generator"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "135ace3a761e564ec88c03a77317a7c6b80bb7f7135ef2544dbe054243b89737"
+dependencies = [
+ "fastrand",
+ "phf_shared",
+]
+
+[[package]]
+name = "phf_macros"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "812f032b54b1e759ccd5f8b6677695d5268c588701effba24601f6932f8269ef"
+dependencies = [
+ "phf_generator",
+ "phf_shared",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "phf_shared"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e57fef6bc5981e38c2ce2d63bfa546861309f875b8a75f092d1d54ae2d64f266"
+dependencies = [
+ "siphasher",
 ]
 
 [[package]]
@@ -3253,6 +3356,12 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "siphasher"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
 
 [[package]]
 name = "slab"

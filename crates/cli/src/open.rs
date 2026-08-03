@@ -5,21 +5,21 @@ use std::process::ExitCode;
 use clap::Args;
 use tempfile::TempDir;
 
-use noted::backend::Backend;
 use noted::error::{NotedError, Result, io_error, rejected};
 use noted::note::{Condition, TextNote};
-use noted::path::RelPath;
-use noted::tools::{ReadArgs, ToolOutput, WriteArgs};
+use noted::path::Path;
+use noted::tools::{ReadArgs, SearchNotesArgs, ToolOutput, WriteArgs};
+use noted::{AuthorizedBackend, ToolCall};
 
 use crate::GlobalArgs;
 use crate::config::block_on;
-use crate::dispatch::{build_backend, call_of};
+use crate::dispatch::build_backend;
 use crate::picker::Pick;
 
 #[derive(Args)]
 pub(crate) struct OpenArgs {
     /// Note to open, by relative path; omit to pick one interactively
-    path: Option<RelPath>,
+    path: Option<Path>,
     /// Overwrite unconditionally, ignoring concurrent changes
     #[arg(short, long)]
     force: bool,
@@ -64,6 +64,7 @@ impl Drop for EditBuffer {
 
 pub(crate) fn run_open(globals: &GlobalArgs, args: OpenArgs) -> Result<ExitCode> {
     let backend = build_backend(globals)?;
+    let backend = backend.with_authority(None)?;
     let path = match args.path {
         Some(path) => path,
         None => match pick_path(&backend)? {
@@ -74,7 +75,7 @@ pub(crate) fn run_open(globals: &GlobalArgs, args: OpenArgs) -> Result<ExitCode>
     edit_note(&backend, path, args.force)
 }
 
-fn pick_path(backend: &Backend) -> Result<Pick> {
+fn pick_path(backend: &AuthorizedBackend<'_>) -> Result<Pick> {
     if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
         return Err(rejected("open with no path requires a terminal"));
     }
@@ -85,11 +86,8 @@ fn pick_path(backend: &Backend) -> Result<Pick> {
     crate::picker::pick(paths)
 }
 
-async fn list_paths(backend: &Backend) -> Result<Vec<String>> {
-    let call = call_of(
-        "SearchNotes",
-        serde_json::json!({"mode": "path", "pattern": "."}),
-    );
+async fn list_paths(backend: &AuthorizedBackend<'_>) -> Result<Vec<String>> {
+    let call = ToolCall::new(SearchNotesArgs::paths())?;
     match backend.invoke(&call).await? {
         ToolOutput::Text(s) => Ok(parse_paths(&s)),
         other => Err(rejected(format!(
@@ -107,10 +105,10 @@ fn parse_paths(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn edit_note(backend: &Backend, path: RelPath, force: bool) -> Result<ExitCode> {
+fn edit_note(backend: &AuthorizedBackend<'_>, path: Path, force: bool) -> Result<ExitCode> {
     let original = match block_on(read_note(backend, &path)) {
         Ok(note) => Some(note),
-        Err(NotedError::NotFound(_)) => None,
+        Err(NotedError::NotFound) => None,
         Err(e) => return Err(e),
     };
     let initial = original
@@ -118,7 +116,8 @@ fn edit_note(backend: &Backend, path: RelPath, force: bool) -> Result<ExitCode> 
         .map(|note| note.body().as_str())
         .unwrap_or_default();
 
-    let basename = path.rsplit('/').next().unwrap_or(path.as_str());
+    let shown = path.to_string();
+    let basename = shown.rsplit('/').next().unwrap_or(&shown);
     let mut buffer = EditBuffer::create(basename, initial)?;
 
     run_editor(&buffer.file)?;
@@ -152,7 +151,7 @@ fn edit_note(backend: &Backend, path: RelPath, force: bool) -> Result<ExitCode> 
             buffer.commit();
             Ok(ExitCode::SUCCESS)
         }
-        Err(NotedError::Conflict(_)) => {
+        Err(NotedError::Conflict) => {
             eprintln!("note changed since it was opened: '{path}'");
             if std::io::stdin().is_terminal() && prompt_overwrite() {
                 let out = block_on(write_note(backend, &edited, None))?;
@@ -169,8 +168,8 @@ fn edit_note(backend: &Backend, path: RelPath, force: bool) -> Result<ExitCode> 
     }
 }
 
-async fn read_note(backend: &Backend, path: &RelPath) -> Result<TextNote> {
-    let call = call_of("ReadNote", ReadArgs::new(path.clone()));
+async fn read_note(backend: &AuthorizedBackend<'_>, path: &Path) -> Result<TextNote> {
+    let call = ToolCall::new(ReadArgs::new(path.clone()))?;
     match backend.invoke(&call).await? {
         ToolOutput::Text(s) => Ok(TextNote::new(path.clone(), s)),
         other => Err(rejected(format!(
@@ -181,7 +180,7 @@ async fn read_note(backend: &Backend, path: &RelPath) -> Result<TextNote> {
 }
 
 async fn write_note(
-    backend: &Backend,
+    backend: &AuthorizedBackend<'_>,
     note: &TextNote,
     when: Option<Condition>,
 ) -> Result<ToolOutput> {
@@ -189,7 +188,7 @@ async fn write_note(
     if let Some(when) = when {
         args = args.when(when);
     }
-    backend.invoke(&call_of("WriteNote", args)).await
+    backend.invoke(&ToolCall::new(args)?).await
 }
 
 fn run_editor(file: &std::path::Path) -> Result<()> {

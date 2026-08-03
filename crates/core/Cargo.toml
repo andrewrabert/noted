@@ -14,49 +14,30 @@ publish = false
 name = "noted"
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net"] }
-clap = { workspace = true }
 axum = "0.8"
+base64 = "0.23"
+chrono = { workspace = true }
+clap = { workspace = true }
+grep = "0.4"
+hostname = "0.4"
+http-body-util = "0.1"
+ignore = "0.4"
+path-clean = "1"
+rand = "0.10"
+reqwest = { version = "0.13", features = ["json"] }
+schemars = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = "0.9"
-chrono = { workspace = true }
-base64 = "0.23"
-hostname = "0.4"
-reqwest = { version = "0.13", features = ["json", "form"] }
-scrypt = { version = "0.12", features = ["phc", "getrandom"] }
+serde_yaml = { workspace = true }
 sha2 = "0.11"
-rand = "0.10"
-url = "2"
-tower = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
 tempfile = { workspace = true }
-path-clean = "1"
-tracing = { workspace = true }
-schemars = "1"
-governor = "0.10"
-maud = "0.27"
-grep = "0.4"
-ignore = "0.4"
-rmcp = { version = "3", default-features = false, features = ["server", "transport-streamable-http-server", "transport-io"] }
-http = "1"
-oxide-auth = "0.6"
 thiserror = "2"
-axum-extra = { version = "0.12", default-features = false, features = ["typed-header"] }
-redb = "4"
-open = "5"
-keyring = "4"
-macaroon = "0.3"
-
-[features]
-# Compiles in test-only hooks (e.g. OAuth token injection) that must never ship
-# in a production binary. Enabled for the test build via the self dev-dependency
-# below; absent from a plain `cargo build`.
-test-util = []
+tokio = { version = "1", features = ["rt"] }
+tower = { version = "0.5", features = ["util"] }
+tracing = { workspace = true }
+url = "2"
 
 [dev-dependencies]
-tempfile = { workspace = true }
 chrono = { workspace = true }
 humantime = { workspace = true }
-# Self-dependency solely to turn on `test-util` when compiling the test targets.
-noted-core = { path = ".", features = ["test-util"] }
+tempfile = { workspace = true }

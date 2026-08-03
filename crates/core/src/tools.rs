@@ -3,11 +3,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::areas::ROOT_PROBE;
+use crate::authority::Authority;
 use crate::error::{Result, rejected, unavailable};
 use crate::note::{Condition, Edit, LogNote, LogQuery, TextNote};
-use crate::path::RelPath;
+use crate::path::Path;
+use crate::policy::Policy;
 use crate::root::NotedRoot;
-use crate::scope::TokenScope;
 use crate::search::{
     CaseMode, FileType, GlobPattern, Hit, LogWindow, SearchMode, SearchPattern, SearchQuery,
 };
@@ -21,18 +23,77 @@ pub struct ToolDef {
     pub name: &'static str,
     pub title: &'static str,
     pub description: &'static str,
+    pub region: Region,
     pub input_schema: Value,
+}
+
+impl ToolDef {
+    pub fn described(&self, grants: &[Authority]) -> String {
+        self.placed(&Authority::policy(grants).unwrap_or_default())
+    }
+
+    pub(crate) fn placed(&self, policy: &Policy) -> String {
+        match self.region.placement(policy.scope()) {
+            None => self.description.to_string(),
+            Some(where_) => format!("{} {where_}", self.description),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    Read,
+    Write,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Region {
+    Notes,
+    Log,
+    Tasks,
+}
+
+impl Region {
+    fn frame(self, scope: Option<&Path>) -> Result<Path> {
+        let name = match self {
+            Region::Notes => {
+                return match scope {
+                    Some(scope) => Ok(scope.clone()),
+                    None => Path::new(ROOT_PROBE),
+                };
+            }
+            Region::Log => "Log",
+            Region::Tasks => "Tasks",
+        };
+        match scope {
+            Some(scope) => scope.joined(name),
+            None => Path::new(name),
+        }
+    }
+
+    fn placement(self, scope: Option<&Path>) -> Option<String> {
+        match (self, scope) {
+            (Region::Notes, None) => None,
+            (Region::Notes, Some(scope)) => Some(format!("Paths are relative to {scope}.")),
+            (Region::Log, None) => Some("Entries are stored under Log/.".to_string()),
+            (Region::Log, Some(scope)) => {
+                Some(format!("Entries are stored under Log/, stamped {scope}."))
+            }
+            (Region::Tasks, None) => Some("Tasks are stored under Tasks/.".to_string()),
+            (Region::Tasks, Some(scope)) => Some(format!("Tasks are stored under {scope}.")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum ToolOutput {
     Text(String),
-    Written { path: RelPath },
-    Edited { path: RelPath },
-    Moved { from: RelPath, to: RelPath },
-    Deleted { path: RelPath },
-    Logged { path: RelPath },
+    Written { path: Path },
+    Edited { path: Path },
+    Moved { from: Path, to: Path },
+    Deleted { path: Path },
+    Logged { path: Path },
     Record(Value),
 }
 
@@ -61,6 +122,8 @@ struct ToolSpec {
     name: &'static str,
     title: &'static str,
     description: &'static str,
+    region: Region,
+    mode: Mode,
     schema: fn() -> Value,
 }
 
@@ -69,98 +132,174 @@ const TOOLS: &[ToolSpec] = &[
         name: "SearchNotes",
         title: "Search notes",
         description: D_SEARCH_NOTES,
+        region: Region::Notes,
+        mode: Mode::Read,
         schema: schema_of::<SearchNotesArgs>,
     },
     ToolSpec {
         name: "SearchLog",
         title: "Search log",
         description: D_SEARCH_LOG,
+        region: Region::Log,
+        mode: Mode::Read,
         schema: schema_of::<SearchLogArgs>,
     },
     ToolSpec {
         name: "SearchTasks",
         title: "Search tasks",
         description: D_SEARCH_TASKS,
+        region: Region::Tasks,
+        mode: Mode::Read,
         schema: schema_of::<SearchTasksArgs>,
     },
     ToolSpec {
         name: "ReadNote",
         title: "Read note",
         description: D_READ,
+        region: Region::Notes,
+        mode: Mode::Read,
         schema: schema_of::<ReadArgs>,
     },
     ToolSpec {
         name: "WriteNote",
         title: "Write note",
         description: D_WRITE,
+        region: Region::Notes,
+        mode: Mode::Write,
         schema: schema_of::<WriteArgs>,
     },
     ToolSpec {
         name: "EditNote",
         title: "Edit note",
         description: D_EDIT,
+        region: Region::Notes,
+        mode: Mode::Write,
         schema: schema_of::<EditArgs>,
     },
     ToolSpec {
         name: "MoveNote",
         title: "Move note",
         description: D_MOVE,
+        region: Region::Notes,
+        mode: Mode::Write,
         schema: schema_of::<MoveArgs>,
     },
     ToolSpec {
         name: "DeleteNote",
         title: "Delete note",
         description: D_DELETE,
+        region: Region::Notes,
+        mode: Mode::Write,
         schema: schema_of::<DeleteArgs>,
     },
     ToolSpec {
         name: "LogNote",
         title: "Log entry",
         description: D_LOG,
+        region: Region::Log,
+        mode: Mode::Write,
         schema: schema_of::<LogArgs>,
     },
     ToolSpec {
         name: "GetLog",
         title: "Get log entries",
         description: D_GET_LOG,
+        region: Region::Log,
+        mode: Mode::Read,
         schema: schema_of::<GetLogArgs>,
     },
     ToolSpec {
         name: "CreateTask",
         title: "Create task",
         description: D_CREATE_TASK,
+        region: Region::Tasks,
+        mode: Mode::Write,
         schema: schema_of::<CreateTaskArgs>,
     },
     ToolSpec {
         name: "GetTasks",
         title: "Get tasks",
         description: D_GET_TASKS,
+        region: Region::Tasks,
+        mode: Mode::Read,
         schema: schema_of::<GetTasksArgs>,
     },
     ToolSpec {
         name: "UpdateTask",
         title: "Update task",
         description: D_UPDATE_TASK,
+        region: Region::Tasks,
+        mode: Mode::Write,
         schema: schema_of::<UpdateTaskArgs>,
     },
     ToolSpec {
         name: "MoveTask",
         title: "Move task",
         description: D_MOVE_TASK,
+        region: Region::Tasks,
+        mode: Mode::Write,
         schema: schema_of::<MoveTaskArgs>,
     },
 ];
 
-pub fn is_tool(name: &str) -> bool {
+pub trait ToolArgs: Serialize {
+    const TOOL: &'static str;
+}
+
+macro_rules! tool_args {
+    ($($args:ident => $name:literal;)*) => {
+        $(
+            impl ToolArgs for $args {
+                const TOOL: &'static str = $name;
+            }
+        )*
+    };
+}
+
+tool_args! {
+    SearchNotesArgs => "SearchNotes";
+    SearchLogArgs => "SearchLog";
+    SearchTasksArgs => "SearchTasks";
+    ReadArgs => "ReadNote";
+    WriteArgs => "WriteNote";
+    EditArgs => "EditNote";
+    MoveArgs => "MoveNote";
+    DeleteArgs => "DeleteNote";
+    LogArgs => "LogNote";
+    GetLogArgs => "GetLog";
+    CreateTaskArgs => "CreateTask";
+    GetTasksArgs => "GetTasks";
+    UpdateTaskArgs => "UpdateTask";
+    MoveTaskArgs => "MoveTask";
+}
+
+pub(crate) fn is_tool(name: &str) -> bool {
     TOOLS.iter().any(|t| t.name == name)
 }
 
-pub fn allowed_tools(scope: &TokenScope) -> Vec<&'static str> {
+pub(crate) fn allowed_tools(grants: &[Authority]) -> Vec<&'static str> {
+    match Authority::policy(grants) {
+        Ok(policy) => permitted(&policy),
+        Err(_) => Vec::new(),
+    }
+}
+
+pub(crate) fn permitted(policy: &Policy) -> Vec<&'static str> {
     TOOLS
         .iter()
-        .filter(|t| scope.allows(t.name))
+        .filter(|t| reaches(policy, t.region, t.mode))
         .map(|t| t.name)
         .collect()
+}
+
+fn reaches(policy: &Policy, region: Region, mode: Mode) -> bool {
+    let Ok(at) = region.frame(policy.scope()) else {
+        return false;
+    };
+    match mode {
+        Mode::Read => policy.readable(&at).is_ok(),
+        Mode::Write => policy.writeable(&at).is_ok(),
+    }
 }
 
 const D_SEARCH_NOTES: &str = "Find notes by regular expression. 'pattern' is smart-case by default (case-insensitive unless it contains an uppercase letter; use '(?i)'/'(?-i)' to force) and defaults to '.' (matches everything, i.e. lists). 'mode' picks the result: 'any' (default) returns files matching by contents or path; 'line' returns 'path:lineno:text' matches ('--' between files) with 'context' surrounding lines; 'file' returns files whose contents match; 'path' returns files whose path matches. 'fixed' matches the pattern literally instead of as a regex. 'glob' restricts which paths are searched: a bare name scopes to that subtree/file, a '!'-prefixed entry excludes (repeatable). Log/ and Tasks/ are never searched here — use SearchLog and SearchTasks for those.";
@@ -227,6 +366,20 @@ pub struct SearchNotesArgs {
 }
 
 impl SearchNotesArgs {
+    pub fn paths() -> SearchNotesArgs {
+        SearchNotesArgs {
+            pattern: default_pattern(),
+            mode: SearchMode::Path,
+            context: default_context(),
+            fixed: false,
+            glob: Vec::new(),
+            case: CaseMode::default(),
+            word: false,
+            multiline: false,
+            type_: Vec::new(),
+        }
+    }
+
     fn into_query(self) -> SearchQuery {
         SearchQuery {
             pattern: self.pattern,
@@ -381,7 +534,7 @@ impl GetLogArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct ReadArgs {
-    path: RelPath,
+    path: Path,
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     offset: Option<i64>,
@@ -391,7 +544,7 @@ pub struct ReadArgs {
 }
 
 impl ReadArgs {
-    pub fn new(path: RelPath) -> ReadArgs {
+    pub fn new(path: Path) -> ReadArgs {
         ReadArgs {
             path,
             offset: None,
@@ -402,7 +555,7 @@ impl ReadArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct WriteArgs {
-    path: RelPath,
+    path: Path,
     content: NoteBody,
     #[arg(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -411,7 +564,7 @@ pub struct WriteArgs {
 }
 
 impl WriteArgs {
-    pub fn new(path: RelPath, content: impl Into<NoteBody>) -> WriteArgs {
+    pub fn new(path: Path, content: impl Into<NoteBody>) -> WriteArgs {
         WriteArgs {
             path,
             content: content.into(),
@@ -427,7 +580,7 @@ impl WriteArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct EditArgs {
-    path: RelPath,
+    path: Path,
     old_string: String,
     new_string: String,
     #[arg(long = "replace-all")]
@@ -437,8 +590,8 @@ pub struct EditArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct MoveArgs {
-    path: RelPath,
-    dest: RelPath,
+    path: Path,
+    dest: Path,
     #[arg(long)]
     #[serde(default)]
     overwrite: bool,
@@ -446,7 +599,7 @@ pub struct MoveArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct DeleteArgs {
-    path: RelPath,
+    path: Path,
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
@@ -514,13 +667,14 @@ fn schema_of<T: JsonSchema>() -> Value {
     v
 }
 
-pub fn tool_defs() -> Vec<ToolDef> {
+pub(crate) fn tool_defs() -> Vec<ToolDef> {
     TOOLS
         .iter()
         .map(|t| ToolDef {
             name: t.name,
             title: t.title,
             description: t.description,
+            region: t.region,
             input_schema: (t.schema)(),
         })
         .collect()
@@ -534,7 +688,7 @@ fn parse<T: serde::de::DeserializeOwned>(args: &Value) -> Result<T> {
 /// walk the tree asynchronously, everything else is blocking file work handed
 /// to a blocking thread. `run_blocking` owns the remaining names, so an unknown
 /// name is refused in exactly one place.
-pub async fn run_tool(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOutput> {
+pub(crate) async fn run_tool(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOutput> {
     match name {
         "SearchNotes" => {
             let query = parse::<SearchNotesArgs>(args)?.into_query();

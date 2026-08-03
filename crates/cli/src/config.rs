@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use noted::credentials::{CredentialStoreConfig, SecretStorage};
+use noted_client::credentials::{CredentialStoreConfig, SecretStorage};
 use noted::error::{Result, io_error, rejected};
 use noted::types::Ttl;
 
@@ -20,13 +20,6 @@ where
 {
     let runtime = tokio::runtime::Runtime::new().map_err(|e| io_error("runtime", e))?;
     runtime.block_on(fut)
-}
-
-pub fn resolve_root(dir: Option<&str>) -> Result<PathBuf> {
-    let dir = dir
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| rejected("no notes dir set (set NOTED_DIR)"))?;
-    Ok(expand_home(dir))
 }
 
 pub fn parse_ttl(s: &str) -> std::result::Result<Ttl, String> {

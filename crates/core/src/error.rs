@@ -1,15 +1,17 @@
+use std::borrow::Cow;
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum NotedError {
-    #[error("{0}")]
-    NotFound(String),
-    #[error("{0}")]
-    Forbidden(String),
+    #[error("not found")]
+    NotFound,
+    #[error("forbidden")]
+    Forbidden,
+    #[error("conflict")]
+    Conflict,
     #[error("{0}")]
     InvalidInput(String),
-    #[error("{0}")]
-    Conflict(String),
     #[error("{0}")]
     Unavailable(String),
     #[error("{context}")]
@@ -45,35 +47,34 @@ pub enum NotedError {
 }
 
 impl NotedError {
-    pub fn message(&self) -> &str {
+    pub fn message(&self) -> Cow<'_, str> {
         match self {
-            NotedError::NotFound(m)
-            | NotedError::Forbidden(m)
-            | NotedError::InvalidInput(m)
-            | NotedError::Conflict(m)
-            | NotedError::Unavailable(m) => m,
+            NotedError::NotFound => Cow::Borrowed("not found"),
+            NotedError::Forbidden => Cow::Borrowed("forbidden"),
+            NotedError::Conflict => Cow::Borrowed("conflict"),
+            NotedError::InvalidInput(m) | NotedError::Unavailable(m) => Cow::Borrowed(m),
             NotedError::Io { context, .. }
             | NotedError::Json { context, .. }
             | NotedError::Yaml { context, .. }
             | NotedError::Db { context, .. }
-            | NotedError::Http { context, .. } => context,
+            | NotedError::Http { context, .. } => Cow::Borrowed(context),
         }
     }
 
     pub fn is_rejection(&self) -> bool {
         matches!(
             self,
-            NotedError::NotFound(_)
-                | NotedError::Forbidden(_)
+            NotedError::NotFound
+                | NotedError::Forbidden
                 | NotedError::InvalidInput(_)
-                | NotedError::Conflict(_)
+                | NotedError::Conflict
         )
     }
 }
 
 impl From<NotedError> for String {
     fn from(e: NotedError) -> String {
-        e.message().to_string()
+        e.message().into_owned()
     }
 }
 
@@ -81,18 +82,6 @@ pub type Result<T> = std::result::Result<T, NotedError>;
 
 pub fn rejected(msg: impl Into<String>) -> NotedError {
     NotedError::InvalidInput(msg.into())
-}
-
-pub fn not_found(msg: impl Into<String>) -> NotedError {
-    NotedError::NotFound(msg.into())
-}
-
-pub fn forbidden(msg: impl Into<String>) -> NotedError {
-    NotedError::Forbidden(msg.into())
-}
-
-pub fn conflict(msg: impl Into<String>) -> NotedError {
-    NotedError::Conflict(msg.into())
 }
 
 pub fn unavailable(msg: impl Into<String>) -> NotedError {
@@ -120,14 +109,20 @@ pub fn yaml_error(context: impl Into<String>, source: serde_yaml::Error) -> Note
     }
 }
 
-pub fn db_error(context: impl Into<String>, source: impl Into<redb::Error>) -> NotedError {
+pub fn db_error(
+    context: impl Into<String>,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> NotedError {
     NotedError::Db {
         context: context.into(),
-        source: Box::new(source.into()),
+        source: Box::new(source),
     }
 }
 
-pub fn http_error(context: impl Into<String>, source: reqwest::Error) -> NotedError {
+pub fn http_error(
+    context: impl Into<String>,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> NotedError {
     NotedError::Http {
         context: context.into(),
         source: Box::new(source),

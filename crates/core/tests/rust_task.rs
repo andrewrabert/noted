@@ -1,7 +1,7 @@
 mod common;
 
-use common::{fixture_dir, note, notes_root, root, rp, write};
-use noted::root::NotedRoot;
+use common::{backend, confined_backend, fixture_dir, invoke, note, notes_root, root, rp, write};
+use noted::{Backend, NotedRoot};
 use noted::tasks::{
     GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskState, TaskTitle, parse_task_file,
 };
@@ -170,13 +170,15 @@ fn empty_task_ref_and_headless_task_rejected() {
 fn ignored_tasks_are_unreachable_and_ignored_by_numbering() {
     let dir = fixture_dir();
     let root = root(&dir);
-    create(&root, "real", "", "").unwrap(); // makes the Tasks dir → task_0001
-
+    // The ignore file has to be in place before the store first reads the
+    // directory: its matchers are cached per directory.
+    std::fs::create_dir_all(notes_root(&dir).join("Tasks")).unwrap();
     std::fs::write(
         notes_root(&dir).join("Tasks").join(".ignore"),
         "task_0009.md\n",
     )
     .unwrap();
+    create(&root, "real", "", "").unwrap();
     seed(&dir, "task_0009", CREATED);
 
     assert!(!paths(&get(&root, "", false).unwrap()).contains(&"task_0009".to_string()));
@@ -357,12 +359,10 @@ fn update_state_and_body_rules() {
 fn update_missing_and_non_task_file() {
     let dir = fixture_dir();
     let root = root(&dir);
-    assert!(
-        advance(&root, "nope/task_0001", "started", None)
-            .unwrap_err()
-            .to_string()
-            .contains("no task at")
-    );
+    assert!(matches!(
+        advance(&root, "nope/task_0001", "started", None).unwrap_err(),
+        noted::NotedError::NotFound
+    ));
 
     create(&root, "real", "", "").unwrap();
     seed(&dir, "stray", "no frontmatter here\n");
@@ -400,12 +400,11 @@ fn move_same_group_and_missing_refused() {
             .to_string()
             .contains("already in that group")
     );
-    assert!(
+    assert!(matches!(
         root.task_move(&tr("ghost/task_0001"), &gp("dev"))
-            .unwrap_err()
-            .to_string()
-            .contains("no task at")
-    );
+            .unwrap_err(),
+        noted::NotedError::NotFound
+    ));
 }
 
 #[test]
@@ -421,12 +420,11 @@ fn move_custom_name_preserved_and_clash_refused() {
     );
     seed(&dir, "other/buy-eggs", CREATED);
     seed(&dir, "dev/buy-eggs", CREATED);
-    assert!(
+    assert!(matches!(
         root.task_move(&tr("other/buy-eggs"), &gp("dev"))
-            .unwrap_err()
-            .to_string()
-            .contains("destination exists")
-    );
+            .unwrap_err(),
+        noted::NotedError::Conflict
+    ));
 }
 
 #[test]
@@ -434,32 +432,21 @@ fn tasks_subtree_is_managed() {
     let dir = fixture_dir();
     let root = root(&dir);
     create(&root, "t", "", "").unwrap();
-
-    assert!(
-        write(&root, &note("Tasks/task_0009.md", "nope"))
-            .unwrap_err()
-            .to_string()
-            .contains("managed")
-    );
-    assert!(
-        root.note_delete(&rp("Tasks/task_0001.md"))
-            .unwrap_err()
-            .to_string()
-            .contains("cannot be deleted")
-    );
-    assert!(
-        root.note_move(&rp("Tasks/task_0001.md"), &rp("elsewhere.md"), false)
-            .unwrap_err()
-            .to_string()
-            .contains("cannot be moved")
-    );
     write(&root, &note("loose.md", "x")).unwrap();
-    assert!(
+
+    for err in [
+        write(&root, &note("Tasks/task_0009.md", "nope")).unwrap_err(),
+        root.note_delete(&rp("Tasks/task_0001.md")).unwrap_err(),
+        root.note_move(&rp("Tasks/task_0001.md"), &rp("elsewhere.md"), false)
+            .unwrap_err(),
         root.note_move(&rp("loose.md"), &rp("Tasks/task_0002.md"), false)
-            .unwrap_err()
-            .to_string()
-            .contains("cannot be moved")
-    );
+            .unwrap_err(),
+    ] {
+        assert!(
+            matches!(err, noted::NotedError::Forbidden),
+            "expected a policy refusal, got {err}"
+        );
+    }
 }
 
 #[test]
@@ -526,28 +513,26 @@ fn symlinked_group_dir_is_ignored() {
     assert_eq!(paths(&get(&root, "", true).unwrap()), vec!["task_0001"]);
 }
 
-async fn find(root: &NotedRoot, args: serde_json::Value) -> String {
-    noted::tools::run_tool("SearchTasks", &args, root)
-        .await
-        .unwrap()
-        .render()
+async fn find(backend: &Backend, args: serde_json::Value) -> String {
+    invoke(backend, "SearchTasks", args).await.unwrap().render()
 }
 
 #[tokio::test]
 async fn search_returns_task_refs_newest_updated_first() {
     let dir = fixture_dir();
     let root = root(&dir);
+    let bknd = backend(&dir);
     create(&root, "older", "dev", "SHARED marker\n").unwrap();
     create(&root, "newer", "dev", "SHARED marker\n").unwrap();
     advance(&root, "dev/task_0002", "started", None).unwrap();
 
-    let out = find(&root, serde_json::json!({"pattern": "SHARED"})).await;
+    let out = find(&bknd, serde_json::json!({"pattern": "SHARED"})).await;
     assert_eq!(
         out.lines().collect::<Vec<_>>(),
         vec!["dev/task_0002", "dev/task_0001"]
     );
 
-    let listed = find(&root, serde_json::json!({"mode": "path"})).await;
+    let listed = find(&bknd, serde_json::json!({"mode": "path"})).await;
     assert_eq!(
         listed.lines().collect::<Vec<_>>(),
         vec!["dev/task_0002", "dev/task_0001"],
@@ -559,10 +544,11 @@ async fn search_returns_task_refs_newest_updated_first() {
 async fn search_line_mode_addresses_matches_by_task_ref() {
     let dir = fixture_dir();
     let root = root(&dir);
+    let bknd = backend(&dir);
     create(&root, "t", "dev", "NEEDLE here\n").unwrap();
 
     let out = find(
-        &root,
+        &bknd,
         serde_json::json!({"pattern": "NEEDLE", "mode": "line"}),
     )
     .await;
@@ -575,26 +561,27 @@ async fn search_line_mode_addresses_matches_by_task_ref() {
 async fn search_narrows_to_a_group_and_hides_closed_tasks() {
     let dir = fixture_dir();
     let root = root(&dir);
+    let bknd = backend(&dir);
     create(&root, "kept", "dev", "MARK\n").unwrap();
     create(&root, "elsewhere", "ops", "MARK\n").unwrap();
     create(&root, "done", "dev", "MARK\n").unwrap();
     advance(&root, "dev/task_0002", "completed", Some("MARK finished\n")).unwrap();
 
     let scoped = find(
-        &root,
+        &bknd,
         serde_json::json!({"pattern": "MARK", "prefix": "dev"}),
     )
     .await;
     assert_eq!(scoped.lines().collect::<Vec<_>>(), vec!["dev/task_0001"]);
 
     let closed = find(
-        &root,
+        &bknd,
         serde_json::json!({"pattern": "MARK", "prefix": "dev", "include_completed": true}),
     )
     .await;
     assert_eq!(closed.lines().count(), 2, "{closed}");
 
-    let everywhere = find(&root, serde_json::json!({"pattern": "MARK"})).await;
+    let everywhere = find(&bknd, serde_json::json!({"pattern": "MARK"})).await;
     assert!(everywhere.contains("ops/task_0001"), "{everywhere}");
 }
 
@@ -602,11 +589,12 @@ async fn search_narrows_to_a_group_and_hides_closed_tasks() {
 async fn search_is_scoped_to_tasks_and_validates_its_prefix() {
     let dir = fixture_dir();
     let root = root(&dir);
+    let bknd = backend(&dir);
     create(&root, "t", "dev", "body\n").unwrap();
 
     // "contacts" appears only in the open region
     assert!(
-        find(&root, serde_json::json!({"pattern": "contacts"}))
+        find(&bknd, serde_json::json!({"pattern": "contacts"}))
             .await
             .is_empty()
     );
@@ -616,9 +604,7 @@ async fn search_is_scoped_to_tasks_and_validates_its_prefix() {
         serde_json::json!({"pattern": "("}),
     ] {
         assert!(
-            noted::tools::run_tool("SearchTasks", &args, &root)
-                .await
-                .is_err(),
+            invoke(&bknd, "SearchTasks", args.clone()).await.is_err(),
             "{args} should be rejected"
         );
     }
@@ -628,14 +614,18 @@ async fn search_is_scoped_to_tasks_and_validates_its_prefix() {
 async fn search_admits_only_what_the_grant_allows() {
     let dir = fixture_dir();
     let root = root(&dir);
+    let bknd = backend(&dir);
     create(&root, "visible", "dev", "MARK\n").unwrap();
     create(&root, "hidden", "ops", "MARK\n").unwrap();
 
-    let confined = common::confined(&dir, &["Tasks/dev"]);
+    let confined = confined_backend(
+        &dir,
+        r#"{"paths":{"Tasks/ops":{"read":false,"write":false}}}"#,
+    );
     let out = find(&confined, serde_json::json!({"pattern": "MARK"})).await;
     assert_eq!(out.lines().collect::<Vec<_>>(), vec!["dev/task_0001"]);
     assert_eq!(
-        find(&root, serde_json::json!({"pattern": "MARK"}))
+        find(&bknd, serde_json::json!({"pattern": "MARK"}))
             .await
             .lines()
             .count(),
@@ -643,13 +633,13 @@ async fn search_admits_only_what_the_grant_allows() {
         "the unconfined caller sees both"
     );
     assert!(
-        noted::tools::run_tool(
-            "SearchTasks",
-            &serde_json::json!({"prefix": "ops"}),
+        invoke(
             &confined,
+            "SearchTasks",
+            serde_json::json!({"prefix": "ops"}),
         )
         .await
         .is_err(),
-        "a prefix disjoint from the grant is refused"
+        "a prefix the policy denies outright is refused"
     );
 }

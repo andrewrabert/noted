@@ -1,98 +1,53 @@
 use std::cmp::Reverse;
 
-use crate::areas::Areas;
-use crate::caller::Caller;
-use crate::error::{Result, forbidden, io_error, not_found, rejected};
-use crate::note::Note as _;
-use crate::path::RelPath;
+use crate::areas::Area;
+use crate::error::{NotedError, Result, rejected};
+use crate::note::{Condition, Note as _};
+use crate::path::Path;
 use crate::search::{Hit, assemble};
-use crate::store::{Store, Sweep};
 use crate::tasks::{
     GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskTitle, numbered,
 };
 use crate::types::TaskBody;
 
-use super::find::Find;
-
-#[derive(Clone)]
-pub(super) struct Task {
-    store: Store,
-    areas: Areas,
-    caller: Caller,
-    find: Find,
+pub(super) struct TaskTools {
+    area: Area,
 }
 
-impl Task {
-    pub(super) fn new(store: Store, areas: Areas, caller: Caller, find: Find) -> Task {
-        Task {
-            store,
-            areas,
-            caller,
-            find,
+impl TaskTools {
+    pub(super) fn new(area: Area) -> TaskTools {
+        TaskTools { area }
+    }
+
+    fn file_of(&self, reference: &TaskRef) -> Result<Path> {
+        reference
+            .to_path()
+            .ok_or_else(|| rejected("task path required"))
+    }
+
+    fn within(dir: Option<&Path>, name: &str) -> Result<Path> {
+        match dir {
+            Some(dir) => dir.joined(name),
+            None => Path::new(name),
         }
     }
 
-    fn reachable(&self, path: &RelPath, shown: &str) -> Result<()> {
-        if self.store.is_ignored(path) {
-            return Err(rejected(format!("invalid path: '{shown}'")));
+    fn named(dir: Option<&Path>) -> String {
+        match dir {
+            Some(dir) => dir.to_string(),
+            None => "the top of Tasks".to_string(),
         }
-        if !self.caller.admits(path) {
-            return Err(forbidden(format!(
-                "task path outside allowed folders: '{shown}'"
-            )));
-        }
-        Ok(())
     }
 
-    fn group_dir(&self, group: &GroupPath) -> Result<RelPath> {
-        let dir = group.to_rel(&self.areas.tasks);
-        self.reachable(&dir, group.as_str())?;
-        Ok(dir)
+    fn read(&self, path: &Path) -> Result<TaskNote> {
+        let reference = TaskRef::of_file(path);
+        let bytes = self.area.read(path)?;
+        TaskNote::from_bytes(reference, &bytes).map_err(|_| rejected("not a task"))
     }
 
-    fn searchable(&self, group: &GroupPath) -> Result<RelPath> {
-        let dir = group.to_rel(&self.areas.tasks);
-        if self.store.is_ignored(&dir) {
-            return Err(rejected(format!("invalid path: '{group}'")));
-        }
-        if !self.caller.reaches(&dir) {
-            return Err(forbidden(format!(
-                "task path outside allowed folders: '{group}'"
-            )));
-        }
-        Ok(dir)
-    }
-
-    fn file_of(&self, reference: &TaskRef) -> Result<RelPath> {
-        if reference.is_empty() {
-            return Err(rejected("task path required"));
-        }
-        let path = reference.to_rel(&self.areas.tasks);
-        self.reachable(&path, reference.as_str())?;
-        Ok(path)
-    }
-
-    fn reference(&self, path: &RelPath) -> TaskRef {
-        TaskRef::of_file(path, &self.areas.tasks)
-    }
-
-    fn real_file(&self, path: &RelPath) -> bool {
-        self.store.is_file(path) && !self.store.has_symlink(path)
-    }
-
-    fn read(&self, path: &RelPath) -> Result<TaskNote> {
-        let reference = self.reference(path);
-        let bytes = self
-            .store
-            .read(path)
-            .map_err(|e| io_error("read failed", e))?;
-        TaskNote::from_bytes(reference.clone(), &bytes)
-            .map_err(|_| rejected(format!("not a task: '{reference}'")))
-    }
-
-    fn next_number(&self, dir: &RelPath) -> u64 {
-        self.store
-            .children(dir)
+    fn next_number(&self, dir: Option<&Path>) -> u64 {
+        self.area
+            .walk(dir, |_| false)
             .iter()
             .filter_map(|p| {
                 let name = p.file_name();
@@ -103,20 +58,21 @@ impl Task {
             + 1
     }
 
-    fn claim(&self, dir: &RelPath, data: &[u8]) -> Result<RelPath> {
+    fn claim(&self, dir: Option<&Path>, data: &[u8]) -> Result<Path> {
         for _ in 0..100 {
             let base = self.next_number(dir);
             for number in base..base + 1000 {
-                let path = dir.joined(&format!("task_{number:04}.md"));
-                match self.store.create(&path, data) {
+                let path = TaskTools::within(dir, &format!("task_{number:04}.md"))?;
+                match self.area.write(&path, data, Condition::Missing) {
                     Ok(()) => return Ok(path),
-                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                    Err(e) => return Err(io_error("write failed", e)),
+                    Err(NotedError::Conflict) => continue,
+                    Err(e) => return Err(e),
                 }
             }
         }
         Err(rejected(format!(
-            "could not allocate a task name in '{dir}'"
+            "could not allocate a task name in '{}'",
+            TaskTools::named(dir)
         )))
     }
 
@@ -126,31 +82,27 @@ impl Task {
         group: &GroupPath,
         body: &TaskBody,
     ) -> Result<TaskNote> {
-        let dir = self.group_dir(group)?;
         let draft = TaskNote::new(title.clone(), body.clone());
-        let path = self.claim(&dir, &draft.to_bytes()?)?;
-        Ok(draft.with_path(self.reference(&path)))
+        let path = self.claim(group.to_path().as_ref(), &draft.to_bytes()?)?;
+        Ok(draft.with_path(TaskRef::of_file(&path)))
     }
 
     pub(super) fn get(&self, query: &TaskQuery) -> Result<Vec<TaskNote>> {
-        let exact = match query.prefix.is_empty() {
-            true => None,
-            false => Some(self.file_of(&query.prefix)?),
-        };
+        let exact = query
+            .prefix
+            .to_path()
+            .and_then(|path| self.read(&path).ok());
         let (paths, hide_closed) = match exact {
-            Some(path) if self.real_file(&path) => (vec![path], false),
-            _ => (self.group_files(&query.prefix)?, !query.include_completed),
+            Some(task) => return Ok(vec![task]),
+            None => (
+                self.area.walk(query.prefix.to_dir().as_ref(), |_| true),
+                !query.include_completed,
+            ),
         };
 
         let mut found = Vec::new();
         for path in paths {
-            if !self.caller.admits(&path) {
-                continue;
-            }
-            let Ok(bytes) = self.store.read(&path) else {
-                continue;
-            };
-            let Ok(task) = TaskNote::from_bytes(self.reference(&path), &bytes) else {
+            let Ok(task) = self.read(&path) else {
                 continue;
             };
             if hide_closed && task.front().state.is_closed() {
@@ -168,33 +120,20 @@ impl Task {
     }
 
     pub(super) async fn search(&self, search: &TaskSearch) -> Result<Vec<Hit<TaskRef>>> {
-        let dir = self.searchable(&search.prefix)?;
-        let sweep = Sweep::new(dir, &search.query);
         let hits: Vec<Hit<TaskRef>> = self
-            .find
-            .content(&sweep)
+            .area
+            .search(search.prefix.to_path().as_ref(), &search.query, |_| true)
             .await?
             .into_iter()
             .map(|hit| Hit {
-                path: self.reference(&hit.path),
+                path: TaskRef::of_file(&hit.path),
                 lines: hit.lines,
             })
             .collect();
-        let walked: Vec<TaskRef> = self
-            .find
-            .paths(&sweep)
-            .await?
-            .iter()
-            .map(|path| self.reference(path))
-            .collect();
 
         let mut ordered = Vec::new();
-        for hit in assemble(&search.query, hits, walked)? {
-            let path = hit.path.to_rel(&self.areas.tasks);
-            if !self.real_file(&path) {
-                continue;
-            }
-            let Ok(task) = self.read(&path) else {
+        for hit in assemble(&search.query, hits)? {
+            let Some(task) = hit.path.to_path().and_then(|p| self.read(&p).ok()) else {
                 continue;
             };
             if !search.include_completed && task.front().state.is_closed() {
@@ -210,58 +149,47 @@ impl Task {
         Ok(ordered.into_iter().map(|(_, _, hit)| hit).collect())
     }
 
-    fn group_files(&self, prefix: &TaskRef) -> Result<Vec<RelPath>> {
-        let dir = self.areas.tasks.joined(prefix.as_str());
-        if self.store.is_ignored(&dir) {
-            return Err(rejected(format!("invalid path: '{prefix}'")));
-        }
-        if !self.store.is_dir(&dir) || self.store.has_symlink(&dir) {
-            return Ok(Vec::new());
-        }
-        Ok(self.store.walk(&dir))
-    }
-
     pub(super) fn update(&self, reference: &TaskRef, change: &TaskChange) -> Result<TaskNote> {
         let path = self.file_of(reference)?;
-        if !self.real_file(&path) {
-            return Err(not_found(format!("no task at '{reference}'")));
-        }
-        let updated = self.read(&path)?.changed(change)?;
-        self.store.write(&path, &updated.to_bytes()?)?;
+        let updated = self
+            .read(&path)
+            .map_err(|e| match e {
+                NotedError::Io { .. } => NotedError::NotFound,
+                other => other,
+            })?
+            .changed(change)?;
+        self.area
+            .write(&path, &updated.to_bytes()?, Condition::Always)?;
         Ok(updated)
     }
 
     pub(super) fn move_(&self, reference: &TaskRef, group: &GroupPath) -> Result<TaskNote> {
         let src = self.file_of(reference)?;
-        if !self.real_file(&src) {
-            return Err(not_found(format!("no task at '{reference}'")));
-        }
-        let dir = self.group_dir(group)?;
+        let relocated = self
+            .read(&src)
+            .map_err(|e| match e {
+                NotedError::Io { .. } => NotedError::NotFound,
+                other => other,
+            })?
+            .restamped();
+        let dir = group.to_path();
         if dir == src.parent() {
             return Err(rejected("task already in that group"));
         }
 
-        let relocated = self.read(&src)?.restamped();
         let bytes = relocated.to_bytes()?;
         let stem = reference.stem();
-        let dest = if numbered(stem).is_some() {
-            self.claim(&dir, &bytes)?
-        } else {
-            let dest = dir.joined(&format!("{stem}.md"));
-            match self.store.create(&dest, &bytes) {
-                Ok(()) => dest,
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    return Err(rejected(format!(
-                        "destination exists: '{}'",
-                        self.reference(&dest)
-                    )));
+        let dest = match numbered(stem).is_some() {
+            true => self.claim(dir.as_ref(), &bytes)?,
+            false => {
+                let dest = TaskTools::within(dir.as_ref(), &format!("{stem}.md"))?;
+                match self.area.write(&dest, &bytes, Condition::Missing) {
+                    Ok(()) => dest,
+                    Err(e) => return Err(e),
                 }
-                Err(e) => return Err(io_error("write failed", e)),
             }
         };
-        self.store
-            .remove(&src)
-            .map_err(|e| io_error("move failed", e))?;
-        Ok(relocated.with_path(self.reference(&dest)))
+        self.area.remove(&src)?;
+        Ok(relocated.with_path(TaskRef::of_file(&dest)))
     }
 }

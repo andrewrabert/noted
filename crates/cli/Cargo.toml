@@ -18,8 +18,11 @@ name = "noted"
 path = "src/main.rs"
 
 [dependencies]
+noted-auth = { workspace = true }
+noted-client = { workspace = true }
 noted-core = { workspace = true }
 noted-picker = { workspace = true }
+noted-server = { workspace = true }
 anstyle = "1"
 chrono = { workspace = true }
 clap = { workspace = true }

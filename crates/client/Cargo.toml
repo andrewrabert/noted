@@ -1,0 +1,34 @@
+[package]
+name = "noted-client"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+noted-auth = { workspace = true }
+noted-core = { workspace = true }
+base64 = "0.23"
+keyring = "4"
+open = "5"
+reqwest = { version = "0.13", features = ["json", "form"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sha2 = "0.11"
+tokio = { version = "1", features = ["io-util", "net"] }
+
+[dev-dependencies]
+noted-auth = { workspace = true }
+noted-server = { workspace = true }
+axum = "0.8"
+http-body-util = "0.1"
+tempfile = { workspace = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tower = { version = "0.5", features = ["util"] }
+url = "2"

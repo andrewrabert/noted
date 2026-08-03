@@ -15,13 +15,17 @@ readme = "README.md"
 rust-version = "1.90"
 
 [workspace.dependencies]
+noted-auth = { path = "crates/auth" }
+noted-client = { path = "crates/client" }
 noted-core = { path = "crates/core" }
 noted-picker = { path = "crates/picker" }
+noted-server = { path = "crates/server" }
 
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 clap = { version = "4", features = ["derive", "env"] }
 humantime = "2"
 serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
 serde_json = "1"
 tempfile = "3"
 tracing = "0.1"

@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 
 use crate::error::{NotedError, Result, rejected};
 use crate::front_matter::{dump_front, split_front};
-use crate::path::RelPath;
+use crate::path::Path;
 use crate::search::LogWindow;
 use crate::types::{NoteBody, Source, Timestamp};
 
@@ -122,21 +122,21 @@ impl Edit {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Trashed(RelPath);
+pub struct Trashed(Path);
 
 impl Trashed {
-    pub(crate) fn new(path: RelPath) -> Trashed {
+    pub(crate) fn new(path: Path) -> Trashed {
         Trashed(path)
     }
 
-    pub fn path(&self) -> &RelPath {
+    pub fn path(&self) -> &Path {
         &self.0
     }
 }
 
 impl fmt::Display for Trashed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.0.as_str())
+        write!(f, "{}", self.0)
     }
 }
 
@@ -153,19 +153,19 @@ pub trait Note {
 /// a log's immutability.
 #[derive(Clone, Debug)]
 pub struct TextNote {
-    path: RelPath,
+    path: Path,
     body: NoteBody,
 }
 
 impl TextNote {
-    pub fn new(path: RelPath, body: impl Into<NoteBody>) -> TextNote {
+    pub fn new(path: Path, body: impl Into<NoteBody>) -> TextNote {
         TextNote {
             path,
             body: body.into(),
         }
     }
 
-    pub fn path(&self) -> &RelPath {
+    pub fn path(&self) -> &Path {
         &self.path
     }
 
@@ -182,7 +182,7 @@ impl TextNote {
         self
     }
 
-    pub fn with_path(mut self, path: RelPath) -> TextNote {
+    pub fn with_path(mut self, path: Path) -> TextNote {
         self.path = path;
         self
     }
@@ -197,6 +197,8 @@ impl Note for TextNote {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LogFront {
     pub created: Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<Path>,
     #[serde(default)]
     pub cwd: String,
     #[serde(default)]
@@ -213,13 +215,13 @@ pub struct LogQuery {
 
 #[derive(Debug)]
 pub struct LogNote {
-    path: RelPath,
+    path: Path,
     front: LogFront,
     body: String,
 }
 
 impl LogNote {
-    pub(crate) fn new(path: RelPath, front: LogFront, body: impl Into<String>) -> LogNote {
+    pub(crate) fn new(path: Path, front: LogFront, body: impl Into<String>) -> LogNote {
         LogNote {
             path,
             front,
@@ -227,7 +229,7 @@ impl LogNote {
         }
     }
 
-    pub(crate) fn from_bytes(path: RelPath, bytes: &[u8]) -> Result<LogNote> {
+    pub(crate) fn from_bytes(path: Path, bytes: &[u8]) -> Result<LogNote> {
         let text = std::str::from_utf8(bytes).map_err(|_| rejected("not a log entry"))?;
         let (block, body) = split_front(text).ok_or_else(|| rejected("not a log entry"))?;
         let front: LogFront =
@@ -235,7 +237,7 @@ impl LogNote {
         Ok(LogNote::new(path, front, body))
     }
 
-    pub fn path(&self) -> &RelPath {
+    pub fn path(&self) -> &Path {
         &self.path
     }
 
@@ -262,19 +264,19 @@ impl Note for LogNote {
 /// utf-8 or markdown assumptions; the bytes are the whole of it.
 #[derive(Clone, Debug)]
 pub struct BinaryNote {
-    path: RelPath,
+    path: Path,
     bytes: Vec<u8>,
 }
 
 impl BinaryNote {
-    pub fn new(path: RelPath, bytes: impl Into<Vec<u8>>) -> BinaryNote {
+    pub fn new(path: Path, bytes: impl Into<Vec<u8>>) -> BinaryNote {
         BinaryNote {
             path,
             bytes: bytes.into(),
         }
     }
 
-    pub fn path(&self) -> &RelPath {
+    pub fn path(&self) -> &Path {
         &self.path
     }
 

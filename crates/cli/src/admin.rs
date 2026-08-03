@@ -4,14 +4,13 @@ use clap::{Args, Subcommand};
 use serde_json::Value;
 
 use noted::error::{Result, rejected, unavailable};
-use noted::oauth::admin::{AdminConn, AdminRequest};
-use noted::oauth::service::{CredentialSummary, RevokeBy, ScopeEdit, UserSummary};
-use noted::oauth::types::Label;
-use noted::scope::StoredScope;
+use noted_auth::oauth::admin::{AdminConn, AdminRequest};
+use noted_auth::oauth::service::{CredentialSummary, RevokeBy, UserSummary};
+use noted_auth::oauth::types::Label;
 use noted::types::Ttl;
 
-use crate::RuleFlags;
 use crate::config::{block_on, parse_ttl};
+use crate::{EntryFlags, GlobalArgs};
 
 #[derive(serde::Deserialize)]
 struct UserGetResponse {
@@ -60,8 +59,7 @@ pub(crate) struct UserCmd {
 enum UserSub {
     Add(UserNameArg),
     Passwd(UserNameArg),
-    Grant(UserGrantCmd),
-    Ungrant(UserUngrantCmd),
+    Policy(UserPolicyCmd),
     #[command(alias = "ls")]
     List(UserListCmd),
     Revoke(UserRevokeCmd),
@@ -75,18 +73,10 @@ struct UserNameArg {
 }
 
 #[derive(Args)]
-struct UserGrantCmd {
+struct UserPolicyCmd {
     name: String,
     #[command(flatten)]
-    flags: RuleFlags,
-    #[arg(long, conflicts_with_all = ["tools", "path", "rules"])]
-    all: bool,
-}
-
-#[derive(Args)]
-struct UserUngrantCmd {
-    name: String,
-    n: usize,
+    entries: EntryFlags,
 }
 
 #[derive(Args)]
@@ -112,8 +102,7 @@ pub(crate) struct KeyCmd {
 #[derive(Subcommand)]
 enum KeySub {
     Create(KeyCreateCmd),
-    Grant(KeyGrantCmd),
-    Ungrant(KeyUngrantCmd),
+    Policy(KeyPolicyCmd),
     #[command(alias = "ls")]
     List(KeyListCmd),
     Revoke(KeyRevokeCmd),
@@ -123,7 +112,7 @@ enum KeySub {
 struct KeyCreateCmd {
     label: String,
     #[command(flatten)]
-    flags: RuleFlags,
+    entries: EntryFlags,
     #[arg(long, value_parser = parse_ttl)]
     ttl: Option<Ttl>,
     #[arg(long)]
@@ -131,22 +120,12 @@ struct KeyCreateCmd {
 }
 
 #[derive(Args)]
-struct KeyGrantCmd {
+struct KeyPolicyCmd {
     label: Option<String>,
     #[arg(long, conflicts_with = "label")]
     id: Option<String>,
     #[command(flatten)]
-    flags: RuleFlags,
-    #[arg(long, conflicts_with_all = ["tools", "path", "rules"])]
-    all: bool,
-}
-
-#[derive(Args)]
-struct KeyUngrantCmd {
-    label: Option<String>,
-    #[arg(long, conflicts_with = "label")]
-    id: Option<String>,
-    n: usize,
+    entries: EntryFlags,
 }
 
 #[derive(Args)]
@@ -167,41 +146,6 @@ fn admin_one(t: &AdminTransport, req: AdminRequest) -> Result<Value> {
         let mut conn = t.open().await?;
         conn.call(req).await
     })
-}
-
-fn scope_edit_of(flags: &RuleFlags, all: bool) -> Result<ScopeEdit> {
-    if all {
-        return Ok(ScopeEdit::All);
-    }
-    match flags.to_specs()? {
-        Some(specs) => Ok(ScopeEdit::Append(specs)),
-        None => Err(rejected("a grant needs --tools, --path, --rules, or --all")),
-    }
-}
-
-fn format_stored_scope(scope: &StoredScope) -> String {
-    match scope {
-        StoredScope::Unrestricted => "unrestricted".to_string(),
-        StoredScope::Grants(specs) if specs.is_empty() => "no access (no grants)".to_string(),
-        StoredScope::Grants(specs) => specs
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                let tools = s
-                    .tools
-                    .as_ref()
-                    .map(|t| t.join(","))
-                    .unwrap_or_else(|| "*".into());
-                let paths = s
-                    .paths
-                    .as_ref()
-                    .map(|p| p.join(" "))
-                    .unwrap_or_else(|| "/".into());
-                format!("{}. {tools} @ {paths}", i + 1)
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    }
 }
 
 fn format_ts(secs: u64) -> String {
@@ -244,7 +188,7 @@ fn prompt_password() -> Result<String> {
     Ok(line.trim_end_matches(['\n', '\r']).to_string())
 }
 
-pub(crate) fn run_user(cmd: UserCmd) -> Result<()> {
+pub(crate) fn run_user(cmd: UserCmd, globals: &GlobalArgs) -> Result<()> {
     let t = &cmd.transport;
     match cmd.sub {
         UserSub::Add(a) => {
@@ -269,26 +213,15 @@ pub(crate) fn run_user(cmd: UserCmd) -> Result<()> {
             )?;
             println!("password changed for {}", a.name);
         }
-        UserSub::Grant(g) => {
-            let edit = scope_edit_of(&g.flags, g.all)?;
+        UserSub::Policy(c) => {
             admin_one(
                 t,
-                AdminRequest::UserGrant {
-                    name: g.name.clone(),
-                    edit,
+                AdminRequest::UserSetPolicy {
+                    name: c.name.clone(),
+                    policy: globals.policy_args(&c.entries).held()?,
                 },
             )?;
-            println!("granted");
-        }
-        UserSub::Ungrant(u) => {
-            admin_one(
-                t,
-                AdminRequest::UserUngrant {
-                    name: u.name.clone(),
-                    n: u.n,
-                },
-            )?;
-            println!("removed grant {}", u.n);
+            println!("policy set for {}", c.name);
         }
         UserSub::List(l) => match l.name {
             None => {
@@ -297,14 +230,14 @@ pub(crate) fn run_user(cmd: UserCmd) -> Result<()> {
                     println!("no users");
                 }
                 for u in users {
-                    println!("{}  {}", u.name, u.scope.summary());
+                    println!("{}  {}", u.name, u.policy);
                 }
             }
             Some(name) => {
                 let resp: UserGetResponse =
                     from_response(admin_one(t, AdminRequest::UserGet { name: name.clone() })?)?;
                 println!("user: {name}");
-                println!("scope:\n{}", format_stored_scope(&resp.user.scope));
+                println!("policy: {}", resp.user.policy);
                 if !resp.credentials.is_empty() {
                     println!("credentials:");
                     print_credentials(&resp.credentials);
@@ -334,21 +267,18 @@ pub(crate) fn run_user(cmd: UserCmd) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn run_key(cmd: KeyCmd) -> Result<()> {
+pub(crate) fn run_key(cmd: KeyCmd, globals: &GlobalArgs) -> Result<()> {
     let t = &cmd.transport;
     match cmd.sub {
         KeySub::Create(c) => {
-            let scope = match c.flags.to_specs()? {
-                None => StoredScope::Unrestricted,
-                Some(specs) => StoredScope::Grants(specs),
-            };
+            let policy = globals.policy_args(&c.entries).held()?;
             let label = c.label.clone();
             let ttl = c.ttl;
             let as_json = c.json;
             block_on(async move {
                 let mut conn = t.open().await?;
                 let minted = conn
-                    .call(AdminRequest::KeyCreate { label, scope, ttl })
+                    .call(AdminRequest::KeyCreate { label, policy, ttl })
                     .await?;
                 let credential_id = minted["credential_id"]
                     .as_str()
@@ -376,35 +306,22 @@ pub(crate) fn run_key(cmd: KeyCmd) -> Result<()> {
                 Ok(())
             })
         }
-        KeySub::Grant(g) => {
-            if g.label.is_none() && g.id.is_none() {
-                return Err(rejected("key grant needs a LABEL or --id"));
+        KeySub::Policy(c) => {
+            if c.label.is_none() && c.id.is_none() {
+                return Err(rejected("setting a key policy needs a LABEL or --id"));
             }
-            let edit = scope_edit_of(&g.flags, g.all)?;
             let v = admin_one(
                 t,
-                AdminRequest::KeyGrant {
-                    label: g.label,
-                    id: g.id,
-                    edit,
+                AdminRequest::KeySetPolicy {
+                    label: c.label,
+                    id: c.id,
+                    policy: globals.policy_args(&c.entries).held()?,
                 },
             )?;
-            println!("granted to {} key(s)", v["granted"].as_u64().unwrap_or(0));
-            Ok(())
-        }
-        KeySub::Ungrant(u) => {
-            if u.label.is_none() && u.id.is_none() {
-                return Err(rejected("key ungrant needs a LABEL or --id"));
-            }
-            admin_one(
-                t,
-                AdminRequest::KeyUngrant {
-                    label: u.label,
-                    id: u.id,
-                    n: u.n,
-                },
-            )?;
-            println!("removed grant {}", u.n);
+            println!(
+                "policy set for {} key(s)",
+                v["updated"].as_u64().unwrap_or(0)
+            );
             Ok(())
         }
         KeySub::List(l) => {
@@ -416,13 +333,9 @@ pub(crate) fn run_key(cmd: KeyCmd) -> Result<()> {
             for k in keys {
                 let label = k.label.as_ref().map(Label::as_str).unwrap_or("-");
                 let expires = k.expires_at.format_utc();
-                let scope_summary = k
-                    .scope
-                    .as_ref()
-                    .map(StoredScope::summary)
-                    .unwrap_or_else(|| "unrestricted".to_string());
+                let policy = k.policy.clone().unwrap_or_default();
                 println!(
-                    "{label}  {}  {:<8}{}  expires {expires}  {scope_summary}",
+                    "{label}  {}  {:<8}{}  expires {expires}  {policy}",
                     k.credential_id,
                     k.status.as_str(),
                     k.fingerprint

@@ -4,15 +4,13 @@ use std::process::ExitCode;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 
 use noted::error::{Result, rejected, unavailable};
-use noted::mcp::CallScope;
-use noted::oauth::service::DEFAULT_CREDENTIAL_TTL_HUMAN;
-use noted::scope::RuleSpec;
-use noted::serve::{HttpConfig, StdioConfig};
-use noted::store::NotedDir;
 use noted::tools::{DeleteArgs, EditArgs, MoveArgs, ReadArgs, SearchNotesArgs, WriteArgs};
-use noted::types::{Source, Ttl};
+use noted::types::Ttl;
+use noted::{BackendArgs, PolicyArgs};
+use noted_auth::oauth::service::DEFAULT_CREDENTIAL_TTL_HUMAN;
+use noted_server::serve::{HttpConfig, StdioConfig};
 
-use crate::config::{parse_ttl, resolve_root, setup_logging};
+use crate::config::{parse_ttl, setup_logging};
 
 mod admin;
 mod auth;
@@ -81,6 +79,47 @@ struct GlobalArgs {
     log_level: String,
     #[arg(long = "log-file", env = "NOTED_LOG_FILE", global = true)]
     log_file: Option<String>,
+    #[arg(long, env = "NOTED_POLICY", global = true)]
+    policy: Option<String>,
+    #[arg(long, env = "NOTED_SCOPE", global = true)]
+    scope: Option<String>,
+}
+
+impl GlobalArgs {
+    pub(crate) fn policy_args(&self, entries: &EntryFlags) -> PolicyArgs {
+        PolicyArgs {
+            policy: self.policy.as_deref().map(|raw| match raw.strip_prefix('@') {
+                Some(path) => format!("@{}", config::expand_home(path).display()),
+                None => raw.to_string(),
+            }),
+            scope: self.scope.clone(),
+            inside: entries.in_.clone(),
+            outside: entries.out.clone(),
+        }
+    }
+
+    pub(crate) fn backend_args(&self, entries: &EntryFlags) -> BackendArgs {
+        BackendArgs {
+            dir: self
+                .dir
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|dir| config::expand_home(dir).to_string_lossy().into_owned()),
+            url: self.url.clone(),
+            token: None,
+            source: self.source.clone(),
+            policy: self.policy_args(entries),
+            transport: None,
+        }
+    }
+}
+
+#[derive(Args, Default)]
+pub(crate) struct EntryFlags {
+    #[arg(long = "in", value_name = "PATH[=MODES]")]
+    in_: Vec<String>,
+    #[arg(long = "out", value_name = "PATH[=MODES]")]
+    out: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -125,45 +164,6 @@ enum ServerSub {
 }
 
 #[derive(Args)]
-struct RuleFlags {
-    #[arg(long)]
-    tools: Option<String>,
-    #[arg(long)]
-    path: Option<String>,
-    #[arg(long, conflicts_with_all = ["tools", "path"])]
-    rules: Option<String>,
-}
-
-impl RuleFlags {
-    fn to_specs(&self) -> Result<Option<Vec<RuleSpec>>> {
-        if let Some(json) = &self.rules {
-            let specs: Vec<RuleSpec> = serde_json::from_str(json)
-                .map_err(|e| rejected(format!("bad --rules JSON: {e}")))?;
-            return Ok(Some(specs));
-        }
-        if self.tools.is_none() && self.path.is_none() {
-            return Ok(None);
-        }
-        Ok(Some(vec![RuleSpec {
-            tools: self.tools.as_ref().map(|list| {
-                list.split(',')
-                    .map(|t| t.trim().to_string())
-                    .filter(|t| !t.is_empty())
-                    .collect()
-            }),
-            paths: self.path.clone().map(|p| vec![p]),
-        }]))
-    }
-
-    fn to_call_scope(&self) -> Result<CallScope> {
-        match self.to_specs()? {
-            None => Ok(CallScope::Unconfined),
-            Some(specs) => Ok(CallScope::Scoped(noted::scope::compile_rules(&specs)?)),
-        }
-    }
-}
-
-#[derive(Args)]
 struct ServeCmd {
     #[arg(long, env = "NOTED_HOST", default_value = "127.0.0.1")]
     host: String,
@@ -184,7 +184,7 @@ struct ServeCmd {
     )]
     default_ttl: Ttl,
     #[command(flatten)]
-    scope: RuleFlags,
+    entries: EntryFlags,
 }
 
 impl ServeCmd {
@@ -199,8 +199,7 @@ impl ServeCmd {
             return Err(rejected("--public-url requires --auth-db"));
         }
         Ok(HttpConfig {
-            dir: NotedDir::new(resolve_root(globals.dir.as_deref())?),
-            source: Source::from_opt(globals.source.clone()),
+            backend: globals.backend_args(&self.entries),
             host: self.host,
             port: self.port,
             public_url: self.public_url,
@@ -210,7 +209,6 @@ impl ServeCmd {
             #[cfg(unix)]
             admin_socket: self.admin_socket,
             default_ttl: self.default_ttl,
-            scope: self.scope.to_call_scope()?,
         })
     }
 }
@@ -218,15 +216,13 @@ impl ServeCmd {
 #[derive(Args)]
 struct McpCmd {
     #[command(flatten)]
-    scope: RuleFlags,
+    entries: EntryFlags,
 }
 
 impl McpCmd {
     fn into_config(self, globals: &GlobalArgs) -> Result<StdioConfig> {
         Ok(StdioConfig {
-            dir: NotedDir::new(resolve_root(globals.dir.as_deref())?),
-            source: Source::from_opt(globals.source.clone()),
-            scope: self.scope.to_call_scope()?,
+            backend: globals.backend_args(&self.entries),
         })
     }
 }
@@ -242,25 +238,15 @@ fn run(cli: Cli) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     };
     match command {
-        Command::Search(c) => dispatch::run_dispatch(&globals, dispatch::search("SearchNotes", c)),
-        Command::Read(c) => {
-            dispatch::run_dispatch(&globals, dispatch::passthrough_of("ReadNote", c))
-        }
-        Command::Write(c) => {
-            dispatch::run_dispatch(&globals, dispatch::passthrough_of("WriteNote", c))
-        }
-        Command::Edit(c) => {
-            dispatch::run_dispatch(&globals, dispatch::passthrough_of("EditNote", c))
-        }
+        Command::Search(c) => dispatch::run_dispatch(&globals, dispatch::search(c)?),
+        Command::Read(c) => dispatch::run_dispatch(&globals, dispatch::passthrough_of(c)?),
+        Command::Write(c) => dispatch::run_dispatch(&globals, dispatch::passthrough_of(c)?),
+        Command::Edit(c) => dispatch::run_dispatch(&globals, dispatch::passthrough_of(c)?),
         Command::Open(c) => open::run_open(&globals, c),
-        Command::Move(c) => {
-            dispatch::run_dispatch(&globals, dispatch::passthrough_of("MoveNote", c))
-        }
-        Command::Delete(c) => {
-            dispatch::run_dispatch(&globals, dispatch::passthrough_of("DeleteNote", c))
-        }
-        Command::Log(c) => dispatch::run_dispatch(&globals, dispatch::build_log(c)),
-        Command::Task(c) => dispatch::run_dispatch(&globals, dispatch::build_task(c)),
+        Command::Move(c) => dispatch::run_dispatch(&globals, dispatch::passthrough_of(c)?),
+        Command::Delete(c) => dispatch::run_dispatch(&globals, dispatch::passthrough_of(c)?),
+        Command::Log(c) => dispatch::run_dispatch(&globals, dispatch::build_log(c)?),
+        Command::Task(c) => dispatch::run_dispatch(&globals, dispatch::build_task(c)?),
         Command::Auth(c) => auth::run_auth(c, &globals),
         Command::Server(c) => run_server(c, &globals),
     }
@@ -269,82 +255,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
 fn run_server(cmd: ServerCmd, globals: &GlobalArgs) -> Result<ExitCode> {
     match cmd.sub {
         ServerSub::Http(c) => {
-            noted::serve::serve_http(c.into_config(globals)?).map(|()| ExitCode::SUCCESS)
+            noted_server::serve::serve_http(c.into_config(globals)?).map(|()| ExitCode::SUCCESS)
         }
         ServerSub::Mcp(c) => {
-            noted::serve::serve_stdio(c.into_config(globals)?).map(|()| ExitCode::SUCCESS)
+            noted_server::serve::serve_stdio(c.into_config(globals)?).map(|()| ExitCode::SUCCESS)
         }
-        ServerSub::User(c) => admin::run_user(c).map(|()| ExitCode::SUCCESS),
-        ServerSub::Key(c) => admin::run_key(c).map(|()| ExitCode::SUCCESS),
+        ServerSub::User(c) => admin::run_user(c, globals).map(|()| ExitCode::SUCCESS),
+        ServerSub::Key(c) => admin::run_key(c, globals).map(|()| ExitCode::SUCCESS),
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use noted::caller::Policy;
-    use noted::path::RelPath;
-
-    use super::*;
-
-    fn within(paths: &[&str]) -> Policy {
-        Policy::within(paths.iter().map(|p| RelPath::new(*p).unwrap()).collect())
-    }
-
-    fn flags(tools: Option<&str>, path: Option<&str>, rules: Option<&str>) -> RuleFlags {
-        RuleFlags {
-            tools: tools.map(str::to_string),
-            path: path.map(str::to_string),
-            rules: rules.map(str::to_string),
-        }
-    }
-
-    #[test]
-    fn scope_flags_no_args_is_unconfined() {
-        assert!(matches!(
-            flags(None, None, None).to_call_scope().unwrap(),
-            CallScope::Unconfined
-        ));
-    }
-
-    #[test]
-    fn scope_flags_tools_only_narrows_tools_whole_tree() {
-        let CallScope::Scoped(s) = flags(Some("ReadNote"), None, None).to_call_scope().unwrap()
-        else {
-            panic!("expected a scoped process scope");
-        };
-        assert!(s.allows("ReadNote") && !s.allows("WriteNote"));
-        assert_eq!(s.policy_for("ReadNote"), Policy::any());
-    }
-
-    #[test]
-    fn scope_flags_path_only_confines_all_tools() {
-        let CallScope::Scoped(s) = flags(None, Some("projects"), None).to_call_scope().unwrap()
-        else {
-            panic!("expected a scoped process scope");
-        };
-        assert!(s.allows("WriteNote"));
-        assert_eq!(s.policy_for("WriteNote"), within(&["projects"]));
-    }
-
-    #[test]
-    fn scope_flags_rules_json_carries_multiple_rules() {
-        let json = r#"[{"tools": ["ReadNote"], "paths": ["projects"]},
-                       {"tools": ["CreateTask"], "paths": ["Tasks/dev"]}]"#;
-        let CallScope::Scoped(s) = flags(None, None, Some(json)).to_call_scope().unwrap() else {
-            panic!("expected a scoped process scope");
-        };
-        assert!(s.allows("ReadNote") && s.allows("CreateTask") && !s.allows("WriteNote"));
-        assert_eq!(s.policy_for("CreateTask"), within(&["Tasks/dev"]));
-    }
-
-    #[test]
-    fn scope_flags_reject_unknown_tool_and_bad_json() {
-        assert!(flags(Some("Nope"), None, None).to_call_scope().is_err());
-        assert!(flags(None, None, Some("not json")).to_call_scope().is_err());
-        assert!(
-            flags(None, None, Some(r#"[{"path": ["a"]}]"#))
-                .to_call_scope()
-                .is_err()
-        );
-    }
-}

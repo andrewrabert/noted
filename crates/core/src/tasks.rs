@@ -8,7 +8,7 @@ use crate::error::{NotedError, Result, rejected};
 use crate::front_matter::{dump_front, split_front};
 use crate::newtype::{str_newtype_validated, str_surface};
 use crate::note::Note;
-use crate::path::RelPath;
+use crate::path::Path;
 use crate::search::SearchQuery;
 use crate::types::{TaskBody, Timestamp};
 
@@ -124,8 +124,8 @@ impl GroupPath {
         Ok(GroupPath(segments(&s.into())?))
     }
 
-    pub(crate) fn to_rel(&self, tasks: &RelPath) -> RelPath {
-        tasks.joined(&self.0)
+    pub(crate) fn to_path(&self) -> Option<Path> {
+        Path::new(&self.0).ok()
     }
 }
 
@@ -155,19 +155,21 @@ impl TaskRef {
         Ok(TaskRef(segments(&s.into())?))
     }
 
-    pub(crate) fn of_file(path: &RelPath, tasks: &RelPath) -> TaskRef {
-        let text = path.as_str();
-        let text = text.strip_prefix(tasks.as_str()).unwrap_or(text);
-        let text = text.strip_prefix('/').unwrap_or(text);
-        TaskRef(text.strip_suffix(".md").unwrap_or(text).to_string())
+    pub(crate) fn of_file(path: &Path) -> TaskRef {
+        let text = path.to_string();
+        TaskRef(text.strip_suffix(".md").unwrap_or(&text).to_string())
     }
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    pub(crate) fn to_rel(&self, tasks: &RelPath) -> RelPath {
-        tasks.joined(&format!("{}.md", self.0))
+    pub(crate) fn to_path(&self) -> Option<Path> {
+        Path::new(format!("{}.md", self.0)).ok()
+    }
+
+    pub(crate) fn to_dir(&self) -> Option<Path> {
+        Path::new(&self.0).ok()
     }
 
     pub(crate) fn stem(&self) -> &str {
