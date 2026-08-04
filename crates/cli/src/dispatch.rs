@@ -8,8 +8,8 @@ use noted::authorization::Bearer;
 use noted::error::Result;
 use noted::tasks::TaskState;
 use noted::tools::{
-    CreateTaskArgs, GetLogArgs, GetTasksArgs, LogArgs, MoveTaskArgs, SearchLogArgs,
-    SearchTasksArgs, ToolArgs, ToolOutput, UpdateTaskArgs,
+    AttachToTaskArgs, CreateTaskArgs, GetLogArgs, GetTasksArgs, LogArgs, MoveTaskArgs,
+    SearchLogArgs, SearchTasksArgs, ToolArgs, ToolOutput, UpdateTaskArgs,
 };
 use noted::{Backend, HttpUrl, ToolCall};
 use noted_client::authclient::Session;
@@ -32,6 +32,7 @@ enum TaskSub {
     Update(UpdateTaskArgs),
     #[command(name = "move")]
     Move(MoveTaskArgs),
+    Attach(AttachToTaskArgs),
     Search(SearchTasksArgs),
 }
 
@@ -101,6 +102,7 @@ pub(crate) fn build_task(cmd: TaskCmd) -> Result<Dispatch> {
         },
         TaskSub::Update(c) => passthrough_of(c)?,
         TaskSub::Move(c) => passthrough_of(c)?,
+        TaskSub::Attach(c) => passthrough_of(c)?,
         TaskSub::Search(c) => search(c)?,
     })
 }
