@@ -264,7 +264,7 @@ impl TaskFrontWire {
     fn into_front(self) -> Option<TaskFront> {
         let task = self.task?;
         let created_at = self.created_at?;
-        let updated_at = self.updated_at.unwrap_or_else(|| created_at.clone());
+        let updated_at = self.updated_at.unwrap_or(created_at);
         Some(TaskFront {
             task,
             state: self.state,
@@ -320,7 +320,7 @@ impl TaskNote {
             front: TaskFront {
                 task,
                 state: TaskState::Created,
-                created_at: now.clone(),
+                created_at: now,
                 updated_at: now,
             },
             body,
@@ -378,7 +378,7 @@ impl TaskNote {
                     .clone()
                     .unwrap_or_else(|| self.front.task.clone()),
                 state,
-                created_at: self.front.created_at.clone(),
+                created_at: self.front.created_at,
                 updated_at: Timestamp::now(),
             },
             body,

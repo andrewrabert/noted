@@ -18,7 +18,7 @@ fn seed(dir: &tempfile::TempDir, rel: &str, front: &str) {
     std::fs::write(path, front).unwrap();
 }
 
-const CREATED: &str = "---\ntask: x\nstate: created\ncreated_at: X\nupdated_at: X\n---\nb\n";
+const CREATED: &str = "---\ntask: x\nstate: created\ncreated_at: 2026-07-05T00:00:00.000000+00:00\nupdated_at: 2026-07-05T00:00:00.000000+00:00\n---\nb\n";
 
 fn gp(s: &str) -> GroupPath {
     s.parse().unwrap()
@@ -399,6 +399,25 @@ fn bad_group_and_reference_names_are_unrepresentable() {
 }
 
 #[test]
+fn a_task_stamped_with_garbage_is_not_a_task() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    create(&root, "real", "", "").unwrap(); // makes the Tasks dir
+    seed(
+        &dir,
+        "garbage",
+        "---\ntask: x\nstate: created\ncreated_at: X\nupdated_at: X\n---\nb\n",
+    );
+    assert!(
+        advance(&root, "garbage", "started", None)
+            .unwrap_err()
+            .to_string()
+            .contains("not a task")
+    );
+    assert_eq!(paths(&get(&root, "", true).unwrap()), vec!["task_0001"]);
+}
+
+#[test]
 fn empty_task_ref_and_headless_task_rejected() {
     let dir = fixture_dir();
     let root = root(&dir);
@@ -413,7 +432,7 @@ fn empty_task_ref_and_headless_task_rejected() {
     seed(
         &dir,
         "headless",
-        "---\nstate: created\ncreated_at: X\nupdated_at: X\n---\nb\n",
+        "---\nstate: created\ncreated_at: 2026-07-05T00:00:00.000000+00:00\nupdated_at: 2026-07-05T00:00:00.000000+00:00\n---\nb\n",
     );
     assert!(
         advance(&root, "headless", "started", None)
@@ -544,7 +563,7 @@ fn create_stamps_local_offset_timestamp() {
     let dir = fixture_dir();
     let root = root(&dir);
     let made = create(&root, "t", "", "").unwrap();
-    let created = made.front().created_at.as_str().to_string();
+    let created = made.front().created_at.to_string();
     assert!(
         chrono::DateTime::parse_from_rfc3339(&created).is_ok(),
         "{created}"
@@ -567,7 +586,7 @@ fn update_preserves_created_bumps_updated_and_rewords() {
     let after = advance(&root, "task_0001", "started", None).unwrap();
     assert_eq!(after.front().state, TaskState::Started);
     assert_eq!(after.front().created_at, before.created_at);
-    assert!(after.front().updated_at.as_str() >= before.updated_at.as_str());
+    assert!(after.front().updated_at >= before.updated_at);
 
     root.task_update(
         &tr("task_0001"),
@@ -642,7 +661,7 @@ fn move_renumbers_bumps_updated_and_removes_source() {
         .task_move(&tr("shopping/task_0001"), &gp("dev"))
         .unwrap();
     assert_eq!(moved.path(), "dev/task_0002");
-    assert!(moved.front().updated_at.as_str() >= before.front().updated_at.as_str());
+    assert!(moved.front().updated_at >= before.front().updated_at);
     assert!(get(&root, "shopping", false).unwrap().is_empty());
 }
 

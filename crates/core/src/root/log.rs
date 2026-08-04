@@ -30,7 +30,7 @@ impl LogTools {
     pub(super) fn note(&self, body: &LogBody) -> Result<LogNote> {
         let now = Local::now();
         let front = LogFront {
-            created: Timestamp::from_local(now),
+            created: Timestamp::at(now.fixed_offset()),
             cwd: std::env::current_dir()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default(),
@@ -111,10 +111,7 @@ impl LogTools {
             .collect()
     }
 
-    fn newest_first(entry: &LogNote) -> (Reverse<Option<DateTime<FixedOffset>>>, Path) {
-        (
-            Reverse(entry.front().created.parse_rfc3339()),
-            entry.path().clone(),
-        )
+    fn newest_first(entry: &LogNote) -> (Reverse<Timestamp>, Path) {
+        (Reverse(entry.front().created), entry.path().clone())
     }
 }

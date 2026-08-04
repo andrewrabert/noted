@@ -35,6 +35,24 @@ async fn get_lists_the_log_newest_first() {
 }
 
 #[tokio::test]
+async fn an_entry_stamped_with_garbage_is_skipped() {
+    let dir = fixture_dir();
+    let root = backend(&dir);
+    let garbage = "2026-07-02T09-00-00.000000-0700.md";
+    std::fs::write(
+        common::notes_root(&dir).join("Log").join(garbage),
+        "---\ncreated: X\ncwd: /tmp\nhost: testhost\nsource: seed\n---\nnotes-mcp garbage\n",
+    )
+    .unwrap();
+    assert_eq!(paths(&root, json!({})).await, vec![JULY, JUNE]);
+    assert!(
+        !search(&root, json!({"query": "garbage"}))
+            .await
+            .contains(garbage)
+    );
+}
+
+#[tokio::test]
 async fn get_summaries_carry_the_minted_metadata() {
     let dir = fixture_dir();
     let root = backend(&dir);

@@ -11,6 +11,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{NotedError, Result, rejected};
 
+// the canonical instant text without its offset: 2026-08-03T09:15:30.123456
+pub(crate) const INSTANT: &str = "%Y-%m-%dT%H:%M:%S%.6f";
+
+// `at` written with `pattern`, closed by its offset as ±HH:MM
+pub(crate) fn zoned(at: DateTime<FixedOffset>, pattern: &str) -> String {
+    at.format(&format!("{pattern}%:z")).to_string()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Span {
     Year,
@@ -31,7 +39,7 @@ impl Span {
             Span::Hour => "%Y-%m-%dT%H",
             Span::Minute => "%Y-%m-%dT%H:%M",
             Span::Second => "%Y-%m-%dT%H:%M:%S",
-            Span::Exact => "%Y-%m-%dT%H:%M:%S%.6f",
+            Span::Exact => INSTANT,
         }
     }
 
@@ -118,9 +126,7 @@ impl From<TimeRangeBound> for String {
 impl fmt::Display for TimeRangeBound {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
-            Mark::At { at, span } => {
-                write!(f, "{}", at.format(&format!("{}%:z", span.format())))
-            }
+            Mark::At { at, span } => write!(f, "{}", zoned(*at, span.format())),
             Mark::Local { at, span } => write!(f, "{}", at.format(span.format())),
             Mark::Ago(back) => write!(f, "PT{}S", back.num_seconds()),
         }

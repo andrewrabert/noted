@@ -145,12 +145,7 @@ impl TaskTools {
             }
             found.push(task);
         }
-        found.sort_by_cached_key(|t| {
-            (
-                Reverse(t.front().updated_at.parse_rfc3339()),
-                t.path().clone(),
-            )
-        });
+        found.sort_by_cached_key(|t| (Reverse(t.front().updated_at), t.path().clone()));
         Ok(found)
     }
 
@@ -178,11 +173,7 @@ impl TaskTools {
             if !search.include_completed && task.front().state.is_closed() {
                 continue;
             }
-            ordered.push((
-                Reverse(task.front().updated_at.parse_rfc3339()),
-                hit.path.clone(),
-                hit,
-            ));
+            ordered.push((Reverse(task.front().updated_at), hit.path.clone(), hit));
         }
         ordered.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
         Ok(ordered.into_iter().map(|(_, _, hit)| hit).collect())

@@ -2,12 +2,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use chrono::Local;
+use chrono::{Local, SubsecRound};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{NotedError, Result, rejected, unavailable};
 use crate::newtype::str_newtype;
+use crate::timerange::{INSTANT, zoned};
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
@@ -110,26 +111,51 @@ impl std::ops::Sub<SecondsDuration> for UnixEpochSeconds {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(transparent)]
-#[schemars(transparent)]
-pub struct Timestamp(String);
-
-str_newtype!(Timestamp);
-
-const TS_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.6f%:z";
+// the canonical text is microseconds with an explicit offset:
+// 2026-08-03T09:15:30.123456-07:00
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Timestamp(chrono::DateTime<chrono::FixedOffset>);
 
 impl Timestamp {
+    // the current local instant, truncated to microseconds
     pub fn now() -> Timestamp {
-        Timestamp::from_local(Local::now())
+        Timestamp::at(Local::now().fixed_offset())
     }
 
-    pub fn from_local(dt: chrono::DateTime<Local>) -> Timestamp {
-        Timestamp(dt.format(TS_FORMAT).to_string())
+    // truncates sub-microsecond digits so the value equals what is written
+    pub fn at(at: chrono::DateTime<chrono::FixedOffset>) -> Timestamp {
+        Timestamp(at.trunc_subsecs(6))
     }
+}
 
-    pub fn parse_rfc3339(&self) -> Option<chrono::DateTime<chrono::FixedOffset>> {
-        chrono::DateTime::parse_from_rfc3339(&self.0).ok()
+impl std::str::FromStr for Timestamp {
+    type Err = NotedError;
+
+    fn from_str(s: &str) -> Result<Timestamp> {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .map(Timestamp::at)
+            .map_err(|_| rejected(format!("not a timestamp: '{s}'")))
+    }
+}
+
+impl TryFrom<String> for Timestamp {
+    type Error = NotedError;
+
+    fn try_from(s: String) -> Result<Timestamp> {
+        s.parse()
+    }
+}
+
+impl From<Timestamp> for String {
+    fn from(at: Timestamp) -> String {
+        zoned(at.0, INSTANT)
+    }
+}
+
+impl std::fmt::Display for Timestamp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&zoned(self.0, INSTANT))
     }
 }
 
