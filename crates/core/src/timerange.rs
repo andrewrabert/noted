@@ -149,17 +149,14 @@ fn parse(text: &str) -> Result<Mark> {
 fn year_or_month(text: &str) -> Result<Option<Mark>> {
     let digits =
         |part: &str, width: usize| part.len() == width && part.bytes().all(|b| b.is_ascii_digit());
-    let (year, month, span) = match text.split_once('-') {
-        None if digits(text, 4) => (text, "01", Span::Year),
-        Some((year, month)) if digits(year, 4) && digits(month, 2) => (year, month, Span::Month),
+    let (padded, span) = match text.split_once('-') {
+        None if digits(text, 4) => (format!("{text}-01-01"), Span::Year),
+        Some((year, month)) if digits(year, 4) && digits(month, 2) => {
+            (format!("{text}-01"), Span::Month)
+        }
         _ => return Ok(None),
     };
-    let at = ymd(
-        year.parse().unwrap_or_default(),
-        month.parse().unwrap_or_default(),
-        1,
-        text,
-    )?;
+    let at = day(&padded).map_err(|_| rejected(format!("invalid date: '{text}'")))?;
     Ok(Some(Mark::Local {
         at: at.into(),
         span,
@@ -172,107 +169,83 @@ fn day(text: &str) -> Result<NaiveDate> {
     if !rest.is_empty() {
         return Err(rejected(format!("invalid date: '{text}'")));
     }
-    match parsed {
-        iso8601::Date::YMD { year, month, day } => ymd(year, month, day, text),
-        iso8601::Date::Ordinal { year, ddd } => NaiveDate::from_yo_opt(year, ddd)
-            .ok_or_else(|| rejected(format!("invalid date: '{text}'"))),
+    let at = match parsed {
+        iso8601::Date::YMD { year, month, day } => NaiveDate::from_ymd_opt(year, month, day),
+        iso8601::Date::Ordinal { year, ddd } => NaiveDate::from_yo_opt(year, ddd),
         iso8601::Date::Week { year, ww, d } => Weekday::try_from(d.saturating_sub(1) as u8)
             .ok()
-            .and_then(|weekday| NaiveDate::from_isoywd_opt(year, ww, weekday))
-            .ok_or_else(|| rejected(format!("invalid date: '{text}'"))),
-    }
+            .and_then(|weekday| NaiveDate::from_isoywd_opt(year, ww, weekday)),
+    };
+    at.ok_or_else(|| rejected(format!("invalid date: '{text}'")))
 }
 
-fn ymd(year: i32, month: u32, day: u32, text: &str) -> Result<NaiveDate> {
-    NaiveDate::from_ymd_opt(year, month, day)
-        .ok_or_else(|| rejected(format!("invalid date: '{text}'")))
-}
-
-fn stamped(date: &str, clock: &str) -> Result<Mark> {
-    let (body, offset) = split_offset(clock);
-    let (digits, fraction) = match body.split_once(['.', ',']) {
-        Some((digits, fraction)) => (digits, Some(fraction)),
-        None => (body, None),
-    };
-    let counted: String = digits.chars().filter(char::is_ascii_digit).collect();
-    if counted.len() != digits.chars().filter(|c| *c != ':').count() {
-        return Err(rejected(format!("invalid time: '{clock}'")));
-    }
-    let span = match (counted.len(), fraction) {
-        (_, Some(_)) => Span::Exact,
-        (2, None) => Span::Hour,
-        (4, None) => Span::Minute,
-        (6, None) => Span::Second,
-        _ => return Err(rejected(format!("invalid time: '{clock}'"))),
-    };
-
-    let at = day(date)?;
-    let hour: u32 = counted[0..2]
-        .parse()
-        .map_err(|_| rejected(format!("invalid time: '{clock}'")))?;
-    let minute: u32 = number(&counted, 2)?;
-    let second: u32 = number(&counted, 4)?;
-    let micros = match fraction {
-        None => 0,
-        Some(fraction) => micros_of(fraction, clock)?,
-    };
-    let time = NaiveTime::from_hms_micro_opt(hour, minute, second, micros)
-        .ok_or_else(|| rejected(format!("invalid time: '{clock}'")))?;
-    let at = at.and_time(time);
-
+fn stamped(date: &str, text: &str) -> Result<Mark> {
+    let (time, offset, span) = clock(text)?;
+    let at = day(date)?.and_time(time);
     match offset {
         None => Ok(Mark::Local { at, span }),
         Some(offset) => Ok(Mark::At {
             at: offset
                 .from_local_datetime(&at)
                 .single()
-                .ok_or_else(|| rejected(format!("invalid time: '{clock}'")))?,
+                .ok_or_else(|| rejected(format!("invalid time: '{text}'")))?,
             span,
         }),
     }
 }
 
-fn number(counted: &str, from: usize) -> Result<u32> {
-    match counted.get(from..from + 2) {
-        None => Ok(0),
-        Some(part) => part
-            .parse()
-            .map_err(|_| rejected(format!("invalid time: '{counted}'"))),
-    }
-}
-
-fn micros_of(fraction: &str, clock: &str) -> Result<u32> {
-    if fraction.is_empty() || !fraction.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(rejected(format!("invalid time: '{clock}'")));
-    }
-    let mut digits: String = fraction.chars().take(6).collect();
-    while digits.len() < 6 {
-        digits.push('0');
-    }
-    digits
-        .parse()
-        .map_err(|_| rejected(format!("invalid time: '{clock}'")))
-}
-
-fn split_offset(clock: &str) -> (&str, Option<FixedOffset>) {
-    if let Some(body) = clock.strip_suffix('Z') {
-        return (body, FixedOffset::east_opt(0));
-    }
-    let Some(cut) = clock.rfind(['+', '-']).filter(|cut| *cut > 0) else {
-        return (clock, None);
+fn clock(text: &str) -> Result<(NaiveTime, Option<FixedOffset>, Span)> {
+    let (head, tail) = split_run(text, |c| c.is_ascii_digit() || c == ':');
+    let (fraction, zone) = match tail.strip_prefix(['.', ',']) {
+        Some(rest) => {
+            let (fraction, zone) = split_run(rest, |c| c.is_ascii_digit());
+            (Some(fraction), zone)
+        }
+        None => (None, tail),
     };
-    let (body, tail) = clock.split_at(cut);
-    let sign = match tail.starts_with('-') {
-        true => -1,
-        false => 1,
+    let span = match (head.bytes().filter(u8::is_ascii_digit).count(), fraction) {
+        (6, Some(fraction)) if !fraction.is_empty() => Span::Exact,
+        (2, None) => Span::Hour,
+        (4, None) => Span::Minute,
+        (6, None) => Span::Second,
+        _ => return Err(rejected(format!("invalid time: '{text}'"))),
     };
-    let counted: String = tail[1..].chars().filter(char::is_ascii_digit).collect();
-    let hours: i32 = counted.get(0..2).and_then(|p| p.parse().ok()).unwrap_or(0);
-    let minutes: i32 = counted.get(2..4).and_then(|p| p.parse().ok()).unwrap_or(0);
-    (
-        body,
-        FixedOffset::east_opt(sign * (hours * 3600 + minutes * 60)),
+    let padded = match span {
+        Span::Hour => format!("{head}:00{zone}"),
+        _ => text.to_owned(),
+    };
+    let (rest, parsed) = iso8601::parsers::parse_time(padded.as_bytes())
+        .map_err(|_| rejected(format!("invalid time: '{text}'")))?;
+    if !rest.is_empty() {
+        return Err(rejected(format!("invalid time: '{text}'")));
+    }
+    let time = NaiveTime::from_hms_micro_opt(
+        parsed.hour,
+        parsed.minute,
+        parsed.second,
+        fraction.map_or(0, micros_of),
     )
+    .ok_or_else(|| rejected(format!("invalid time: '{text}'")))?;
+    let offset = match zone.is_empty() {
+        true => None,
+        false => Some(
+            FixedOffset::east_opt(parsed.tz_offset_hours * 3600 + parsed.tz_offset_minutes * 60)
+                .ok_or_else(|| rejected(format!("invalid time zone offset: '{zone}'")))?,
+        ),
+    };
+    Ok((time, offset, span))
+}
+
+fn split_run(text: &str, keep: impl Fn(char) -> bool) -> (&str, &str) {
+    text.split_at(text.find(|c: char| !keep(c)).unwrap_or(text.len()))
+}
+
+fn micros_of(fraction: &str) -> u32 {
+    fraction
+        .bytes()
+        .chain(std::iter::repeat(b'0'))
+        .take(6)
+        .fold(0, |micros, digit| micros * 10 + u32::from(digit - b'0'))
 }
 
 fn duration(text: &str) -> Result<Mark> {
@@ -378,6 +351,76 @@ mod tests {
         for text in ["2026-13-01", "2026-02-30", "yesterday", "", "2026-07-01T"] {
             assert!(text.parse::<TimeRangeBound>().is_err(), "accepted '{text}'");
         }
+    }
+
+    #[test]
+    fn an_invalid_zone_offset_is_refused() {
+        for text in [
+            "2026-07-01T09:15:30+99:99",
+            "2026-07-01T09:15:30+24:00",
+            "2026-07-01T09:15:30-24:00",
+            "2026-07-01T09:15:30+02:00:00",
+            "2026-07-01T09:15:30z",
+        ] {
+            assert!(text.parse::<TimeRangeBound>().is_err(), "accepted '{text}'");
+        }
+    }
+
+    #[test]
+    fn a_fraction_follows_seconds_only() {
+        for text in [
+            "2026-07-01T09.5",
+            "2026-07-01T09:15.5",
+            "2026-07-01T09:15:30.",
+            "2026-07-01T09:15:3",
+        ] {
+            assert!(text.parse::<TimeRangeBound>().is_err(), "accepted '{text}'");
+        }
+    }
+
+    #[test]
+    fn a_zone_offset_is_read_in_every_shape() {
+        for text in [
+            "20260701T091530+0200",
+            "2026-07-01T09:15:30+02",
+            "2026-07-01T09:15:30+02:00",
+        ] {
+            assert_eq!(
+                bound(text).start(now()).to_rfc3339(),
+                "2026-07-01T09:15:30+02:00",
+                "{text}"
+            );
+        }
+        assert_eq!(
+            bound("2026-07-01T09:15:30Z").start(now()).to_rfc3339(),
+            "2026-07-01T09:15:30+00:00"
+        );
+        assert_eq!(
+            bound("2026-07-01T09Z").end(now()).to_rfc3339(),
+            "2026-07-01T09:59:59.999999+00:00"
+        );
+    }
+
+    #[test]
+    fn a_zoneless_stamp_stays_local() {
+        assert_eq!(
+            bound("2026-07-01T09:15:30").to_string(),
+            "2026-07-01T09:15:30"
+        );
+    }
+
+    #[test]
+    fn a_fraction_keeps_microseconds() {
+        assert_eq!(
+            bound("2026-07-01T09:15:30.123456789Z")
+                .start(now())
+                .to_rfc3339(),
+            "2026-07-01T09:15:30.123456+00:00"
+        );
+        assert_eq!(
+            bound("2026-07-01T09:15:30,5Z").start(now()).to_rfc3339(),
+            "2026-07-01T09:15:30.500+00:00"
+        );
     }
 
     #[test]
