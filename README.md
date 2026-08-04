@@ -48,6 +48,11 @@ Tools, as the MCP and HTTP interfaces expose them:
 | `GetTasks` | Read tasks as summary records |
 | `UpdateTask` | Change a task's state, notes or title |
 | `MoveTask` | Change a task's group |
+| `AttachToTask` | Attach a file to a task, beside its markdown |
+
+A task carrying attachments is a directory named exactly like its markdown file
+(`task_0001.md/`), holding the markdown as `.task.md` alongside the attachments; its
+path in every task tool is unchanged.
 
 ## Configuration
 

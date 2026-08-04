@@ -84,6 +84,15 @@ fn new_temp(parent: &StdPath) -> Result<tempfile::NamedTempFile> {
         .map_err(|e| io_error("write failed", e))
 }
 
+// a hidden temporary directory beside the entry being rewritten
+pub fn temp_dir_in(parent: &StdPath) -> Result<tempfile::TempDir> {
+    std::fs::create_dir_all(parent).map_err(|e| io_error("mkdir failed", e))?;
+    tempfile::Builder::new()
+        .prefix(".noted-tmp-")
+        .tempdir_in(parent)
+        .map_err(|e| io_error("write failed", e))
+}
+
 pub fn atomic_write(path: &StdPath, data: &[u8]) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| StdPath::new("."));
     let mut tmp = new_temp(parent)?;

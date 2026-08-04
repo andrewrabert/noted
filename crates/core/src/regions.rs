@@ -3,7 +3,7 @@ use std::fmt;
 use crate::error::{NotedError, Result, rejected};
 use crate::fragment::{PolicyFragment, RegionFragment};
 use crate::note::{Condition, Trashed};
-use crate::path::{DirPath, Path};
+use crate::path::{DirPath, Path, Reserved};
 use crate::policy::{Readable, RegionPolicy, Writeable};
 use crate::search::{Hit, SearchQuery};
 use crate::store::{NotedDir, Store};
@@ -178,6 +178,35 @@ impl RegionStore {
     pub(crate) fn remove(&self, rel: &Path) -> Result<Trashed> {
         self.store.remove(&self.writeable(rel)?)?;
         Ok(Trashed::new(rel.clone()))
+    }
+
+    // the file carrying an entry's markdown: the entry itself, or 'leaf' inside it
+    // when the entry is a directory
+    pub(crate) fn body_of(&self, entry: &Path, leaf: Reserved) -> Result<Path> {
+        match self.store.is_dir(&self.readable(entry)?) {
+            true => Ok(entry.joined_reserved(leaf)),
+            false => Ok(entry.clone()),
+        }
+    }
+
+    // every attachment file directly inside 'dir'
+    pub(crate) fn files(&self, dir: &Path) -> Vec<Path> {
+        self.admitted(self.store.files(&self.from(Some(dir))))
+    }
+
+    pub(crate) fn attach(
+        &self,
+        entry: &Path,
+        leaf: Reserved,
+        file: &Path,
+        data: &[u8],
+    ) -> Result<()> {
+        self.store.attach(
+            &self.writeable(entry)?,
+            &self.writeable(&entry.joined_reserved(leaf))?,
+            &self.writeable(file)?,
+            data,
+        )
     }
 
     pub(crate) fn walk(&self, dir: Option<&Path>) -> Vec<Path> {

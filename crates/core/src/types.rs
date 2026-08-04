@@ -1,10 +1,12 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use chrono::Local;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Result, rejected, unavailable};
+use crate::error::{NotedError, Result, rejected, unavailable};
 use crate::newtype::str_newtype;
 
 #[derive(
@@ -170,5 +172,44 @@ str_newtype!(TaskBody);
 impl TaskBody {
     pub fn is_blank(&self) -> bool {
         self.0.trim().is_empty()
+    }
+}
+
+// the wire form is base64, standard alphabet with padding; the value is the bytes
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
+pub struct Base64Bytes(Vec<u8>);
+
+impl Base64Bytes {
+    pub fn decode(text: &str) -> Result<Base64Bytes> {
+        BASE64
+            .decode(text.trim())
+            .map(Base64Bytes)
+            .map_err(|e| rejected(format!("content is not base64: {e}")))
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for Base64Bytes {
+    type Err = NotedError;
+    fn from_str(s: &str) -> Result<Base64Bytes> {
+        Base64Bytes::decode(s)
+    }
+}
+
+impl TryFrom<String> for Base64Bytes {
+    type Error = NotedError;
+    fn try_from(s: String) -> Result<Base64Bytes> {
+        Base64Bytes::decode(&s)
+    }
+}
+
+impl From<Base64Bytes> for String {
+    fn from(v: Base64Bytes) -> String {
+        BASE64.encode(&v.0)
     }
 }

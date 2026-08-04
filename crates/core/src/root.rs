@@ -12,8 +12,10 @@ use crate::policy::RegionPolicy;
 use crate::regions::{RegionDir, Regions};
 use crate::search::{Hit, SearchQuery};
 use crate::store::NotedDir;
-use crate::tasks::{GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskTitle};
-use crate::types::{LogBody, Source, TaskBody};
+use crate::tasks::{
+    AttachmentName, GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskTitle,
+};
+use crate::types::{Base64Bytes, LogBody, Source, TaskBody};
 
 use self::log::LogTools;
 use self::note::NoteTools;
@@ -126,5 +128,15 @@ impl NotedRoot {
 
     pub fn task_move(&self, task: &TaskRef, group: &GroupPath) -> Result<TaskNote> {
         self.0.task.move_(task, group)
+    }
+
+    // the attachment's Tasks-relative path
+    pub fn task_attach(
+        &self,
+        task: &TaskRef,
+        name: &AttachmentName,
+        content: &Base64Bytes,
+    ) -> Result<Path> {
+        self.0.task.attach(task, name, content)
     }
 }

@@ -8,12 +8,20 @@ use ignore::{WalkBuilder, WalkState};
 
 use crate::error::{NotedError, Result, io_error, rejected, unavailable};
 use crate::note::{Condition, Etag};
-use crate::path::{DirPath, Path};
+use crate::path::{DirPath, Path, Reserved};
 use crate::policy::{Readable, Writeable};
 use crate::search::{Hit, LineSink, SearchMode, SearchOrder, SearchQuery, build_matcher, narrow};
-use crate::util::{IgnoreFilter, atomic_write, normalize};
+use crate::util::{IgnoreFilter, atomic_create, atomic_write, normalize, temp_dir_in};
 
 const TRASH: &str = ".trash";
+
+// '.md' files, and the '.md' directories that carry a task: a task directory is an
+// entry in itself and is never descended into
+#[derive(Clone, Copy)]
+enum Listing {
+    Notes { deep: bool },
+    Files,
+}
 
 pub struct NotedDir(PathBuf);
 
@@ -112,7 +120,7 @@ impl Store {
     fn rel(&self, abs: &StdPath) -> Option<Path> {
         let cleaned = normalize(abs);
         let under = cleaned.strip_prefix(&self.0.root).ok()?;
-        Path::new(under.to_string_lossy()).ok()
+        Path::stored(under.to_string_lossy().as_ref()).ok()
     }
 
     fn addressable(&self, at: &Path) -> Result<PathBuf> {
@@ -151,13 +159,13 @@ impl Store {
     fn precondition(&self, abs: &StdPath, when: &Condition) -> Result<()> {
         match when {
             Condition::Always => Ok(()),
-            Condition::Missing => match self.current(abs)? {
-                None => Ok(()),
-                Some(_) => Err(NotedError::Conflict),
+            Condition::Missing => match std::fs::symlink_metadata(abs).is_ok() {
+                false => Ok(()),
+                true => Err(NotedError::Conflict),
             },
-            Condition::Exists => match self.current(abs)? {
-                Some(_) => Ok(()),
-                None => Err(NotedError::NotFound),
+            Condition::Exists => match std::fs::symlink_metadata(abs).is_ok() {
+                true => Ok(()),
+                false => Err(NotedError::NotFound),
             },
             Condition::Matching(token) => match self.current(abs)? {
                 Some(bytes) if &Etag::of(&bytes) == token => Ok(()),
@@ -217,17 +225,79 @@ impl Store {
 
     pub(crate) fn walk(&self, from: &DirPath) -> Vec<Path> {
         let mut out = Vec::new();
-        self.collect(&self.directory(from), true, &mut out);
+        self.collect(
+            &self.directory(from),
+            Listing::Notes { deep: true },
+            &mut out,
+        );
         out
     }
 
     pub(crate) fn children(&self, from: &DirPath) -> Vec<Path> {
         let mut out = Vec::new();
-        self.collect(&self.directory(from), false, &mut out);
+        self.collect(
+            &self.directory(from),
+            Listing::Notes { deep: false },
+            &mut out,
+        );
         out
     }
 
-    fn collect(&self, dir: &StdPath, deep: bool, out: &mut Vec<Path>) {
+    // every plain file directly inside 'from', whatever its extension
+    pub(crate) fn files(&self, from: &DirPath) -> Vec<Path> {
+        let mut out = Vec::new();
+        self.collect(&self.directory(from), Listing::Files, &mut out);
+        out
+    }
+
+    pub(crate) fn is_dir(&self, at: &Readable) -> bool {
+        match self.addressable(&at.0) {
+            Ok(abs) => abs.is_dir(),
+            Err(_) => false,
+        }
+    }
+
+    // makes 'entry' a directory carrying its markdown at 'body' when 'entry' is a
+    // plain file, then writes 'data' at 'file' inside it, in one rename
+    pub(crate) fn attach(
+        &self,
+        entry: &Writeable,
+        body: &Writeable,
+        file: &Writeable,
+        data: &[u8],
+    ) -> Result<()> {
+        let entry_abs = self.addressable(&entry.0)?;
+        let file_abs = self.addressable(&file.0)?;
+        let leaf = body.0.file_name().to_string();
+        let name = file.0.file_name().to_string();
+        let _guard = self.lock();
+        let meta = std::fs::symlink_metadata(&entry_abs).map_err(|_| NotedError::NotFound)?;
+        if meta.is_dir() {
+            return atomic_create(&file_abs, data).map_err(|e| match e.kind() {
+                std::io::ErrorKind::AlreadyExists => NotedError::Conflict,
+                _ => io_error("cannot attach", e),
+            });
+        }
+
+        let parent = entry_abs.parent().unwrap_or_else(|| StdPath::new("."));
+        let staged = temp_dir_in(parent)?;
+        atomic_write(&staged.path().join(&name), data)?;
+        let held = staged.path().join(&leaf);
+        std::fs::rename(&entry_abs, &held).map_err(|e| io_error("cannot attach", e))?;
+        match std::fs::rename(staged.path(), &entry_abs) {
+            Ok(()) => {
+                let _ = staged.keep();
+                Ok(())
+            }
+            // a failed attach leaves the task where it was
+            Err(e) => {
+                let _ = std::fs::rename(&held, &entry_abs);
+                Err(io_error("cannot attach", e))
+            }
+        }
+    }
+
+    fn collect(&self, dir: &StdPath, listing: Listing, out: &mut Vec<Path>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
@@ -235,7 +305,8 @@ impl Store {
             let Ok(kind) = entry.file_type() else {
                 continue;
             };
-            if kind.is_symlink() || entry.file_name().to_string_lossy().starts_with('.') {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if kind.is_symlink() || name.starts_with('.') {
                 continue;
             }
             let path = entry.path();
@@ -243,12 +314,17 @@ impl Store {
                 continue;
             }
             let Some(rel) = self.rel(&path) else { continue };
-            if kind.is_dir() {
-                if deep {
-                    self.collect(&path, deep, out);
+            match listing {
+                Listing::Files if kind.is_file() => out.push(rel),
+                Listing::Files => {}
+                Listing::Notes { .. } if kind.is_file() => {
+                    if name.ends_with(".md") {
+                        out.push(rel);
+                    }
                 }
-            } else if kind.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
-                out.push(rel);
+                Listing::Notes { .. } if name.ends_with(".md") && kind.is_dir() => out.push(rel),
+                Listing::Notes { deep: true } if kind.is_dir() => self.collect(&path, listing, out),
+                Listing::Notes { .. } => {}
             }
         }
     }
@@ -338,13 +414,19 @@ impl Store {
     fn walk_builder(&self, base: &StdPath) -> WalkBuilder {
         let filter = self.0.ignore.clone();
         let mut wb = WalkBuilder::new(base);
-        wb.hidden(true)
+        wb.hidden(false)
             .ignore(false)
             .git_ignore(false)
             .git_global(false)
             .git_exclude(false)
             .parents(false)
-            .filter_entry(move |entry| !filter.is_ignored(entry.path()));
+            .filter_entry(move |entry| {
+                let name = entry.file_name().to_string_lossy();
+                let visible = entry.depth() == 0
+                    || !name.starts_with('.')
+                    || name == Reserved::TaskBody.as_str();
+                visible && !filter.is_ignored(entry.path())
+            });
         wb
     }
 }

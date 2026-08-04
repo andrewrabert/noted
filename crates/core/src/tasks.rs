@@ -8,7 +8,7 @@ use crate::error::{NotedError, Result, rejected};
 use crate::front_matter::{dump_front, split_front};
 use crate::newtype::{str_newtype_validated, str_surface};
 use crate::note::Note;
-use crate::path::Path;
+use crate::path::{Path, Reserved};
 use crate::search::SearchQuery;
 use crate::types::{TaskBody, Timestamp};
 
@@ -143,6 +143,25 @@ impl TryFrom<String> for GroupPath {
     }
 }
 
+// a file beside a task: 1..=255 bytes, no '/', no '\', no NUL or other control
+// character, and never a leading '.'
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
+pub struct AttachmentName(String);
+str_newtype_validated!(AttachmentName, validate_attachment_name);
+
+fn validate_attachment_name(s: &str) -> Result<()> {
+    let refused = s.is_empty()
+        || s.len() > 255
+        || s.starts_with('.')
+        || s.chars().any(|c| c == '/' || c == '\\' || c.is_control());
+    match refused {
+        true => Err(rejected(format!("invalid attachment name: '{s}'"))),
+        false => Ok(()),
+    }
+}
+
 // Tool-schema field: a rustdoc comment here ships as the wire description.
 #[derive(Clone, Default, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "String", into = "String")]
@@ -155,9 +174,16 @@ impl TaskRef {
         Ok(TaskRef(segments(&s.into())?))
     }
 
-    pub(crate) fn of_file(path: &Path) -> TaskRef {
+    // the reference a stored entry names, from 'g/task_0001.md' or from
+    // 'g/task_0001.md/.task.md'; None for an attachment, and for any other file
+    // inside a task directory
+    pub(crate) fn of_entry(path: &Path) -> Option<TaskRef> {
         let text = path.to_string();
-        TaskRef(text.strip_suffix(".md").unwrap_or(&text).to_string())
+        let entry = match text.strip_suffix(Reserved::TaskBody.as_str()) {
+            Some(head) => head.strip_suffix('/')?,
+            None => &text,
+        };
+        TaskRef::new(entry.strip_suffix(".md")?).ok()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -283,6 +309,7 @@ pub struct TaskNote {
     path: TaskRef,
     front: TaskFront,
     body: TaskBody,
+    attachments: Vec<AttachmentName>,
 }
 
 impl TaskNote {
@@ -297,6 +324,7 @@ impl TaskNote {
                 updated_at: now,
             },
             body,
+            attachments: Vec::new(),
         }
     }
 
@@ -304,7 +332,12 @@ impl TaskNote {
         let text = std::str::from_utf8(bytes).map_err(|_| rejected("not a task"))?;
         let (front, body) = parse_task_file(text);
         let front = front.ok_or_else(|| rejected("not a task"))?;
-        Ok(TaskNote { path, front, body })
+        Ok(TaskNote {
+            path,
+            front,
+            body,
+            attachments: Vec::new(),
+        })
     }
 
     pub fn path(&self) -> &TaskRef {
@@ -317,6 +350,16 @@ impl TaskNote {
 
     pub fn body(&self) -> &TaskBody {
         &self.body
+    }
+
+    // the attachment names beside the task, in path order; empty for a plain file
+    pub fn attachments(&self) -> &[AttachmentName] {
+        &self.attachments
+    }
+
+    pub(crate) fn with_attachments(mut self, names: Vec<AttachmentName>) -> TaskNote {
+        self.attachments = names;
+        self
     }
 
     pub(crate) fn changed(&self, change: &TaskChange) -> Result<TaskNote> {
@@ -339,6 +382,7 @@ impl TaskNote {
                 updated_at: Timestamp::now(),
             },
             body,
+            attachments: self.attachments.clone(),
         })
     }
 
@@ -349,6 +393,7 @@ impl TaskNote {
             path: self.path.clone(),
             front,
             body: self.body.clone(),
+            attachments: self.attachments.clone(),
         }
     }
 

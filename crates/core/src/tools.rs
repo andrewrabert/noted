@@ -13,10 +13,11 @@ use crate::search::{
     CaseMode, FileType, GlobPattern, Hit, SearchMode, SearchOrder, SearchPattern, SearchQuery,
 };
 use crate::tasks::{
-    GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskState, TaskTitle,
+    AttachmentName, GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskState,
+    TaskTitle,
 };
 use crate::timerange::{TimeRange, TimeRangeBound};
-use crate::types::{LogBody, NoteBody, TaskBody};
+use crate::types::{Base64Bytes, LogBody, NoteBody, TaskBody};
 use crate::util::slice_lines;
 
 pub struct ToolDef {
@@ -208,6 +209,14 @@ const TOOLS: &[ToolSpec] = &[
         mode: Mode::Write,
         schema: schema_of::<MoveTaskArgs>,
     },
+    ToolSpec {
+        name: "AttachToTask",
+        title: "Attach a file to a task",
+        description: D_ATTACH_TO_TASK,
+        dir: RegionDir::Tasks,
+        mode: Mode::Write,
+        schema: schema_of::<AttachToTaskArgs>,
+    },
 ];
 
 pub trait ToolArgs: Serialize {
@@ -239,6 +248,7 @@ tool_args! {
     GetTasksArgs => "GetTasks";
     UpdateTaskArgs => "UpdateTask";
     MoveTaskArgs => "MoveTask";
+    AttachToTaskArgs => "AttachToTask";
 }
 
 pub(crate) fn is_tool(name: &str) -> bool {
@@ -280,6 +290,7 @@ const D_LOG: &str = "Append an immutable, timestamped log entry. 'body' is free-
 const D_CREATE_TASK: &str = "START HERE for any non-trivial unit of work. Opens a task as a searchable note under Tasks/, returning its summary record (path, state). 'task' is a one-line statement of the work; optional 'notes' seeds the markdown body; optional 'group' places it in a (nested, auto-created) subdirectory under Tasks/ — e.g. group='dev/noted'. noted assigns the filename automatically (the next 'task_NNNN' in that group); the task is thereafter identified by its Tasks-relative path minus '.md' (e.g. 'dev/noted/task_0001'). Group and task names must start with a letter and use only letters/digits/'-'/'_'. State starts 'created'. Afterward, change a task with UpdateTask (state/notes) or MoveTask (group); do NOT use WriteNote/EditNote — they are refused under Tasks/. States: created (not started), started (in progress), blocked (stuck), completed (work finished), rejected (declined/refused), invalid (task was ill-posed or moot). 'completed' means the work is genuinely finished; if you are giving up, use rejected/invalid — never mark 'completed'. blocked/completed/rejected/invalid require a non-empty body explaining why.";
 const D_GET_TASKS: &str = "Check this BEFORE starting new work to recover existing tasks. Reads tasks as summary records, newest-updated first. 'prefix' is a Tasks-relative scope: empty = the whole tree; a group (e.g. 'dev') = that subtree; an exact task path (e.g. 'dev/noted/task_0001') = just that one task. 'body' attaches each task's markdown notes (the working body) to the record — use it to read a specific task in full. Closed tasks (completed/rejected/invalid) are hidden unless include_completed is set (an exact task path is always returned). Always returns a JSON array. Change a task with UpdateTask/MoveTask.";
 const D_UPDATE_TASK: &str = "Change an existing task, identified by its Tasks-relative path (e.g. 'dev/noted/task_0001'). Set 'state' to advance it, 'notes' to replace the working body, and/or 'task' to reword the one-liner; omitted fields are left as-is. Returns the updated summary. States: created (not started), started (in progress), blocked (stuck), completed (work finished), rejected (declined/refused), invalid (ill-posed/moot); blocked/completed/rejected/invalid require a non-empty body explaining why. created_at is immutable; updated_at is stamped for you.";
+const D_ATTACH_TO_TASK: &str = "Attach a file to a task. 'path' is the task's Tasks-relative path (e.g. 'dev/noted/task_0001'), 'name' is the attachment's file name (at most 255 bytes, no '/', no '\\', no leading '.'), and 'content' is the file's bytes, base64-encoded. The first attachment turns the task's markdown file into a task directory of the same name, holding the markdown as '.task.md' plus every attachment; the task keeps the same path in every task tool, before and after. A name already taken is refused rather than overwritten. Each task's attachments come back in its summary record from GetTasks.";
 const D_MOVE_TASK: &str = "Change a task's group. Re-homes the task (identified by its current Tasks-relative path) into another group under Tasks/; a numbered task is given a fresh 'task_NNNN' in the destination (so its path changes), a custom-named task keeps its name. 'group' is the destination subdirectory (nested, auto-created); '' moves it to the top of Tasks/. updated_at is re-stamped. Returns the summary at its new path.";
 
 fn default_pattern() -> SearchPattern {
@@ -625,6 +636,13 @@ pub struct MoveTaskArgs {
     group: GroupPath,
 }
 
+#[derive(Args, Serialize, Deserialize, JsonSchema)]
+pub struct AttachToTaskArgs {
+    path: TaskRef,
+    name: AttachmentName,
+    content: Base64Bytes,
+}
+
 fn schema_of<T: JsonSchema>() -> Value {
     let generator = schemars::generate::SchemaSettings::draft07()
         .with(|s| s.inline_subschemas = true)
@@ -775,6 +793,11 @@ fn run_blocking(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOutput
             let task = root.task_move(&a.path, &a.group)?;
             Ok(ToolOutput::Record(summary(&task, false)))
         }
+        "AttachToTask" => {
+            let a: AttachToTaskArgs = parse(args)?;
+            let path = root.task_attach(&a.path, &a.name, &a.content)?;
+            Ok(ToolOutput::Written { path })
+        }
         _ => Err(rejected(format!("Unknown tool: {name}"))),
     }
 }
@@ -802,6 +825,7 @@ fn summary(task: &TaskNote, body: bool) -> Value {
         "state": front.state,
         "created_at": front.created_at,
         "updated_at": front.updated_at,
+        "attachments": json!(task.attachments()),
     });
     if body {
         record["body"] = json!(task.body());

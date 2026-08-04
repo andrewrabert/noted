@@ -2,8 +2,10 @@ mod common;
 
 use common::{backend, confined_backend, fixture_dir, invoke, note, notes_root, root, rp, write};
 use noted::tasks::{
-    GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskState, TaskTitle, parse_task_file,
+    AttachmentName, GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskState, TaskTitle,
+    parse_task_file,
 };
+use noted::types::Base64Bytes;
 use noted::{Backend, NotedRoot};
 
 fn task_file(dir: &tempfile::TempDir, rel: &str) -> std::path::PathBuf {
@@ -64,6 +66,261 @@ fn advance(
             task: None,
         },
     )
+}
+
+fn an(s: &str) -> AttachmentName {
+    s.parse().unwrap()
+}
+
+// base64 of the payload named in each constant
+const HELLO: &str = "aGVsbG8="; // "hello"
+const ONE: &str = "b25l"; // "one"
+const TWO: &str = "dHdv"; // "two"
+const NEEDLE: &str = "TkVFRExFIGluIGFuIGF0dGFjaG1lbnQK"; // "NEEDLE in an attachment\n"
+
+fn b64(text: &str) -> Base64Bytes {
+    text.parse().unwrap()
+}
+
+fn attach(
+    root: &NotedRoot,
+    reference: &str,
+    name: &str,
+    content: &str,
+) -> noted::Result<noted::Path> {
+    root.task_attach(&tr(reference), &an(name), &b64(content))
+}
+
+fn beside(dir: &tempfile::TempDir, rel: &str, name: &str) -> std::path::PathBuf {
+    task_file(dir, rel).join(name)
+}
+
+#[test]
+fn an_attachment_turns_a_plain_task_into_a_task_directory() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    create(&root, "t", "", "").unwrap();
+    assert!(task_file(&dir, "task_0001").is_file());
+
+    let at = attach(&root, "task_0001", "hello.txt", HELLO).unwrap();
+    assert_eq!(at, "task_0001.md/hello.txt");
+    assert!(task_file(&dir, "task_0001").is_dir());
+    assert!(beside(&dir, "task_0001", ".task.md").is_file());
+    assert_eq!(
+        std::fs::read(beside(&dir, "task_0001", "hello.txt")).unwrap(),
+        b"hello"
+    );
+}
+
+#[test]
+fn a_task_keeps_its_reference_and_markdown_across_an_attachment() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    create(&root, "keep me", "dev", "the body\n").unwrap();
+    let before = std::fs::read(task_file(&dir, "dev/task_0001")).unwrap();
+
+    attach(&root, "dev/task_0001", "hello.txt", HELLO).unwrap();
+
+    assert_eq!(
+        std::fs::read(beside(&dir, "dev/task_0001", ".task.md")).unwrap(),
+        before
+    );
+    let after = get(&root, "dev/task_0001", false).unwrap();
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].path(), "dev/task_0001");
+    assert_eq!(after[0].front().task, "keep me");
+    assert_eq!(after[0].body().as_str().trim(), "the body");
+    assert_eq!(after[0].attachments(), [an("hello.txt")]);
+}
+
+#[test]
+fn a_second_attachment_lands_beside_the_first() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    create(&root, "t", "", "").unwrap();
+    attach(&root, "task_0001", "one.txt", ONE).unwrap();
+    attach(&root, "task_0001", "two.txt", TWO).unwrap();
+
+    assert_eq!(
+        std::fs::read(beside(&dir, "task_0001", "one.txt")).unwrap(),
+        b"one"
+    );
+    assert_eq!(
+        std::fs::read(beside(&dir, "task_0001", "two.txt")).unwrap(),
+        b"two"
+    );
+    assert_eq!(
+        get(&root, "task_0001", false).unwrap()[0].attachments(),
+        [an("one.txt"), an("two.txt")]
+    );
+}
+
+#[test]
+fn an_attachment_name_already_taken_is_refused() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    create(&root, "t", "", "").unwrap();
+    attach(&root, "task_0001", "one.txt", ONE).unwrap();
+
+    assert!(matches!(
+        attach(&root, "task_0001", "one.txt", TWO).unwrap_err(),
+        noted::NotedError::Conflict
+    ));
+    assert_eq!(
+        std::fs::read(beside(&dir, "task_0001", "one.txt")).unwrap(),
+        b"one",
+        "the stored bytes are the first ones written"
+    );
+}
+
+#[test]
+fn an_attachment_name_with_a_separator_control_char_or_leading_dot_is_refused() {
+    for name in [
+        "",
+        "a/b.txt",
+        "a\\b.txt",
+        "a\u{0}b.txt",
+        "a\nb.txt",
+        ".hidden",
+        ".task.md",
+    ] {
+        assert!(name.parse::<AttachmentName>().is_err(), "accepted {name:?}");
+    }
+    assert!("photo.png".parse::<AttachmentName>().is_ok());
+}
+
+#[test]
+fn an_attachment_name_over_255_bytes_is_refused() {
+    assert!("a".repeat(255).parse::<AttachmentName>().is_ok());
+    assert!("a".repeat(256).parse::<AttachmentName>().is_err());
+}
+
+#[test]
+fn an_attachment_to_a_missing_task_is_not_found() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    create(&root, "real", "", "").unwrap();
+    assert!(matches!(
+        attach(&root, "ghost/task_0001", "hello.txt", HELLO).unwrap_err(),
+        noted::NotedError::NotFound
+    ));
+}
+
+#[tokio::test]
+async fn a_task_summary_lists_its_attachment_names() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    let bknd = backend(&dir);
+    create(&root, "t", "", "").unwrap();
+    attach(&root, "task_0001", "one.txt", ONE).unwrap();
+    attach(&root, "task_0001", "two.txt", TWO).unwrap();
+
+    let out = invoke(&bknd, "GetTasks", serde_json::json!({}))
+        .await
+        .unwrap();
+    let records = out.record().unwrap().as_array().unwrap().clone();
+    assert_eq!(
+        records[0]["attachments"],
+        serde_json::json!(["one.txt", "two.txt"])
+    );
+
+    create(&root, "bare", "", "").unwrap();
+    let out = invoke(
+        &bknd,
+        "GetTasks",
+        serde_json::json!({"prefix": "task_0002"}),
+    )
+    .await
+    .unwrap();
+    let records = out.record().unwrap().as_array().unwrap().clone();
+    assert_eq!(records[0]["attachments"], serde_json::json!([]));
+}
+
+#[test]
+fn an_update_rewrites_the_markdown_inside_a_task_directory() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    create(&root, "t", "", "").unwrap();
+    attach(&root, "task_0001", "one.txt", ONE).unwrap();
+
+    let updated = advance(&root, "task_0001", "completed", Some("all done")).unwrap();
+    assert_eq!(updated.path(), "task_0001");
+    assert_eq!(updated.front().state, TaskState::Completed);
+
+    let markdown = std::fs::read_to_string(beside(&dir, "task_0001", ".task.md")).unwrap();
+    assert!(markdown.contains("state: completed"), "{markdown}");
+    assert!(markdown.contains("all done"), "{markdown}");
+    assert!(task_file(&dir, "task_0001").is_dir());
+    assert_eq!(state_of(&root, "task_0001"), TaskState::Completed);
+}
+
+#[test]
+fn a_move_carries_a_task_directory_and_its_attachments() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    create(&root, "t", "shopping", "").unwrap();
+    attach(&root, "shopping/task_0001", "one.txt", ONE).unwrap();
+
+    let moved = root
+        .task_move(&tr("shopping/task_0001"), &gp("dev"))
+        .unwrap();
+    assert_eq!(moved.path(), "dev/task_0001");
+    assert!(!task_file(&dir, "shopping/task_0001").exists());
+    assert!(task_file(&dir, "dev/task_0001").is_dir());
+    assert_eq!(
+        std::fs::read(beside(&dir, "dev/task_0001", "one.txt")).unwrap(),
+        b"one"
+    );
+    assert_eq!(
+        get(&root, "dev/task_0001", false).unwrap()[0].attachments(),
+        [an("one.txt")]
+    );
+}
+
+#[test]
+fn a_created_task_never_reuses_the_number_of_a_task_directory() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    create(&root, "a", "", "").unwrap();
+    attach(&root, "task_0001", "one.txt", ONE).unwrap();
+    assert_eq!(create(&root, "b", "", "").unwrap().path(), "task_0002");
+}
+
+#[test]
+fn a_get_returns_a_task_directory_and_never_its_attachments() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    create(&root, "t", "", "").unwrap();
+    attach(&root, "task_0001", "sidecar.md", ONE).unwrap();
+
+    assert_eq!(paths(&get(&root, "", false).unwrap()), vec!["task_0001"]);
+    assert!(get(&root, "task_0001", false).unwrap().len() == 1);
+}
+
+#[tokio::test]
+async fn a_search_matches_the_markdown_inside_a_task_directory() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    let bknd = backend(&dir);
+    create(&root, "t", "dev", "NEEDLE here\n").unwrap();
+    attach(&root, "dev/task_0001", "one.txt", ONE).unwrap();
+
+    let out = find(&bknd, serde_json::json!({"pattern": "NEEDLE"})).await;
+    assert_eq!(out.lines().collect::<Vec<_>>(), vec!["dev/task_0001"]);
+}
+
+#[tokio::test]
+async fn a_search_never_returns_an_attachment_as_a_task() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    let bknd = backend(&dir);
+    create(&root, "t", "dev", "body\n").unwrap();
+    attach(&root, "dev/task_0001", "sidecar.md", NEEDLE).unwrap();
+
+    let out = find(&bknd, serde_json::json!({"pattern": "NEEDLE"})).await;
+    assert!(out.is_empty(), "{out}");
+    let listed = find(&bknd, serde_json::json!({"mode": "path"})).await;
+    assert_eq!(listed.lines().collect::<Vec<_>>(), vec!["dev/task_0001"]);
 }
 
 #[test]

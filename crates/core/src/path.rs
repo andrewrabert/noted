@@ -42,6 +42,20 @@ impl fmt::Display for Segment {
     }
 }
 
+// the hidden leaf names noted addresses; nothing caller-supplied names one
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reserved {
+    TaskBody,
+}
+
+impl Reserved {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Reserved::TaskBody => ".task.md",
+        }
+    }
+}
+
 // Tool-schema field: a rustdoc comment here ships as the wire description.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "String", into = "String")]
@@ -71,6 +85,24 @@ impl Path {
             return Err(rejected("path cannot be empty"));
         }
         Ok(Path(out))
+    }
+
+    // parses a path read back off disk, admitting a trailing reserved leaf;
+    // every other dotted component is still refused
+    pub(crate) fn stored(s: &str) -> Result<Path> {
+        for leaf in [Reserved::TaskBody] {
+            if let Some(head) = s.strip_suffix(leaf.as_str())
+                && let Some(head) = head.strip_suffix('/')
+            {
+                return Ok(Path::new(head)?.joined_reserved(leaf));
+            }
+        }
+        Path::new(s)
+    }
+
+    // appends a reserved leaf; the only way a Path names a dotted file
+    pub(crate) fn joined_reserved(&self, leaf: Reserved) -> Path {
+        Path(self.0.join(leaf.as_str()))
     }
 
     pub fn as_str(&self) -> &str {
@@ -129,12 +161,12 @@ impl DirPath {
 
     // None for the notes root, whose trimmed form is the empty path
     pub fn to_path(&self) -> Option<Path> {
-        Path::new(self.0.trim_matches('/')).ok()
+        Path::stored(self.0.trim_matches('/')).ok()
     }
 
     pub fn relative(&self, at: &Path) -> Option<Path> {
         let full = format!("/{}", at.as_str());
-        Path::new(full.strip_prefix(&self.0)?).ok()
+        Path::stored(full.strip_prefix(&self.0)?).ok()
     }
 }
 
