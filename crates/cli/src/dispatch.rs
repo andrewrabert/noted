@@ -8,8 +8,8 @@ use noted::authorization::Bearer;
 use noted::error::Result;
 use noted::tasks::TaskState;
 use noted::tools::{
-    CreateTaskArgs, GetLogArgs, GetTasksArgs, LogArgs, MoveTaskArgs, SearchLogArgs, SearchTasksArgs,
-    ToolArgs, ToolOutput, UpdateTaskArgs,
+    CreateTaskArgs, GetLogArgs, GetTasksArgs, LogArgs, MoveTaskArgs, SearchLogArgs,
+    SearchTasksArgs, ToolArgs, ToolOutput, UpdateTaskArgs,
 };
 use noted::{Backend, HttpUrl, ToolCall};
 use noted_client::authclient::Session;

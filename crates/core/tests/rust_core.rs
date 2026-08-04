@@ -1,6 +1,8 @@
 mod common;
 
-use common::{backend, fixture_dir, found, grep, invoke, note, notes_root, query, read, root, rp, write};
+use common::{
+    backend, fixture_dir, found, grep, invoke, note, notes_root, query, read, root, rp, write,
+};
 use noted::note::{Condition, Etag, Note};
 use noted::search::{CaseMode, SearchMode, SearchQuery};
 use noted::util::{atomic_write, slice_lines};
@@ -44,7 +46,7 @@ fn write_creates_parents_and_leaves_no_temp() {
 fn the_log_region_is_unreachable_through_the_note_tools() {
     let dir = fixture_dir();
     let root = root(&dir);
-    let entry = "Log/2026/07/2026-07-01T09-00-00.000000.md";
+    let entry = "Log/2026-07-01T09-00-00.000000-0700.md";
     for err in [
         write(&root, &note(entry, "nope")).unwrap_err(),
         root.note_delete(&rp(entry)).unwrap_err(),
@@ -79,22 +81,26 @@ fn log_note_writes_one_file_with_front_matter() {
     assert!(text.contains("did a thing"));
 
     let entry = notes_root(&dir).join("Log").join(&rel);
-    let written: Vec<String> = std::fs::read_dir(entry.parent().unwrap())
+    let mut written: Vec<String> = std::fs::read_dir(entry.parent().unwrap())
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(written, vec![entry.file_name().unwrap().to_string_lossy()]);
+    written.sort();
+    assert_eq!(
+        written,
+        vec![
+            "2026-06-15T08-30-00.000000-0700.md".to_string(),
+            "2026-07-01T09-00-00.000000-0700.md".to_string(),
+            rel.clone(),
+        ],
+        "the entry lands flat beside the others, leaving no temp file"
+    );
 }
 
 #[test]
 fn log_note_records_no_source_when_the_caller_has_none() {
     let dir = fixture_dir();
-    let root = noted::NotedRoot::open(
-        noted::store::NotedDir::new(notes_root(&dir)),
-        &[noted::Authority::default()],
-        None,
-    )
-    .unwrap();
+    let root = noted::NotedRoot::open(noted::store::NotedDir::new(notes_root(&dir)), None).unwrap();
     let logged = root.log_note(&"anonymous\n".into()).unwrap();
     let text = String::from_utf8(logged.to_bytes().unwrap()).unwrap();
     assert!(!text.contains("source:"), "{text}");

@@ -3,37 +3,31 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::areas::ROOT_PROBE;
-use crate::authority::Authority;
 use crate::error::{Result, rejected, unavailable};
 use crate::note::{Condition, Edit, LogNote, LogQuery, TextNote};
 use crate::path::Path;
-use crate::policy::Policy;
+use crate::policy::RegionPolicy;
+use crate::regions::RegionDir;
 use crate::root::NotedRoot;
-use crate::search::{
-    CaseMode, FileType, GlobPattern, Hit, LogWindow, SearchMode, SearchPattern, SearchQuery,
-};
+use crate::search::{CaseMode, FileType, GlobPattern, Hit, SearchMode, SearchPattern, SearchQuery};
 use crate::tasks::{
     GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskState, TaskTitle,
 };
-use crate::types::{Date, LogBody, NoteBody, TaskBody};
+use crate::timerange::{TimeRange, TimeRangeBound};
+use crate::types::{LogBody, NoteBody, TaskBody};
 use crate::util::slice_lines;
 
 pub struct ToolDef {
     pub name: &'static str,
     pub title: &'static str,
     pub description: &'static str,
-    pub region: Region,
+    pub(crate) dir: RegionDir,
     pub input_schema: Value,
 }
 
 impl ToolDef {
-    pub fn described(&self, grants: &[Authority]) -> String {
-        self.placed(&Authority::policy(grants).unwrap_or_default())
-    }
-
-    pub(crate) fn placed(&self, policy: &Policy) -> String {
-        match self.region.placement(policy.scope()) {
+    pub(crate) fn described(&self, scope: Option<&Path>) -> String {
+        match placement(self.dir, scope) {
             None => self.description.to_string(),
             Some(where_) => format!("{} {where_}", self.description),
         }
@@ -46,42 +40,14 @@ enum Mode {
     Write,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Region {
-    Notes,
-    Log,
-    Tasks,
-}
-
-impl Region {
-    fn frame(self, scope: Option<&Path>) -> Result<Path> {
-        let name = match self {
-            Region::Notes => {
-                return match scope {
-                    Some(scope) => Ok(scope.clone()),
-                    None => Path::new(ROOT_PROBE),
-                };
-            }
-            Region::Log => "Log",
-            Region::Tasks => "Tasks",
-        };
-        match scope {
-            Some(scope) => scope.joined(name),
-            None => Path::new(name),
-        }
-    }
-
-    fn placement(self, scope: Option<&Path>) -> Option<String> {
-        match (self, scope) {
-            (Region::Notes, None) => None,
-            (Region::Notes, Some(scope)) => Some(format!("Paths are relative to {scope}.")),
-            (Region::Log, None) => Some("Entries are stored under Log/.".to_string()),
-            (Region::Log, Some(scope)) => {
-                Some(format!("Entries are stored under Log/, stamped {scope}."))
-            }
-            (Region::Tasks, None) => Some("Tasks are stored under Tasks/.".to_string()),
-            (Region::Tasks, Some(scope)) => Some(format!("Tasks are stored under {scope}.")),
-        }
+fn placement(dir: RegionDir, scope: Option<&Path>) -> Option<String> {
+    match (dir, scope) {
+        (RegionDir::Notes, None) => None,
+        (RegionDir::Notes, Some(scope)) => Some(format!("Paths are relative to {scope}.")),
+        (RegionDir::Log, None) => Some("Entries are stored under Log/.".to_string()),
+        (RegionDir::Log, Some(scope)) => Some(format!("Entries are stored under Log/{scope}.")),
+        (RegionDir::Tasks, None) => Some("Tasks are stored under Tasks/.".to_string()),
+        (RegionDir::Tasks, Some(scope)) => Some(format!("Tasks are stored under Tasks/{scope}.")),
     }
 }
 
@@ -122,7 +88,7 @@ struct ToolSpec {
     name: &'static str,
     title: &'static str,
     description: &'static str,
-    region: Region,
+    dir: RegionDir,
     mode: Mode,
     schema: fn() -> Value,
 }
@@ -132,7 +98,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "SearchNotes",
         title: "Search notes",
         description: D_SEARCH_NOTES,
-        region: Region::Notes,
+        dir: RegionDir::Notes,
         mode: Mode::Read,
         schema: schema_of::<SearchNotesArgs>,
     },
@@ -140,7 +106,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "SearchLog",
         title: "Search log",
         description: D_SEARCH_LOG,
-        region: Region::Log,
+        dir: RegionDir::Log,
         mode: Mode::Read,
         schema: schema_of::<SearchLogArgs>,
     },
@@ -148,7 +114,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "SearchTasks",
         title: "Search tasks",
         description: D_SEARCH_TASKS,
-        region: Region::Tasks,
+        dir: RegionDir::Tasks,
         mode: Mode::Read,
         schema: schema_of::<SearchTasksArgs>,
     },
@@ -156,7 +122,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "ReadNote",
         title: "Read note",
         description: D_READ,
-        region: Region::Notes,
+        dir: RegionDir::Notes,
         mode: Mode::Read,
         schema: schema_of::<ReadArgs>,
     },
@@ -164,7 +130,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "WriteNote",
         title: "Write note",
         description: D_WRITE,
-        region: Region::Notes,
+        dir: RegionDir::Notes,
         mode: Mode::Write,
         schema: schema_of::<WriteArgs>,
     },
@@ -172,7 +138,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "EditNote",
         title: "Edit note",
         description: D_EDIT,
-        region: Region::Notes,
+        dir: RegionDir::Notes,
         mode: Mode::Write,
         schema: schema_of::<EditArgs>,
     },
@@ -180,7 +146,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "MoveNote",
         title: "Move note",
         description: D_MOVE,
-        region: Region::Notes,
+        dir: RegionDir::Notes,
         mode: Mode::Write,
         schema: schema_of::<MoveArgs>,
     },
@@ -188,7 +154,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "DeleteNote",
         title: "Delete note",
         description: D_DELETE,
-        region: Region::Notes,
+        dir: RegionDir::Notes,
         mode: Mode::Write,
         schema: schema_of::<DeleteArgs>,
     },
@@ -196,7 +162,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "LogNote",
         title: "Log entry",
         description: D_LOG,
-        region: Region::Log,
+        dir: RegionDir::Log,
         mode: Mode::Write,
         schema: schema_of::<LogArgs>,
     },
@@ -204,7 +170,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "GetLog",
         title: "Get log entries",
         description: D_GET_LOG,
-        region: Region::Log,
+        dir: RegionDir::Log,
         mode: Mode::Read,
         schema: schema_of::<GetLogArgs>,
     },
@@ -212,7 +178,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "CreateTask",
         title: "Create task",
         description: D_CREATE_TASK,
-        region: Region::Tasks,
+        dir: RegionDir::Tasks,
         mode: Mode::Write,
         schema: schema_of::<CreateTaskArgs>,
     },
@@ -220,7 +186,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "GetTasks",
         title: "Get tasks",
         description: D_GET_TASKS,
-        region: Region::Tasks,
+        dir: RegionDir::Tasks,
         mode: Mode::Read,
         schema: schema_of::<GetTasksArgs>,
     },
@@ -228,7 +194,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "UpdateTask",
         title: "Update task",
         description: D_UPDATE_TASK,
-        region: Region::Tasks,
+        dir: RegionDir::Tasks,
         mode: Mode::Write,
         schema: schema_of::<UpdateTaskArgs>,
     },
@@ -236,7 +202,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "MoveTask",
         title: "Move task",
         description: D_MOVE_TASK,
-        region: Region::Tasks,
+        dir: RegionDir::Tasks,
         mode: Mode::Write,
         schema: schema_of::<MoveTaskArgs>,
     },
@@ -277,41 +243,38 @@ pub(crate) fn is_tool(name: &str) -> bool {
     TOOLS.iter().any(|t| t.name == name)
 }
 
-pub(crate) fn allowed_tools(grants: &[Authority]) -> Vec<&'static str> {
-    match Authority::policy(grants) {
-        Ok(policy) => permitted(&policy),
-        Err(_) => Vec::new(),
-    }
-}
-
-pub(crate) fn permitted(policy: &Policy) -> Vec<&'static str> {
+pub(crate) fn permitted(
+    notes: &RegionPolicy,
+    log: &RegionPolicy,
+    tasks: &RegionPolicy,
+) -> Vec<&'static str> {
     TOOLS
         .iter()
-        .filter(|t| reaches(policy, t.region, t.mode))
+        .filter(|t| {
+            let access = match t.dir {
+                RegionDir::Notes => notes.access(),
+                RegionDir::Log => log.access(),
+                RegionDir::Tasks => tasks.access(),
+            };
+            match t.mode {
+                Mode::Read => access.read,
+                Mode::Write => access.write,
+            }
+        })
         .map(|t| t.name)
         .collect()
 }
 
-fn reaches(policy: &Policy, region: Region, mode: Mode) -> bool {
-    let Ok(at) = region.frame(policy.scope()) else {
-        return false;
-    };
-    match mode {
-        Mode::Read => policy.readable(&at).is_ok(),
-        Mode::Write => policy.writeable(&at).is_ok(),
-    }
-}
-
 const D_SEARCH_NOTES: &str = "Find notes by regular expression. 'pattern' is smart-case by default (case-insensitive unless it contains an uppercase letter; use '(?i)'/'(?-i)' to force) and defaults to '.' (matches everything, i.e. lists). 'mode' picks the result: 'any' (default) returns files matching by contents or path; 'line' returns 'path:lineno:text' matches ('--' between files) with 'context' surrounding lines; 'file' returns files whose contents match; 'path' returns files whose path matches. 'fixed' matches the pattern literally instead of as a regex. 'glob' restricts which paths are searched: a bare name scopes to that subtree/file, a '!'-prefixed entry excludes (repeatable). Log/ and Tasks/ are never searched here — use SearchLog and SearchTasks for those.";
-const D_SEARCH_LOG: &str = "Find log entries by regular expression. Searches Log/ and nothing else; results come back newest entry first. 'pattern', 'mode', 'context' and 'fixed' work as in SearchNotes, except 'mode' defaults to 'line'. 'since' and 'until' are inclusive local dates ('YYYY-MM-DD') that bound which entries are considered; omit both to search the whole log. There is no 'glob' — the date window is the only narrowing.";
+const D_SEARCH_LOG: &str = "Find log entries by regular expression. Searches the log region and nothing else; results come back newest entry first. 'pattern', 'mode', 'context' and 'fixed' work as in SearchNotes, except 'mode' defaults to 'line'. 'since', 'until' and 'limit' bound which entries are considered, exactly as in GetLog. There is no 'glob'.";
 const D_SEARCH_TASKS: &str = "Find tasks by regular expression. Searches Tasks/ and nothing else; results come back newest-updated first, one task path per line (e.g. 'dev/noted/task_0001'). 'pattern', 'mode', 'context' and 'fixed' work as in SearchNotes. 'prefix' narrows to a group (e.g. 'dev') and defaults to the whole tree. Closed tasks (completed/rejected/invalid) are hidden unless include_completed is set. There is no 'glob' — the prefix is the only narrowing. Read a matched task in full with GetTasks.";
-const D_GET_LOG: &str = "Read log entries as summary records, newest first, without a pattern. 'since' and 'until' are inclusive local dates ('YYYY-MM-DD') bounding the window; omit both for the whole log. 'body' attaches each entry's text to the record. 'offset' and 'limit' page the result (limit defaults to 20, max 1000). Always returns a JSON array. Use SearchLog to match text instead.";
+const D_GET_LOG: &str = "Read log entries as summary records, newest first, without a pattern. 'since' and 'until' are inclusive bounds, each an iso8601 datetime ('2026-07-01T09:15'), a date ('2026-07-01'), a year or month ('2026', '2026-07'), or a duration back from now ('P7D', 'PT36H'); a coarse bound widens to its span. 'body' attaches each entry's text to the record. 'limit' caps the result (default 20, max 1000). Page by passing the oldest returned entry's 'created' back as 'until'. Always returns a JSON array. Use SearchLog to match text instead.";
 const D_READ: &str = "Read a note's text by relative path. Use offset/limit to page.";
 const D_WRITE: &str = "Write a note, overwriting it. Creates parent directories. Never use for logging or timestamped entries — those must go through LogNote. Paths under Log/ and Tasks/ are refused: log entries are write-once, and a task is created with CreateTask and changed with UpdateTask/MoveTask.";
 const D_EDIT: &str = "Revise a note in place via string-replace.";
 const D_MOVE: &str = "Move or rename a note or folder within the tree. A folder moves its whole subtree. Creates missing parent dirs. 'overwrite' replaces an existing file; a non-empty destination folder is refused.";
 const D_DELETE: &str = "Delete a note by relative path. Removal is recoverable by an operator but not undoable through these tools.";
-const D_LOG: &str = "Append an immutable, timestamped log entry. 'body' is free-form; all metadata (created time with offset, cwd, host) is captured automatically into the entry's YAML front matter — nothing to fill in. Entries are written under Log/YYYY/MM/ and CANNOT be edited, moved, or deleted through these tools; they are write-once. Read them back with GetLog or SearchLog.";
+const D_LOG: &str = "Append an immutable, timestamped log entry. 'body' is free-form; all metadata (created time with offset, cwd, host) is captured automatically into the entry's YAML front matter — nothing to fill in. The entry's file name is the instant it was written and CANNOT be edited, moved, or deleted through these tools; entries are write-once. Read them back with GetLog or SearchLog.";
 const D_CREATE_TASK: &str = "START HERE for any non-trivial unit of work. Opens a task as a searchable note under Tasks/, returning its summary record (path, state). 'task' is a one-line statement of the work; optional 'notes' seeds the markdown body; optional 'group' places it in a (nested, auto-created) subdirectory under Tasks/ — e.g. group='dev/noted'. noted assigns the filename automatically (the next 'task_NNNN' in that group); the task is thereafter identified by its Tasks-relative path minus '.md' (e.g. 'dev/noted/task_0001'). Group and task names must start with a letter and use only letters/digits/'-'/'_'. State starts 'created'. Afterward, change a task with UpdateTask (state/notes) or MoveTask (group); do NOT use WriteNote/EditNote — they are refused under Tasks/. States: created (not started), started (in progress), blocked (stuck), completed (work finished), rejected (declined/refused), invalid (task was ill-posed or moot). 'completed' means the work is genuinely finished; if you are giving up, use rejected/invalid — never mark 'completed'. blocked/completed/rejected/invalid require a non-empty body explaining why.";
 const D_GET_TASKS: &str = "Check this BEFORE starting new work to recover existing tasks. Reads tasks as summary records, newest-updated first. 'prefix' is a Tasks-relative scope: empty = the whole tree; a group (e.g. 'dev') = that subtree; an exact task path (e.g. 'dev/noted/task_0001') = just that one task. 'body' attaches each task's markdown notes (the working body) to the record — use it to read a specific task in full. Closed tasks (completed/rejected/invalid) are hidden unless include_completed is set (an exact task path is always returned). Always returns a JSON array. Change a task with UpdateTask/MoveTask.";
 const D_UPDATE_TASK: &str = "Change an existing task, identified by its Tasks-relative path (e.g. 'dev/noted/task_0001'). Set 'state' to advance it, 'notes' to replace the working body, and/or 'task' to reword the one-liner; omitted fields are left as-is. Returns the updated summary. States: created (not started), started (in progress), blocked (stuck), completed (work finished), rejected (declined/refused), invalid (ill-posed/moot); blocked/completed/rejected/invalid require a non-empty body explaining why. created_at is immutable; updated_at is stamped for you.";
@@ -411,10 +374,13 @@ pub struct SearchLogArgs {
     fixed: bool,
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    since: Option<Date>,
+    since: Option<TimeRangeBound>,
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    until: Option<Date>,
+    until: Option<TimeRangeBound>,
+    #[arg(long, default_value_t = 20)]
+    #[serde(default = "default_limit")]
+    limit: i64,
     #[arg(long, default_value = "smart")]
     #[serde(default)]
     #[schemars(skip)]
@@ -430,11 +396,10 @@ pub struct SearchLogArgs {
 }
 
 impl SearchLogArgs {
-    fn split(self) -> Result<(LogWindow, SearchQuery)> {
-        let window = LogWindow::new(self.since, self.until)?;
-        Ok((
-            window,
-            SearchQuery {
+    fn query(self) -> Result<LogQuery> {
+        Ok(LogQuery {
+            range: TimeRange::new(self.since, self.until)?,
+            query: SearchQuery {
                 pattern: self.pattern,
                 mode: self.mode,
                 context: self.context.max(0) as u32,
@@ -445,7 +410,8 @@ impl SearchLogArgs {
                 globs: Vec::new(),
                 types: Vec::new(),
             },
-        ))
+            limit: self.limit.clamp(1, 1000) as u32,
+        })
     }
 }
 
@@ -507,16 +473,13 @@ impl SearchTasksArgs {
 pub struct GetLogArgs {
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    since: Option<Date>,
+    since: Option<TimeRangeBound>,
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    until: Option<Date>,
+    until: Option<TimeRangeBound>,
     #[arg(long)]
     #[serde(default)]
     body: bool,
-    #[arg(long, default_value_t = 0)]
-    #[serde(default)]
-    offset: i64,
     #[arg(long, default_value_t = 20)]
     #[serde(default = "default_limit")]
     limit: i64,
@@ -525,8 +488,8 @@ pub struct GetLogArgs {
 impl GetLogArgs {
     fn query(self) -> Result<LogQuery> {
         Ok(LogQuery {
-            window: LogWindow::new(self.since, self.until)?,
-            offset: self.offset.max(0) as u64,
+            range: TimeRange::new(self.since, self.until)?,
+            query: SearchQuery::default(),
             limit: self.limit.clamp(1, 1000) as u32,
         })
     }
@@ -674,7 +637,7 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             name: t.name,
             title: t.title,
             description: t.description,
-            region: t.region,
+            dir: t.dir,
             input_schema: (t.schema)(),
         })
         .collect()
@@ -695,11 +658,9 @@ pub(crate) async fn run_tool(name: &str, args: &Value, root: &NotedRoot) -> Resu
             Ok(render_hits(&query, &root.note_search(&query).await?))
         }
         "SearchLog" => {
-            let (window, query) = parse::<SearchLogArgs>(args)?.split()?;
-            Ok(render_hits(
-                &query,
-                &root.log_search(&window, &query).await?,
-            ))
+            let query = parse::<SearchLogArgs>(args)?.query()?;
+            let hits = root.log_search(&query).await?;
+            Ok(render_hits(&query.query, &hits))
         }
         "SearchTasks" => {
             let search = parse::<SearchTasksArgs>(args)?.into_search();

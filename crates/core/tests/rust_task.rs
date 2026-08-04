@@ -1,10 +1,10 @@
 mod common;
 
 use common::{backend, confined_backend, fixture_dir, invoke, note, notes_root, root, rp, write};
-use noted::{Backend, NotedRoot};
 use noted::tasks::{
     GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskState, TaskTitle, parse_task_file,
 };
+use noted::{Backend, NotedRoot};
 
 fn task_file(dir: &tempfile::TempDir, rel: &str) -> std::path::PathBuf {
     notes_root(dir).join("Tasks").join(format!("{rel}.md"))

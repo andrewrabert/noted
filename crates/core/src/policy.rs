@@ -1,241 +1,189 @@
-use std::collections::BTreeMap;
 use std::fmt;
-use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
+use fast_radix_trie::StringRadixMap;
 
 use crate::error::{NotedError, Result, rejected};
-use crate::path::Path;
+use crate::fragment::{AccessFragment, RegionFragment};
+use crate::path::{DirPath, Path};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Access {
     pub read: bool,
     pub write: bool,
 }
 
-fn nearest(entries: &BTreeMap<Path, Access>, at: &Path, root: Access) -> Access {
-    at.ancestors()
-        .find_map(|ancestor| entries.get(&ancestor).copied())
-        .unwrap_or(root)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ReadableFile(Path);
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WriteableFile(Path);
-
-impl ReadableFile {
-    pub(crate) fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-
-    pub(crate) fn path(&self) -> Path {
-        self.0.clone()
+impl AccessFragment {
+    fn applied_to(
+        &self,
+        ceiling: Access,
+        default: Access,
+    ) -> std::result::Result<Access, AccessFragment> {
+        let over = AccessFragment {
+            read: (self.read == Some(true) && !ceiling.read).then_some(true),
+            write: (self.write == Some(true) && !ceiling.write).then_some(true),
+        };
+        if over != AccessFragment::default() {
+            return Err(over);
+        }
+        Ok(Access {
+            read: self.read.unwrap_or(default.read),
+            write: self.write.unwrap_or(default.write),
+        })
     }
 }
 
-impl WriteableFile {
-    pub(crate) fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-
-    pub(crate) fn path(&self) -> Path {
-        self.0.clone()
-    }
+fn resolved(
+    at: &DirPath,
+    asked: AccessFragment,
+    ceiling: Access,
+    default: Access,
+) -> Result<Access> {
+    asked
+        .applied_to(ceiling, default)
+        .map_err(|asked| PolicyError::Exceeds {
+            path: at.clone(),
+            asked,
+        })
+        .map_err(NotedError::from)
 }
 
-impl fmt::Display for ReadableFile {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
+#[derive(Clone, Debug)]
+struct AccessEntries(StringRadixMap<Access>);
 
-impl fmt::Display for WriteableFile {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Policy {
-    scope: Option<Path>,
-    root: Access,
-    inside: BTreeMap<Path, Access>,
-    extra: BTreeMap<Path, Access>,
-}
-
-impl Default for Policy {
-    fn default() -> Policy {
-        Policy::new()
-    }
-}
-
-impl Policy {
-    pub fn new() -> Policy {
-        Policy {
-            scope: None,
-            root: Access {
+impl AccessEntries {
+    fn new(base: &DirPath) -> AccessEntries {
+        let mut entries = StringRadixMap::new();
+        entries.insert(
+            base.as_str(),
+            Access {
                 read: true,
                 write: true,
             },
-            inside: BTreeMap::new(),
-            extra: BTreeMap::new(),
+        );
+        AccessEntries(entries)
+    }
+
+    // each name's ceiling is `self`, the policy before the fragment; its default is
+    // `covering`, never `entries`, so named entries neither fill nor cap one another
+    // and a fragment may deny at the base yet reopen a name beneath it
+    fn with_entries(
+        &self,
+        base: (DirPath, AccessFragment),
+        named: impl IntoIterator<Item = (DirPath, AccessFragment)>,
+    ) -> Result<AccessEntries> {
+        let (at, asked) = base;
+        let prior = self.for_path(&at);
+        let mut covering = self.clone();
+        covering
+            .0
+            .insert(at.as_str(), resolved(&at, asked, prior, prior)?);
+
+        let mut entries = covering.clone();
+        for (at, asked) in named {
+            let access = resolved(&at, asked, self.for_path(&at), covering.for_path(&at))?;
+            entries.0.insert(at.as_str(), access);
+        }
+        Ok(entries)
+    }
+
+    fn for_path(&self, at: &DirPath) -> Access {
+        match self.0.get_longest_common_prefix(at.as_str()) {
+            Some((_, access)) => *access,
+            None => Access::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RegionPolicy {
+    scope: Option<Path>,
+    base: DirPath,
+    entries: AccessEntries,
+}
+
+impl RegionPolicy {
+    pub fn new(base: DirPath) -> RegionPolicy {
+        RegionPolicy {
+            scope: None,
+            entries: AccessEntries::new(&base),
+            base,
         }
     }
 
-    pub fn with_fragments(fragments: &[PolicyFragment]) -> Result<Policy> {
-        let mut policy = Policy::new();
-        for fragment in fragments {
-            let scope = match (&fragment.scope, &policy.scope) {
-                (None, _) => policy.scope.clone(),
-                (Some(scope), None) => Some(scope.clone()),
-                (Some(scope), Some(held)) if scope.under(held) => Some(scope.clone()),
-                (Some(scope), Some(held)) => {
-                    return Err(PolicyError::ScopeOutsideHeld {
-                        path: scope.clone(),
-                        held: held.clone(),
-                    }
-                    .into());
-                }
-            };
-
-            let held = match scope.as_ref() {
-                Some(scope) => Access {
-                    read: policy.readable(scope).is_ok(),
-                    write: policy.writeable(scope).is_ok(),
-                },
-                None => policy.root,
-            };
-            let root = policy.narrowed(scope.as_ref(), fragment.access.unwrap_or(held))?;
-
-            let mut inside: BTreeMap<Path, Access> = policy
-                .inside
-                .iter()
-                .chain(policy.extra.iter())
-                .filter(|(at, _)| match &scope {
-                    Some(scope) => at.under(scope),
-                    None => true,
-                })
-                .map(|(at, access)| (at.clone(), *access))
-                .collect();
-            if let Some(scope) = &scope {
-                inside.insert(scope.clone(), root);
-            }
-            let mut extra: BTreeMap<Path, Access> = policy
-                .extra
-                .iter()
-                .filter(|(at, _)| match &scope {
-                    Some(scope) => !at.under(scope),
-                    None => false,
-                })
-                .map(|(at, access)| (at.clone(), *access))
-                .collect();
-
-            for (at, access) in &fragment.paths {
-                let at = match &scope {
-                    Some(scope) => scope.join(at),
-                    None => at.clone(),
+    pub(crate) fn with_policy_fragment(&self, fragment: &RegionFragment) -> Result<RegionPolicy> {
+        let (scope, base) = match (&self.scope, &fragment.scope) {
+            (_, None) => (self.scope.clone(), self.base.clone()),
+            (None, Some(deeper)) => (Some(deeper.clone()), self.base.join(deeper)),
+            (Some(scope), Some(deeper)) => (Some(scope.join(deeper)), self.base.join(deeper)),
+        };
+        let entries = self.entries.with_entries(
+            (base.clone(), fragment.access),
+            fragment.named.iter().map(|(at, asked)| {
+                let at = match at {
+                    Some(at) => base.join(at),
+                    None => base.clone(),
                 };
-                inside.insert(at.clone(), policy.narrowed(Some(&at), *access)?);
-            }
-            for (at, access) in &fragment.extra {
-                let inside_scope = match &scope {
-                    Some(scope) => at.under(scope),
-                    None => true,
-                };
-                if inside_scope {
-                    return Err(PolicyError::ExtraInsideScope {
-                        path: at.clone(),
-                        scope: scope.clone(),
-                    }
-                    .into());
-                }
-                extra.insert(at.clone(), policy.narrowed(Some(at), *access)?);
-            }
+                (at, *asked)
+            }),
+        )?;
 
-            let root = if scope.is_some() {
-                Access::default()
-            } else {
-                root
-            };
-            policy = Policy {
-                scope,
-                root,
-                inside,
-                extra,
-            };
-        }
-        Ok(policy)
+        Ok(RegionPolicy {
+            scope,
+            base,
+            entries,
+        })
     }
 
-    pub fn scope(&self) -> Option<&Path> {
+    pub(crate) fn readable(&self, rel: &Path) -> Result<Readable> {
+        let at = self.base.join(rel);
+        match (self.entries.for_path(&at).read, at.to_path()) {
+            (true, Some(path)) => Ok(Readable(path)),
+            _ => Err(NotedError::Forbidden),
+        }
+    }
+
+    pub(crate) fn writeable(&self, rel: &Path) -> Result<Writeable> {
+        let at = self.base.join(rel);
+        match (self.entries.for_path(&at).write, at.to_path()) {
+            (true, Some(path)) => Ok(Writeable(path)),
+            _ => Err(NotedError::Forbidden),
+        }
+    }
+
+    pub fn access(&self) -> Access {
+        self.entries.for_path(&self.base)
+    }
+
+    pub(crate) fn base(&self) -> &DirPath {
+        &self.base
+    }
+
+    pub(crate) fn scope(&self) -> Option<&Path> {
         self.scope.as_ref()
-    }
-
-    pub(crate) fn readable(&self, at: &Path) -> Result<ReadableFile> {
-        let access = match &self.scope {
-            Some(scope) if !at.under(scope) => nearest(&self.extra, at, Access::default()),
-            _ => nearest(&self.inside, at, self.root),
-        };
-        match access.read {
-            true => Ok(ReadableFile(at.clone())),
-            false => Err(NotedError::Forbidden),
-        }
-    }
-
-    pub(crate) fn writeable(&self, at: &Path) -> Result<WriteableFile> {
-        let access = match &self.scope {
-            Some(scope) if !at.under(scope) => nearest(&self.extra, at, Access::default()),
-            _ => nearest(&self.inside, at, self.root),
-        };
-        match access.write {
-            true => Ok(WriteableFile(at.clone())),
-            false => Err(NotedError::Forbidden),
-        }
-    }
-
-    fn narrowed(&self, at: Option<&Path>, access: Access) -> Result<Access> {
-        let held = match at {
-            Some(at) => Access {
-                read: self.readable(at).is_ok(),
-                write: self.writeable(at).is_ok(),
-            },
-            None => self.root,
-        };
-        if access.read && !held.read || access.write && !held.write {
-            return Err(PolicyError::Widens { path: at.cloned() }.into());
-        }
-        Ok(access)
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Readable(pub(crate) Path);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Writeable(pub(crate) Path);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PolicyError {
-    ExtraInsideScope { path: Path, scope: Option<Path> },
-    ScopeOutsideHeld { path: Path, held: Path },
-    Widens { path: Option<Path> },
+    Exceeds {
+        path: DirPath,
+        asked: AccessFragment,
+    },
 }
 
 impl fmt::Display for PolicyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PolicyError::ExtraInsideScope { path, scope } => match scope {
-                Some(scope) => write!(
-                    f,
-                    "'{path}' is inside the scope '{scope}': write it under paths"
-                ),
-                None => write!(f, "'{path}' is inside the root scope: write it under paths"),
-            },
-            PolicyError::ScopeOutsideHeld { path, held } => write!(
+            PolicyError::Exceeds { path, asked } => write!(
                 f,
-                "scope '{path}' is outside the held scope '{held}': a fragment may only deepen the scope"
+                "'{path}' asks for {asked}, which the holder does not have there"
             ),
-            PolicyError::Widens { path } => match path {
-                Some(path) => write!(f, "'{path}' grants access the holder does not have"),
-                None => write!(f, "the root grants access the holder does not have"),
-            },
         }
     }
 }
@@ -246,169 +194,188 @@ impl From<PolicyError> for NotedError {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PolicyFragment {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<Path>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub access: Option<Access>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub paths: BTreeMap<Path, Access>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub extra: BTreeMap<Path, Access>,
-}
-
-impl PolicyFragment {
-    pub fn everything() -> PolicyFragment {
-        PolicyFragment {
-            scope: None,
-            access: Some(Access {
-                read: true,
-                write: true,
-            }),
-            paths: BTreeMap::new(),
-            extra: BTreeMap::new(),
-        }
-    }
-}
-
-impl fmt::Display for PolicyFragment {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match serde_json::to_string(self) {
-            Ok(json) => f.write_str(&json),
-            Err(_) => Err(fmt::Error),
-        }
-    }
-}
-
-impl FromStr for PolicyFragment {
-    type Err = NotedError;
-    fn from_str(s: &str) -> Result<PolicyFragment> {
-        serde_yaml::from_str(s).map_err(|e| rejected(format!("invalid policy: {e}")))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn fragment(s: &str) -> PolicyFragment {
-        PolicyFragment::from_str(s).unwrap()
-    }
 
     fn at(s: &str) -> Path {
         Path::new(s).unwrap()
     }
 
+    fn asked(read: Option<bool>, write: Option<bool>) -> AccessFragment {
+        AccessFragment { read, write }
+    }
+
+    fn applied(policy: &RegionPolicy, fragment: RegionFragment) -> Result<RegionPolicy> {
+        policy.with_policy_fragment(&fragment)
+    }
+
+    fn root() -> RegionPolicy {
+        RegionPolicy::new(DirPath::root())
+    }
+
     #[test]
-    fn fragment_round_trips_through_its_canonical_json() {
-        let text = r#"{"scope":"dev","access":{"read":true,"write":false},"paths":{"vendor":{"read":false,"write":false}},"extra":{"finance":{"read":true,"write":true}}}"#;
-        let parsed = fragment(text);
-        assert_eq!(parsed.to_string(), text);
-        assert_eq!(fragment(&parsed.to_string()), parsed);
-        assert_eq!(parsed.scope, Some(at("dev")));
+    fn a_fresh_policy_allows_everything_over_its_base() {
+        let policy = root();
         assert_eq!(
-            parsed.paths[&at("vendor")],
+            policy.access(),
             Access {
-                read: false,
-                write: false,
+                read: true,
+                write: true
             }
         );
+        assert_eq!(policy.readable(&at("a/b.md")).unwrap().0, at("a/b.md"));
     }
 
     #[test]
-    fn a_fragment_may_only_narrow() {
-        let policy = Policy::with_fragments(&[fragment(
-            r#"{"paths":{"vendor":{"read":true,"write":false}}}"#,
-        )])
+    fn a_named_entry_never_reaches_across_a_name_boundary() {
+        let policy = applied(
+            &root(),
+            RegionFragment {
+                named: vec![(Some(at("work")), asked(Some(false), Some(false)))],
+                ..Default::default()
+            },
+        )
         .unwrap();
-        assert!(policy.readable(&at("vendor")).is_ok());
-        assert!(policy.writeable(&at("vendor")).is_err());
-        assert!(policy.readable(&at("vendor/x.md")).is_ok());
-        assert!(policy.writeable(&at("vendor/x.md")).is_err());
-        assert!(policy.readable(&at("other")).is_ok());
-        assert!(policy.writeable(&at("other")).is_ok());
-
-        let widened = Policy::with_fragments(&[
-            fragment(r#"{"paths":{"vendor":{"read":true,"write":false}}}"#),
-            fragment(r#"{"paths":{"vendor":{"read":true,"write":true}}}"#),
-        ]);
-        assert!(matches!(widened, Err(NotedError::InvalidInput(_))));
+        assert!(policy.readable(&at("work/a.md")).is_err());
+        assert!(policy.readable(&at("workshop/a.md")).is_ok());
     }
 
     #[test]
-    fn narrowing_the_scope_denies_everything_outside_it() {
-        let policy = Policy::with_fragments(&[fragment(r#"{"scope":"dev"}"#)]).unwrap();
-        assert_eq!(policy.scope(), Some(&at("dev")));
-        assert!(policy.readable(&at("dev/a.md")).is_ok());
-        assert!(policy.writeable(&at("dev/a.md")).is_ok());
+    fn the_access_covers_the_named_entries() {
+        let policy = applied(
+            &root(),
+            RegionFragment {
+                access: asked(None, Some(false)),
+                named: vec![(Some(at("vendor")), asked(Some(false), None))],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(policy.writeable(&at("vendor/x.md")).is_err());
+        assert!(policy.readable(&at("vendor/x.md")).is_err());
+        assert!(policy.readable(&at("other/x.md")).is_ok());
+        assert!(policy.writeable(&at("other/x.md")).is_err());
+    }
+
+    #[test]
+    fn a_sibling_denial_does_not_cover_a_deeper_named_entry() {
+        let policy = applied(
+            &root(),
+            RegionFragment {
+                named: vec![
+                    (None, asked(Some(true), Some(false))),
+                    (Some(at("task_0001.md")), asked(Some(true), Some(true))),
+                ],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(policy.writeable(&at("task_0001.md")).is_ok());
+        assert!(policy.writeable(&at("task_0002.md")).is_err());
+        assert!(policy.readable(&at("task_0002.md")).is_ok());
+    }
+
+    #[test]
+    fn a_deny_all_access_still_lets_a_named_entry_reopen() {
+        let policy = applied(
+            &root(),
+            RegionFragment {
+                access: asked(Some(false), Some(false)),
+                named: vec![(Some(at("Log")), asked(Some(true), Some(true)))],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(policy.readable(&at("Log/a.md")).is_ok());
+        assert!(policy.writeable(&at("Log/a.md")).is_ok());
         assert!(policy.readable(&at("other/a.md")).is_err());
         assert!(policy.writeable(&at("other/a.md")).is_err());
     }
 
     #[test]
-    fn extra_reaches_outside_the_scope_and_never_inside_it() {
-        let policy = Policy::with_fragments(&[fragment(
-            r#"{"scope":"dev","extra":{"finance":{"read":true,"write":false},"finance/payroll":{"read":false,"write":false}}}"#,
-        )])
+    fn a_later_fragment_cannot_reopen_what_an_earlier_one_closed() {
+        let closed = applied(
+            &root(),
+            RegionFragment {
+                named: vec![(Some(at("secrets")), asked(Some(false), Some(false)))],
+                ..Default::default()
+            },
+        )
         .unwrap();
-        assert!(policy.readable(&at("finance/q1.md")).is_ok());
-        assert!(policy.writeable(&at("finance/q1.md")).is_err());
-        assert!(policy.readable(&at("finance/payroll/a.md")).is_err());
-        assert!(policy.writeable(&at("finance/payroll/a.md")).is_err());
-
-        let inside = Policy::with_fragments(&[fragment(
-            r#"{"scope":"dev","extra":{"dev/x":{"read":true,"write":false}}}"#,
-        )]);
-        assert!(
-            matches!(inside, Err(NotedError::InvalidInput(ref m)) if m.contains("inside the scope"))
-        );
+        assert!(matches!(
+            applied(
+                &closed,
+                RegionFragment {
+                    access: asked(Some(false), Some(false)),
+                    named: vec![(Some(at("secrets")), asked(Some(true), None))],
+                    ..Default::default()
+                },
+            ),
+            Err(NotedError::InvalidInput(_))
+        ));
     }
 
     #[test]
-    fn a_deeper_entry_wins_over_its_ancestors() {
-        let policy =
-            Policy::with_fragments(&[fragment(r#"{"paths":{"a":{"read":true,"write":false},"a/b":{"read":true,"write":true},"a/b/c":{"read":false,"write":false}}}"#)])
-                .unwrap();
-        assert!(policy.readable(&at("a/x.md")).is_ok());
-        assert!(policy.writeable(&at("a/x.md")).is_err());
-        assert!(policy.readable(&at("a/b/x.md")).is_ok());
-        assert!(policy.writeable(&at("a/b/x.md")).is_ok());
-        assert!(policy.readable(&at("a/b/c/x.md")).is_err());
-        assert!(policy.writeable(&at("a/b/c/x.md")).is_err());
+    fn asking_for_more_than_the_covering_key_is_refused() {
+        let closed = applied(
+            &root(),
+            RegionFragment {
+                access: asked(Some(true), Some(false)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            applied(
+                &closed,
+                RegionFragment {
+                    access: asked(None, Some(true)),
+                    ..Default::default()
+                },
+            ),
+            Err(NotedError::InvalidInput(_))
+        ));
     }
 
     #[test]
-    fn a_fragment_reaching_what_the_holder_cannot_is_refused() {
-        assert!(matches!(
-            Policy::with_fragments(&[
-                fragment(r#"{"scope":"dev"}"#),
-                fragment(r#"{"extra":{"finance":{"read":true,"write":false}}}"#),
-            ]),
-            Err(NotedError::InvalidInput(_))
-        ));
-        assert!(matches!(
-            Policy::with_fragments(&[
-                fragment(r#"{"scope":"dev"}"#),
-                fragment(r#"{"scope":"other"}"#),
-            ]),
-            Err(NotedError::InvalidInput(_))
-        ));
-        assert!(
-            Policy::with_fragments(&[
-                fragment(r#"{"scope":"dev"}"#),
-                fragment(r#"{"scope":"dev/deep"}"#),
-            ])
-            .is_ok()
+    fn a_scope_deepens_the_base_and_nothing_above_it_is_addressable() {
+        let scoped = applied(
+            &root(),
+            RegionFragment {
+                scope: Some(at("projects")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(scoped.scope(), Some(&at("projects")));
+        assert_eq!(scoped.readable(&at("a.md")).unwrap().0, at("projects/a.md"));
+
+        let deeper = applied(
+            &scoped,
+            RegionFragment {
+                scope: Some(at("alpha")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(deeper.scope(), Some(&at("projects/alpha")));
+        assert_eq!(
+            deeper.readable(&at("a.md")).unwrap().0,
+            at("projects/alpha/a.md")
         );
     }
 
     #[test]
     fn write_does_not_imply_read() {
-        let policy =
-            Policy::with_fragments(&[fragment(r#"{"access":{"read":false,"write":true}}"#)])
-                .unwrap();
+        let policy = applied(
+            &root(),
+            RegionFragment {
+                access: asked(Some(false), Some(true)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert!(policy.writeable(&at("a.md")).is_ok());
         assert!(policy.readable(&at("a.md")).is_err());
     }

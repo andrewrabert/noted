@@ -4,10 +4,10 @@ use clap::{Args, Subcommand};
 use serde_json::Value;
 
 use noted::error::{Result, rejected, unavailable};
+use noted::types::Ttl;
 use noted_auth::oauth::admin::{AdminConn, AdminRequest};
 use noted_auth::oauth::service::{CredentialSummary, RevokeBy, UserSummary};
 use noted_auth::oauth::types::Label;
-use noted::types::Ttl;
 
 use crate::config::{block_on, parse_ttl};
 use crate::{EntryFlags, GlobalArgs};
@@ -218,7 +218,12 @@ pub(crate) fn run_user(cmd: UserCmd, globals: &GlobalArgs) -> Result<()> {
                 t,
                 AdminRequest::UserSetPolicy {
                     name: c.name.clone(),
-                    policy: globals.policy_args(&c.entries).held()?,
+                    policy: globals
+                        .policy_args(&c.entries)
+                        .fragments()?
+                        .into_iter()
+                        .next()
+                        .unwrap_or_default(),
                 },
             )?;
             println!("policy set for {}", c.name);
@@ -271,7 +276,12 @@ pub(crate) fn run_key(cmd: KeyCmd, globals: &GlobalArgs) -> Result<()> {
     let t = &cmd.transport;
     match cmd.sub {
         KeySub::Create(c) => {
-            let policy = globals.policy_args(&c.entries).held()?;
+            let policy = globals
+                .policy_args(&c.entries)
+                .fragments()?
+                .into_iter()
+                .next()
+                .unwrap_or_default();
             let label = c.label.clone();
             let ttl = c.ttl;
             let as_json = c.json;
@@ -315,7 +325,12 @@ pub(crate) fn run_key(cmd: KeyCmd, globals: &GlobalArgs) -> Result<()> {
                 AdminRequest::KeySetPolicy {
                     label: c.label,
                     id: c.id,
-                    policy: globals.policy_args(&c.entries).held()?,
+                    policy: globals
+                        .policy_args(&c.entries)
+                        .fragments()?
+                        .into_iter()
+                        .next()
+                        .unwrap_or_default(),
                 },
             )?;
             println!(

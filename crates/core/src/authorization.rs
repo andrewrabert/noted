@@ -1,7 +1,8 @@
 use std::fmt;
 
-use crate::authority::Authority;
 use crate::error::Result;
+use crate::fragment::PolicyFragment;
+use crate::regions::{RegionDir, folded};
 
 #[derive(Clone)]
 pub struct Bearer(String);
@@ -52,18 +53,21 @@ impl fmt::Debug for Bearer {
 
 #[derive(Clone, Debug)]
 pub struct Authorization {
-    grants: Vec<Authority>,
+    fragments: Vec<PolicyFragment>,
     bearer: Option<Bearer>,
 }
 
 impl Authorization {
-    pub fn new(grants: Vec<Authority>, bearer: Option<Bearer>) -> Result<Authorization> {
-        Authority::validate_chain(&grants)?;
-        Ok(Authorization { grants, bearer })
+    // rejects fragments that cannot apply to a whole-tree policy
+    pub fn new(fragments: Vec<PolicyFragment>, bearer: Option<Bearer>) -> Result<Authorization> {
+        for dir in [RegionDir::Notes, RegionDir::Log, RegionDir::Tasks] {
+            folded(dir, &fragments)?;
+        }
+        Ok(Authorization { fragments, bearer })
     }
 
-    pub fn grants(&self) -> &[Authority] {
-        &self.grants
+    pub fn fragments(&self) -> &[PolicyFragment] {
+        &self.fragments
     }
 
     pub fn bearer(&self) -> Option<&Bearer> {

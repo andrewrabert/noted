@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use noted::Authority;
+use noted::PolicyFragment;
 use noted_auth::oauth::Db;
 use noted_auth::oauth::admin::{self, AdminClient, AdminRequest};
 use noted_auth::oauth::service::{AuthService, RevokeBy};
@@ -39,7 +39,7 @@ async fn verbs_round_trip_and_two_phase_mint() {
     let minted = client
         .call(&AdminRequest::KeyCreate {
             label: "agent".into(),
-            policy: r#"{"access":{"read":true,"write":false}}"#.parse::<Authority>().unwrap(),
+            policy: r#"{"access":{"read":true,"write":false}}"#.parse::<PolicyFragment>().unwrap(),
             ttl: None,
         })
         .await
@@ -64,7 +64,7 @@ async fn verbs_round_trip_and_two_phase_mint() {
         .call(&AdminRequest::KeySetPolicy {
             label: Some("agent".into()),
             id: None,
-            policy: r#"{"access":{"read":true,"write":false},"paths":{"projects":{"read":false,"write":false}}}"#.parse::<Authority>().unwrap(),
+            policy: r#"{"access":{"read":true,"write":false},"paths":{"projects":{"read":false,"write":false}}}"#.parse::<PolicyFragment>().unwrap(),
         })
         .await
         .unwrap();

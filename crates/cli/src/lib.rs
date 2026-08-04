@@ -88,13 +88,15 @@ struct GlobalArgs {
 impl GlobalArgs {
     pub(crate) fn policy_args(&self, entries: &EntryFlags) -> PolicyArgs {
         PolicyArgs {
-            policy: self.policy.as_deref().map(|raw| match raw.strip_prefix('@') {
-                Some(path) => format!("@{}", config::expand_home(path).display()),
-                None => raw.to_string(),
-            }),
+            policy: self
+                .policy
+                .as_deref()
+                .map(|raw| match raw.strip_prefix('@') {
+                    Some(path) => format!("@{}", config::expand_home(path).display()),
+                    None => raw.to_string(),
+                }),
             scope: self.scope.clone(),
             inside: entries.in_.clone(),
-            outside: entries.out.clone(),
         }
     }
 
@@ -118,8 +120,6 @@ impl GlobalArgs {
 pub(crate) struct EntryFlags {
     #[arg(long = "in", value_name = "PATH[=MODES]")]
     in_: Vec<String>,
-    #[arg(long = "out", value_name = "PATH[=MODES]")]
-    out: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -264,4 +264,3 @@ fn run_server(cmd: ServerCmd, globals: &GlobalArgs) -> Result<ExitCode> {
         ServerSub::Key(c) => admin::run_key(c, globals).map(|()| ExitCode::SUCCESS),
     }
 }
-

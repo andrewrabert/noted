@@ -1,7 +1,7 @@
 use serde_json::{Map, Value, json};
 
-use crate::authority::Authority;
 use crate::error::{Result, rejected};
+use crate::fragment::PolicyFragment;
 use crate::path::Path;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -9,16 +9,11 @@ pub struct PolicyArgs {
     pub policy: Option<String>,
     pub scope: Option<String>,
     pub inside: Vec<String>,
-    pub outside: Vec<String>,
 }
 
 impl PolicyArgs {
-    pub fn held(&self) -> Result<Authority> {
-        self.document()?.parse()
-    }
-
-    pub fn chain(&self) -> Result<Vec<Authority>> {
-        Ok(vec![self.held()?])
+    pub fn fragments(&self) -> Result<Vec<PolicyFragment>> {
+        Ok(vec![self.document()?.parse()?])
     }
 
     fn document(&self) -> Result<String> {
@@ -30,7 +25,6 @@ impl PolicyArgs {
             doc.insert("scope".to_string(), json!(note_path(scope)?.as_str()));
         }
         write_entries(&mut doc, "paths", &self.inside)?;
-        write_entries(&mut doc, "extra", &self.outside)?;
         Ok(Value::Object(doc).to_string())
     }
 }
@@ -63,9 +57,6 @@ fn write_entries(doc: &mut Map<String, Value>, key: &str, raws: &[String]) -> Re
     };
     for raw in raws {
         match parse_entry(raw)? {
-            (None, _) if key == "extra" => {
-                return Err(rejected("'--out /' has no path; use '--in /'"));
-            }
             (None, access) => {
                 doc.insert("access".to_string(), access);
             }
@@ -102,4 +93,3 @@ fn parse_entry(raw: &str) -> Result<(Option<String>, Value)> {
     }
     Ok((at, json!({"read": read, "write": write})))
 }
-

@@ -10,9 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use macaroon::{
-    ByteString, Caveat, Format, Macaroon as DependencyMacaroon, MacaroonKey, Verifier,
-};
+use macaroon::{ByteString, Caveat, Format, Macaroon as DependencyMacaroon, MacaroonKey, Verifier};
 use rand::Rng;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::{Value, json};
@@ -21,7 +19,7 @@ use super::KeyRecord;
 use super::service::{AuthService, PREFIX_MAC};
 use super::types::{RevocationEpoch, SessionId};
 use crate::AuthState;
-use noted::authority::Authority;
+use noted::PolicyFragment;
 use noted::error::{Result, rejected};
 use noted::newtype::str_newtype;
 use noted::types::{Ttl, UnixEpochSeconds};
@@ -37,7 +35,8 @@ impl KeyValueStrings {
     const SEPARATOR: char = '=';
 
     fn encode(key: &str, value: &str) -> String {
-        let mut encoded = String::with_capacity(key.len() + Self::SEPARATOR.len_utf8() + value.len());
+        let mut encoded =
+            String::with_capacity(key.len() + Self::SEPARATOR.len_utf8() + value.len());
         encoded.push_str(key);
         encoded.push(Self::SEPARATOR);
         encoded.push_str(value);
@@ -54,8 +53,7 @@ trait CaveatType: Display + FromStr + Sized + 'static {
 
     fn encode(&self) -> Result<ByteString> {
         let mut value = String::new();
-        write!(&mut value, "{self}")
-            .map_err(|_| rejected("serialize macaroon caveat"))?;
+        write!(&mut value, "{self}").map_err(|_| rejected("serialize macaroon caveat"))?;
         Ok(ByteString(
             KeyValueStrings::encode(Self::KEY, &value).into_bytes(),
         ))
@@ -91,7 +89,7 @@ where
 caveat_types! {
     RevocationEpoch("epoch");
     UnixEpochSeconds("before");
-    Authority("policy");
+    PolicyFragment("policy");
     MacaroonId("token_id");
     SessionId("session_id");
 }
@@ -119,7 +117,7 @@ pub struct Macaroon {
 #[derive(Clone)]
 struct ResolvedAuthorization {
     owner: super::Owner,
-    authority: Vec<Authority>,
+    authority: Vec<PolicyFragment>,
 }
 
 impl fmt::Debug for Macaroon {
@@ -218,7 +216,11 @@ impl Macaroon {
         Ok(predicates)
     }
 
-    pub(crate) fn resolved(mut self, owner: super::Owner, authority: Vec<Authority>) -> Macaroon {
+    pub(crate) fn resolved(
+        mut self,
+        owner: super::Owner,
+        authority: Vec<PolicyFragment>,
+    ) -> Macaroon {
         self.resolved = Some(ResolvedAuthorization { owner, authority });
         self
     }
@@ -249,7 +251,7 @@ impl Macaroon {
 
     pub fn to_descendant(
         &self,
-        authority: Option<&Authority>,
+        authority: Option<&PolicyFragment>,
         ttl: Ttl,
         session: Option<&SessionId>,
     ) -> Result<Macaroon> {
@@ -275,7 +277,7 @@ impl Macaroon {
         identifier.parse()
     }
 
-    pub fn authority(&self) -> Result<&[Authority]> {
+    pub fn authority(&self) -> Result<&[PolicyFragment]> {
         self.resolved
             .as_ref()
             .map(|resolved| resolved.authority.as_slice())
@@ -291,7 +293,7 @@ pub(crate) struct CaveatVerification<'a> {
     pub(crate) auth: &'a AuthService,
     pub(crate) key_record: Option<&'a KeyRecord>,
     pub(crate) now: UnixEpochSeconds,
-    pub(crate) fragments: Vec<Authority>,
+    pub(crate) fragments: Vec<PolicyFragment>,
 }
 
 pub(crate) trait VerifyCaveat {
@@ -313,7 +315,7 @@ impl VerifyCaveat for UnixEpochSeconds {
     }
 }
 
-impl VerifyCaveat for Authority {
+impl VerifyCaveat for PolicyFragment {
     fn apply(self: Box<Self>, verification: &mut CaveatVerification<'_>) -> Option<()> {
         verification.fragments.push(*self);
         Some(())

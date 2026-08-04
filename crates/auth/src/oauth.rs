@@ -22,9 +22,9 @@ use oxide_auth::primitives::registrar::{Client, ClientMap, RegisteredUrl};
 use oxide_auth::primitives::scope::Scope;
 use serde_json::{Value, json};
 
-use noted::error::Result;
 use crate::AuthState;
 use crate::password::{verify_dummy, verify_password};
+use noted::error::Result;
 use noted::types::{Ttl, UnixEpochSeconds};
 use noted::util::random_token;
 
@@ -35,8 +35,8 @@ pub(crate) mod macaroon;
 pub mod service;
 pub mod types;
 pub use db::{CredentialKind, CredentialRecord, CredentialStatus, Db, KeyRecord, UserRecord};
-pub use macaroon::Macaroon;
 pub use issuer::DbIssuer;
+pub use macaroon::Macaroon;
 pub use service::AuthService;
 pub use types::Owner;
 

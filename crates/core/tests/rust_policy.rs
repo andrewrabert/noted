@@ -3,10 +3,9 @@ mod common;
 use common::{confined, found, grep, held, note, notes_root, read, rp, write};
 use noted::authorization::Authorization;
 use noted::note::LogQuery;
-use noted::search::LogWindow;
 use noted::store::NotedDir;
 use noted::tasks::{GroupPath, TaskNote, TaskQuery, TaskRef, TaskTitle};
-use noted::{Authority, NotedRoot};
+use noted::{NotedRoot, PolicyFragment};
 
 fn gp(s: &str) -> GroupPath {
     s.parse().unwrap()
@@ -30,8 +29,8 @@ fn all_tasks(root: &NotedRoot) -> Vec<String> {
 
 fn log_paths(root: &NotedRoot) -> Vec<String> {
     root.log_get(&LogQuery {
-        window: LogWindow::default(),
-        offset: 0,
+        range: Default::default(),
+        query: Default::default(),
         limit: 100,
     })
     .unwrap()
@@ -42,15 +41,15 @@ fn log_paths(root: &NotedRoot) -> Vec<String> {
 
 #[test]
 fn a_policy_travels_as_canonical_json() {
-    let text = r#"{"scope":"dev","access":{"read":true,"write":false},"paths":{"vendor":{"read":false,"write":false}},"extra":{"finance":{"read":true,"write":false}}}"#;
+    let text = r#"{"scope":"dev","access":{"read":true,"write":false},"paths":{"vendor":{"read":false,"write":false}}}"#;
     assert_eq!(held(text).to_string(), text);
-    assert!("{\"nope\": 1}".parse::<Authority>().is_err());
-    assert!(r#"{"paths":{"a":"rw"}}"#.parse::<Authority>().is_err());
+    assert!("{\"nope\": 1}".parse::<PolicyFragment>().is_err());
+    assert!(r#"{"paths":{"a":"rw"}}"#.parse::<PolicyFragment>().is_err());
 }
 
 fn chained(dir: &tempfile::TempDir, chain: &[&str]) -> noted::Result<NotedRoot> {
-    let chain: Vec<Authority> = chain.iter().map(|text| held(text)).collect();
-    NotedRoot::open(NotedDir::new(notes_root(dir)), &chain, None)
+    let chain: Vec<PolicyFragment> = chain.iter().map(|text| held(text)).collect();
+    NotedRoot::open(NotedDir::new(notes_root(dir)), None)?.with_authority(&chain)
 }
 
 #[test]
@@ -60,7 +59,11 @@ fn a_link_only_narrows() {
 
     assert!(chained(&dir, &[scoped]).is_ok());
     assert!(chained(&dir, &[scoped, r#"{"access":{"read":true,"write":true}}"#]).is_err());
-    assert!(chained(&dir, &[r#"{"scope":"projects"}"#, r#"{"scope":"people"}"#]).is_err());
+
+    // a scope chained onto a scope deepens it: 'projects/people' names nothing
+    let root = chained(&dir, &[r#"{"scope":"projects"}"#, r#"{"scope":"people"}"#]).unwrap();
+    assert!(read(&root, "notes.md").is_err());
+
     assert!(
         chained(
             &dir,
@@ -115,11 +118,15 @@ async fn a_search_lists_only_what_the_policy_admits() {
     let root = confined(&dir, r#"{"scope":"projects"}"#);
     let paths = found(&root, ".").await.unwrap();
     assert!(!paths.is_empty());
-    assert!(paths.iter().all(|p| !p.contains('/')));
+    assert!(paths.iter().all(|p| !p.starts_with("projects/")));
     assert!(paths.contains(&"ideas.md".to_string()));
+    assert!(paths.contains(&"alpha/notes.md".to_string()));
 
     let hits = grep(&root, ".").await.unwrap();
-    assert!(hits.iter().all(|h| !h.path.to_string().contains('/')));
+    assert!(
+        hits.iter()
+            .all(|h| !h.path.to_string().starts_with("projects/"))
+    );
 
     let denied = confined(
         &dir,
@@ -174,43 +181,108 @@ fn a_single_task_can_be_granted_inside_a_denied_region() {
 }
 
 #[test]
-fn a_log_entry_records_the_scope_it_was_written_at() {
-    let dir = common::fixture_dir();
-    let scoped = confined(&dir, r#"{"scope":"projects"}"#);
-    let entry = scoped.log_note(&"scoped entry\n-- t · s".into()).unwrap();
-    assert_eq!(entry.front().scope, Some(rp("projects")));
-    assert!(!entry.path().to_string().starts_with("Log/"));
-    assert!(
-        common::notes_root(&dir)
-            .join("Log")
-            .join(entry.path().to_string())
-            .is_file()
-    );
-
-    let unscoped = common::root(&dir);
-    assert_eq!(
-        unscoped
-            .log_note(&"root entry\n-- t · s".into())
-            .unwrap()
-            .front()
-            .scope,
-        None
-    );
-}
-
-#[test]
 fn a_scoped_holder_sees_only_its_own_log() {
     let dir = common::fixture_dir();
     let projects = confined(&dir, r#"{"scope":"projects"}"#);
     let people = confined(&dir, r#"{"scope":"people"}"#);
-    projects
+    let entry = projects
         .log_note(&"from projects\n-- t · s".into())
         .unwrap();
     people.log_note(&"from people\n-- t · s".into()).unwrap();
 
-    assert_eq!(log_paths(&projects).len(), 1);
+    assert!(
+        common::notes_root(&dir)
+            .join("Log/projects")
+            .join(entry.path().to_string())
+            .is_file(),
+        "a scoped entry lands in its own log directory"
+    );
+    assert_eq!(log_paths(&projects), vec![entry.path().to_string()]);
     assert_eq!(log_paths(&people).len(), 1);
     assert_eq!(log_paths(&common::root(&dir)).len(), 4);
+}
+
+#[test]
+fn a_scope_is_cumulative_across_the_three_regions() {
+    let dir = common::fixture_dir();
+    let root = confined(&dir, r#"{"scope":"a/b"}"#);
+    write(&root, &note("kept.md", "x")).unwrap();
+    let entry = root.log_note(&"scoped\n-- t · s".into()).unwrap();
+    create(&root, "scoped work", "").unwrap();
+
+    let notes = common::notes_root(&dir);
+    assert!(notes.join("a/b/kept.md").is_file());
+    assert!(
+        notes
+            .join("Log/a/b")
+            .join(entry.path().to_string())
+            .is_file()
+    );
+    assert!(notes.join("Tasks/a/b/task_0001.md").is_file());
+}
+
+#[test]
+fn a_scoped_policy_names_the_reserved_regions_by_their_own_keys() {
+    let dir = common::fixture_dir();
+    let root = confined(
+        &dir,
+        r#"{"scope":"dev","paths":{"Tasks":{"read":true,"write":false},"Log":{"read":false,"write":false}}}"#,
+    );
+    assert!(create(&root, "refused", "").is_err());
+    assert!(root.log_note(&"refused\n-- t · s".into()).is_err());
+    assert!(write(&root, &note("kept.md", "x")).is_ok());
+}
+
+#[test]
+fn a_scope_cannot_widen_a_denied_log() {
+    let dir = common::fixture_dir();
+    let chain = &[
+        r#"{"paths":{"Log":{"read":false,"write":false}}}"#,
+        r#"{"scope":"dev"}"#,
+    ];
+    let root = chained(&dir, chain).unwrap();
+    assert!(root.log_note(&"nope\n-- t · s".into()).is_err());
+    assert!(log_paths(&root).is_empty());
+
+    let names = tool_names(&dir, chain.iter().map(|text| held(text)).collect());
+    assert!(!names.contains(&"LogNote") && !names.contains(&"SearchLog"));
+    assert!(names.contains(&"CreateTask"));
+}
+
+#[test]
+fn a_scope_cannot_widen_a_denied_task_group() {
+    let dir = common::fixture_dir();
+    let root = chained(
+        &dir,
+        &[
+            r#"{"paths":{"Tasks/dev/x":{"read":false,"write":false}}}"#,
+            r#"{"scope":"dev"}"#,
+        ],
+    )
+    .unwrap();
+    assert!(create(&root, "refused", "x").is_err());
+    assert!(create(&root, "kept", "y").is_ok());
+}
+
+#[test]
+fn a_scope_cannot_name_a_reserved_region() {
+    let dir = common::fixture_dir();
+    for text in [r#"{"scope":"Log"}"#, r#"{"scope":"Tasks/dev"}"#] {
+        assert!(chained(&dir, &[text]).is_err(), "accepted {text}");
+    }
+}
+
+#[test]
+fn the_reserved_regions_are_reserved_at_every_scope() {
+    let dir = common::fixture_dir();
+    for root in [
+        common::root(&dir),
+        confined(&dir, r#"{"scope":"projects"}"#),
+    ] {
+        assert!(write(&root, &note("Log/x.md", "x")).is_err());
+        assert!(write(&root, &note("Tasks/x.md", "x")).is_err());
+    }
+    assert!(!common::notes_root(&dir).join("projects/Log").exists());
 }
 
 #[test]
@@ -222,7 +294,7 @@ fn a_denied_log_region_still_leaves_the_notes_region_open() {
     assert!(read(&root, "Inbox.md").is_ok());
 }
 
-fn tool_names(dir: &tempfile::TempDir, grants: Vec<Authority>) -> Vec<&'static str> {
+fn tool_names(dir: &tempfile::TempDir, grants: Vec<PolicyFragment>) -> Vec<&'static str> {
     let backend = common::backend(dir);
     let authorization = Authorization::new(grants, None).unwrap();
     backend
@@ -234,7 +306,7 @@ fn tool_names(dir: &tempfile::TempDir, grants: Vec<Authority>) -> Vec<&'static s
         .collect()
 }
 
-fn described(dir: &tempfile::TempDir, name: &str, grants: Vec<Authority>) -> String {
+fn described(dir: &tempfile::TempDir, name: &str, grants: Vec<PolicyFragment>) -> String {
     let backend = common::backend(dir);
     let authorization = Authorization::new(grants, None).unwrap();
     backend
@@ -253,7 +325,10 @@ fn allowed_tools_follow_the_regions() {
     let all = tool_names(&dir, vec![]);
     assert!(all.contains(&"LogNote") && all.contains(&"DeleteNote"));
 
-    let names = tool_names(&dir, vec![held(r#"{"access":{"read":true,"write":false}}"#)]);
+    let names = tool_names(
+        &dir,
+        vec![held(r#"{"access":{"read":true,"write":false}}"#)],
+    );
     assert!(names.contains(&"ReadNote") && names.contains(&"SearchLog"));
     assert!(!names.contains(&"WriteNote") && !names.contains(&"LogNote"));
 
@@ -269,26 +344,14 @@ fn allowed_tools_follow_the_regions() {
 fn a_tool_description_tells_a_scoped_client_where_things_land() {
     let dir = common::fixture_dir();
     let scoped = || vec![held(r#"{"scope":"projects"}"#)];
-    assert!(described(&dir, "CreateTask", scoped()).ends_with("Tasks are stored under projects."));
-    assert!(described(&dir, "LogNote", scoped()).ends_with("stamped projects."));
+    assert!(
+        described(&dir, "CreateTask", scoped()).ends_with("Tasks are stored under Tasks/projects.")
+    );
+    assert!(
+        described(&dir, "LogNote", scoped()).ends_with("Entries are stored under Log/projects.")
+    );
     assert!(described(&dir, "WriteNote", scoped()).ends_with("Paths are relative to projects."));
     assert!(!described(&dir, "WriteNote", vec![]).contains("Paths are relative to"));
-}
-
-#[test]
-fn the_reserved_regions_are_reserved_only_at_the_whole_tree_scope() {
-    let dir = common::fixture_dir();
-    let root = common::root(&dir);
-    assert!(write(&root, &note("Log/2026/07/hand-written.md", "x")).is_err());
-    assert!(write(&root, &note("Tasks/hand-written.md", "x")).is_err());
-
-    let scoped = confined(&dir, r#"{"scope":"projects"}"#);
-    assert!(write(&scoped, &note("Log/notes.md", "x")).is_ok());
-    assert!(
-        common::notes_root(&dir)
-            .join("projects/Log/notes.md")
-            .is_file()
-    );
 }
 
 #[test]
@@ -302,5 +365,51 @@ fn access_survives_all_four_combinations() {
         let text = format!(r#"{{"paths":{{"a":{access}}}}}"#);
         assert_eq!(held(&text).to_string(), text);
     }
-    assert!(r#"{"paths":{"a":{"read":true}}}"#.parse::<Authority>().is_err());
+    assert_eq!(
+        held(r#"{"paths":{"a":{"read":true}}}"#).to_string(),
+        r#"{"paths":{"a":{"read":true}}}"#
+    );
+}
+
+#[test]
+fn a_fragment_is_read_against_the_policy_it_lands_on() {
+    let dir = common::fixture_dir();
+    let root = confined(&dir, r#"{"scope":"projects","access":{"write":false}}"#);
+
+    assert!(read(&root, "a.md").is_ok());
+    assert!(write(&root, &note("a.md", "x")).is_err());
+    assert!(
+        root.with_authority(&[held(r#"{"access":{"write":true}}"#)])
+            .is_err()
+    );
+
+    let deeper = root
+        .with_authority(&[held(r#"{"scope":"alpha"}"#)])
+        .unwrap();
+    assert!(read(&deeper, "a.md").is_err());
+    assert!(read(&deeper, "notes.md").is_ok());
+    assert!(read(&root, "alpha/notes.md").is_ok());
+}
+
+#[test]
+fn an_absent_flag_keeps_what_the_policy_already_says() {
+    let dir = common::fixture_dir();
+    let root = confined(
+        &dir,
+        r#"{"access":{"write":false},"paths":{"vendor":{"read":false}}}"#,
+    );
+
+    assert!(read(&root, "Inbox.md").is_ok());
+    assert!(write(&root, &note("Inbox.md", "x")).is_err());
+    assert!(read(&root, "vendor/x.md").is_err());
+    assert!(write(&root, &note("vendor/x.md", "x")).is_err());
+}
+
+#[test]
+fn a_name_never_matches_across_a_name_boundary() {
+    let dir = common::fixture_dir();
+    let root = confined(&dir, r#"{"paths":{"work":{"read":false}}}"#);
+
+    assert!(read(&root, "work/a.md").is_err());
+    assert!(read(&root, "workshop/a.md").is_ok());
 }

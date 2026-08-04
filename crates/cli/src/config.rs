@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use noted_client::credentials::{CredentialStoreConfig, SecretStorage};
 use noted::error::{Result, io_error, rejected};
 use noted::types::Ttl;
+use noted_client::credentials::{CredentialStoreConfig, SecretStorage};
 
 pub fn expand_home(path: &str) -> PathBuf {
     match path.strip_prefix("~/") {

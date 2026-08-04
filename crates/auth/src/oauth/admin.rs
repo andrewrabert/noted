@@ -8,7 +8,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 
-use noted::authority::Authority;
+use noted::PolicyFragment;
 use noted::error::{Result, rejected, unavailable};
 
 use super::db::Db;
@@ -28,7 +28,7 @@ pub enum AdminRequest {
     },
     UserSetPolicy {
         name: String,
-        policy: Authority,
+        policy: PolicyFragment,
     },
     UserList,
     UserGet {
@@ -43,7 +43,7 @@ pub enum AdminRequest {
     },
     KeyCreate {
         label: String,
-        policy: Authority,
+        policy: PolicyFragment,
         ttl: Option<noted::types::Ttl>,
     },
     KeyFinalize {
@@ -52,7 +52,7 @@ pub enum AdminRequest {
     KeySetPolicy {
         label: Option<String>,
         id: Option<String>,
-        policy: Authority,
+        policy: PolicyFragment,
     },
     KeyList {
         label: Option<String>,

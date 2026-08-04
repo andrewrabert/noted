@@ -5,9 +5,9 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use noted::HttpUrl;
+use noted_auth::AuthState;
 use noted_auth::oauth::types::Label;
 use noted_auth::oauth::{AuthService, Db, Macaroon};
-use noted_auth::AuthState;
 use noted_client::credentials::{Credential, CredentialStore};
 
 fn store(dir: &tempfile::TempDir) -> CredentialStore {
@@ -22,7 +22,11 @@ fn real_root_macaroon(dir: &tempfile::TempDir) -> Macaroon {
     let db = Arc::new(Db::open(&dir.path().join("auth.redb")).unwrap());
     let svc = Arc::new(AuthService::new(db, noted::types::Ttl::from_secs(3600)));
     let minted = svc
-        .key_create(&Label::new("root").unwrap(), noted::Authority::default(), None)
+        .key_create(
+            &Label::new("root").unwrap(),
+            noted::PolicyFragment::default(),
+            None,
+        )
         .unwrap();
     svc.key_finalize(&minted.credential_id).unwrap();
     let router = noted_auth::routes(AuthState::new(svc, None));
@@ -33,10 +37,7 @@ fn real_root_macaroon(dir: &tempfile::TempDir) -> Macaroon {
                 Request::builder()
                     .method("POST")
                     .uri("/macaroon/root")
-                    .header(
-                        "authorization",
-                        format!("Bearer {}", minted.token.expose()),
-                    )
+                    .header("authorization", format!("Bearer {}", minted.token.expose()))
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )

@@ -3,14 +3,16 @@ use std::pin::Pin;
 
 use serde_json::Value;
 
-use crate::authority::Authority;
 use crate::authorization::{Authorization, Bearer};
 use crate::error::{NotedError, Result, json_error, rejected, unavailable};
+use crate::fragment::PolicyFragment;
 use crate::httpurl::HttpUrl;
+use crate::policy::RegionPolicy;
 use crate::policyargs::PolicyArgs;
+use crate::regions::{RegionDir, folded};
 use crate::root::NotedRoot;
 use crate::store::NotedDir;
-use crate::tools::{ToolArgs, ToolOutput, allowed_tools, is_tool, run_tool, tool_defs};
+use crate::tools::{ToolArgs, ToolOutput, is_tool, permitted, run_tool, tool_defs};
 use crate::types::Source;
 
 const INSTRUCTIONS: &str = "This is the user's personal notes — the canonical place where they keep and organize their own notes, ideas, todos, and log entries as a nested tree of Markdown (.md) files. Whenever the user refers to 'my notes', asks to look something up, record or jot something down, or check what they've written before, use these tools instead of guessing or answering from memory. Search, read, write, edit, move, and delete notes by relative path (e.g. 'proj/ideas.md'). The tree has three regions and each has its own search tool: SearchNotes covers ordinary notes, SearchLog covers Log/, and SearchTasks covers Tasks/ — none of them reaches into another's region. Use LogNote to quickly capture an immutable, timestamped log entry (its metadata is auto-generated and it cannot be edited or deleted), then GetLog to list entries newest first or SearchLog to match their text. Track units of work with the task tools: CreateTask opens a task (optionally in a nested 'group' under Tasks/, e.g. group='dev/noted'); GetTasks reads them (by group prefix, or an exact task path with body=true); UpdateTask advances one (state=created/started/blocked/completed/rejected/invalid); MoveTask changes a task's group. A task is identified by its Tasks-relative path minus '.md' (e.g. 'dev/noted/task_0001'); tasks are managed only through these tools — WriteNote/EditNote are refused under Tasks/.";
@@ -70,7 +72,6 @@ pub struct ToolListing {
 
 pub struct Backend {
     inner: Box<dyn BackendImpl>,
-    held: Vec<Authority>,
 }
 
 impl Backend {
@@ -96,18 +97,16 @@ impl Backend {
                         token,
                         transport: transport.unwrap_or(Transport::Real),
                     }),
-                    held: Vec::new(),
                 })
             }
             None => {
-                let held = policy.chain()?;
                 let dir = dir
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| rejected("no notes dir set (set NOTED_DIR)"))?;
-                let root = NotedRoot::open(NotedDir::new(dir), &held, Source::from_opt(source))?;
+                let root = NotedRoot::open(NotedDir::new(dir), Source::from_opt(source))?
+                    .with_authority(&policy.fragments()?)?;
                 Ok(Backend {
                     inner: Box::new(LocalBackend { root }),
-                    held,
                 })
             }
         }
@@ -117,20 +116,14 @@ impl Backend {
         &self,
         authorization: Option<&Authorization>,
     ) -> Result<AuthorizedBackend<'_>> {
-        let grants = match authorization {
-            Some(authorization) => authorization.grants().to_vec(),
-            None => self.held.clone(),
-        };
         Ok(AuthorizedBackend {
             inner: self.inner.with_authority(authorization)?,
-            grants,
         })
     }
 }
 
 pub struct AuthorizedBackend<'a> {
     inner: Box<dyn AuthorizedBackendImpl + 'a>,
-    grants: Vec<Authority>,
 }
 
 impl AuthorizedBackend<'_> {
@@ -139,14 +132,19 @@ impl AuthorizedBackend<'_> {
     }
 
     pub fn tools(&self) -> Vec<ToolListing> {
-        let allowed = allowed_tools(&self.grants);
+        let allowed = permitted(
+            self.inner.policy(RegionDir::Notes),
+            self.inner.policy(RegionDir::Log),
+            self.inner.policy(RegionDir::Tasks),
+        );
+        let scope = self.inner.policy(RegionDir::Notes).scope();
         tool_defs()
             .into_iter()
             .filter(|def| allowed.contains(&def.name))
             .map(|def| ToolListing {
                 name: def.name,
                 title: def.title,
-                description: def.described(&self.grants),
+                description: def.described(scope),
                 input_schema: def.input_schema,
             })
             .collect()
@@ -154,7 +152,7 @@ impl AuthorizedBackend<'_> {
 
     pub fn instructions(&self) -> String {
         let mut out = String::from(INSTRUCTIONS);
-        match Authority::scope_of(&self.grants).ok().flatten().as_ref() {
+        match self.inner.policy(RegionDir::Notes).scope() {
             None => out.push_str(
                 " Notes live at the top of the tree. Tasks are under Tasks/, log entries under Log/.",
             ),
@@ -176,6 +174,8 @@ trait BackendImpl: Send + Sync {
 
 trait AuthorizedBackendImpl: Send + Sync {
     fn invoke<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, Result<ToolOutput>>;
+
+    fn policy(&self, dir: RegionDir) -> &RegionPolicy;
 }
 
 struct LocalBackend {
@@ -188,7 +188,7 @@ impl BackendImpl for LocalBackend {
         authorization: Option<&Authorization>,
     ) -> Result<Box<dyn AuthorizedBackendImpl + 'a>> {
         let root = match authorization {
-            Some(authorization) => self.root.with_authority(authorization.grants())?,
+            Some(authorization) => self.root.with_authority(authorization.fragments())?,
             None => self.root.clone(),
         };
         Ok(Box::new(AuthorizedLocalBackend { root }))
@@ -202,6 +202,10 @@ struct AuthorizedLocalBackend {
 impl AuthorizedBackendImpl for AuthorizedLocalBackend {
     fn invoke<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, Result<ToolOutput>> {
         Box::pin(async move { run_tool(&call.name, &call.args, &self.root).await })
+    }
+
+    fn policy(&self, dir: RegionDir) -> &RegionPolicy {
+        self.root.policy(dir)
     }
 }
 
@@ -222,9 +226,16 @@ impl BackendImpl for RemoteBackend {
                 rejected("a call carried to another server needs a bearer to carry")
             })?),
         };
+        let fragments: &[PolicyFragment] = match authorization {
+            Some(authorization) => authorization.fragments(),
+            None => &[],
+        };
         Ok(Box::new(AuthorizedRemoteBackend {
             remote: self,
             bearer,
+            notes: folded(RegionDir::Notes, fragments)?,
+            log: folded(RegionDir::Log, fragments)?,
+            tasks: folded(RegionDir::Tasks, fragments)?,
         }))
     }
 }
@@ -232,6 +243,9 @@ impl BackendImpl for RemoteBackend {
 struct AuthorizedRemoteBackend<'a> {
     remote: &'a RemoteBackend,
     bearer: Option<Bearer>,
+    notes: RegionPolicy,
+    log: RegionPolicy,
+    tasks: RegionPolicy,
 }
 
 impl AuthorizedBackendImpl for AuthorizedRemoteBackend<'_> {
@@ -246,6 +260,14 @@ impl AuthorizedBackendImpl for AuthorizedRemoteBackend<'_> {
             )
             .await
         })
+    }
+
+    fn policy(&self, dir: RegionDir) -> &RegionPolicy {
+        match dir {
+            RegionDir::Notes => &self.notes,
+            RegionDir::Log => &self.log,
+            RegionDir::Tasks => &self.tasks,
+        }
     }
 }
 

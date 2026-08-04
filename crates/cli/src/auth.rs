@@ -111,7 +111,12 @@ fn run_mint(store: &CredentialStore, m: MintCmd, globals: &GlobalArgs) -> Result
         .as_ref()
         .ok_or_else(|| rejected("no root macaroon stored; run `noted auth login` again"))?;
 
-    let held = globals.policy_args(&m.entries).held()?;
+    let held = globals
+        .policy_args(&m.entries)
+        .fragments()?
+        .into_iter()
+        .next()
+        .unwrap_or_default();
 
     let session = m.session.as_deref().map(SessionId::new);
     let _child = root.to_descendant(Some(&held), m.ttl, session.as_ref())?;

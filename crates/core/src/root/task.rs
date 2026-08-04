@@ -1,9 +1,9 @@
 use std::cmp::Reverse;
 
-use crate::areas::Area;
 use crate::error::{NotedError, Result, rejected};
 use crate::note::{Condition, Note as _};
 use crate::path::Path;
+use crate::regions::RegionStore;
 use crate::search::{Hit, assemble};
 use crate::tasks::{
     GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskTitle, numbered,
@@ -11,12 +11,12 @@ use crate::tasks::{
 use crate::types::TaskBody;
 
 pub(super) struct TaskTools {
-    area: Area,
+    region: RegionStore,
 }
 
 impl TaskTools {
-    pub(super) fn new(area: Area) -> TaskTools {
-        TaskTools { area }
+    pub(super) fn new(region: RegionStore) -> TaskTools {
+        TaskTools { region }
     }
 
     fn file_of(&self, reference: &TaskRef) -> Result<Path> {
@@ -41,13 +41,13 @@ impl TaskTools {
 
     fn read(&self, path: &Path) -> Result<TaskNote> {
         let reference = TaskRef::of_file(path);
-        let bytes = self.area.read(path)?;
+        let bytes = self.region.read(path)?;
         TaskNote::from_bytes(reference, &bytes).map_err(|_| rejected("not a task"))
     }
 
     fn next_number(&self, dir: Option<&Path>) -> u64 {
-        self.area
-            .walk(dir, |_| false)
+        self.region
+            .children(dir)
             .iter()
             .filter_map(|p| {
                 let name = p.file_name();
@@ -63,7 +63,7 @@ impl TaskTools {
             let base = self.next_number(dir);
             for number in base..base + 1000 {
                 let path = TaskTools::within(dir, &format!("task_{number:04}.md"))?;
-                match self.area.write(&path, data, Condition::Missing) {
+                match self.region.write(&path, data, Condition::Missing) {
                     Ok(()) => return Ok(path),
                     Err(NotedError::Conflict) => continue,
                     Err(e) => return Err(e),
@@ -95,7 +95,7 @@ impl TaskTools {
         let (paths, hide_closed) = match exact {
             Some(task) => return Ok(vec![task]),
             None => (
-                self.area.walk(query.prefix.to_dir().as_ref(), |_| true),
+                self.region.walk(query.prefix.to_dir().as_ref()),
                 !query.include_completed,
             ),
         };
@@ -121,8 +121,8 @@ impl TaskTools {
 
     pub(super) async fn search(&self, search: &TaskSearch) -> Result<Vec<Hit<TaskRef>>> {
         let hits: Vec<Hit<TaskRef>> = self
-            .area
-            .search(search.prefix.to_path().as_ref(), &search.query, |_| true)
+            .region
+            .search(search.prefix.to_path().as_ref(), &search.query)
             .await?
             .into_iter()
             .map(|hit| Hit {
@@ -158,7 +158,7 @@ impl TaskTools {
                 other => other,
             })?
             .changed(change)?;
-        self.area
+        self.region
             .write(&path, &updated.to_bytes()?, Condition::Always)?;
         Ok(updated)
     }
@@ -183,13 +183,13 @@ impl TaskTools {
             true => self.claim(dir.as_ref(), &bytes)?,
             false => {
                 let dest = TaskTools::within(dir.as_ref(), &format!("{stem}.md"))?;
-                match self.area.write(&dest, &bytes, Condition::Missing) {
+                match self.region.write(&dest, &bytes, Condition::Missing) {
                     Ok(()) => dest,
                     Err(e) => return Err(e),
                 }
             }
         };
-        self.area.remove(&src)?;
+        self.region.remove(&src)?;
         Ok(relocated.with_path(TaskRef::of_file(&dest)))
     }
 }

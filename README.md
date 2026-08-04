@@ -82,11 +82,10 @@ Setting `--auth-db`/`NOTED_AUTH_DB` enables auth. Keep the DB and admin socket o
   (duplicates allowed); identity is the `credential-id`.
 
 Both carry a **policy**: a scope plus per-path read/write entries. Every policy flag
-builds one fragment — `--scope` anchors it, `--in /path=read,write` names an entry
-inside the scope, `--in /=read` sets the access over the scope itself, `--out
-/path=read` names one outside it, and `--policy` takes the whole fragment as JSON. An
-omitted `=<modes>` means both; an empty one denies. A fragment can only narrow what the
-holder already has, and one that reaches further is refused rather than trimmed.
+builds one fragment — `--scope` anchors it, `--in /path=read,write` names an entry, `--in
+/=read` sets the access over the scope itself, and `--policy` takes the whole fragment as
+JSON. An omitted `=<modes>` means both; an empty one denies. A fragment can only narrow
+what the holder already has, and one that reaches further is refused rather than trimmed.
 
 A fragment is written as JSON, and prints back the same way:
 
@@ -94,14 +93,20 @@ A fragment is written as JSON, and prints back the same way:
 {
   "scope": "dev/myproject",
   "access": { "read": true, "write": false },
-  "paths": { "vendor": { "read": false, "write": false } },
-  "extra": { "finance": { "read": true, "write": false } }
+  "paths": { "vendor": { "read": false, "write": false } }
 }
 ```
 
 `scope` is optional and omitting it means the whole tree. `access` is the access over
-the scope itself, `paths` is read from the scope, and `extra` is read from the notes
-root and must fall outside the scope.
+the scope itself, and `paths` is read from the scope. Both `access` and every `paths`
+value take `read` and `write` as optional flags: an omitted flag keeps whatever the
+enclosing policy already allows, so `{"write": false}` closes writing and leaves reading
+as it was.
+
+The scope is cumulative across the three regions: a scope of `/a/b/c` puts notes at
+`a/b/c`, log entries at `Log/a/b/c`, and tasks at `Tasks/a/b/c`. A `paths` key is read
+from the scope, except one at or under `Log` or `Tasks`, which names that region: under
+scope `/dev`, `--in /Tasks=read` is `Tasks/dev` and `--in /Log=write` is `Log/dev`.
 
 Both can mint narrowed child credentials (see [Delegation](#delegation)).
 

@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use noted::Authority;
+use noted::PolicyFragment;
 use noted_auth::oauth::service::{AuthService, PREFIX_ACC, PREFIX_KEY, RevokeBy, sha256_hex};
 use noted_auth::oauth::{CredentialStatus, Db};
 
 const DEFAULT_TTL: noted::types::Ttl = noted::types::Ttl::from_secs(30 * 24 * 3600);
 
-fn held(text: &str) -> Authority {
+fn held(text: &str) -> PolicyFragment {
     text.parse().unwrap()
 }
 
@@ -37,7 +37,7 @@ fn a_new_user_holds_nothing_back() {
     let (_d, svc) = service();
     svc.user_add(&un("alice"), &pw("pw")).unwrap();
     let stored = svc.owner_policy("user:alice").unwrap().unwrap();
-    assert_eq!(stored, Authority::default());
+    assert_eq!(stored, PolicyFragment::default());
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn setting_a_user_policy_replaces_the_stored_one() {
     assert_eq!(stored.to_string(), r#"{"scope":"dev"}"#);
 
     assert!(
-        svc.user_set_policy(&un("bob"), Authority::default())
+        svc.user_set_policy(&un("bob"), PolicyFragment::default())
             .is_err()
     );
 }
@@ -95,7 +95,7 @@ fn user_revoke_kills_sessions_but_passwd_does_not() {
 fn key_mint_is_two_phase() {
     let (_d, svc) = service();
     let minted = svc
-        .key_create(&lb("backup"), Authority::default(), None)
+        .key_create(&lb("backup"), PolicyFragment::default(), None)
         .unwrap();
     assert!(minted.token.expose().starts_with(PREFIX_KEY));
     assert!(minted.credential_id.as_str().starts_with("cred_"));
@@ -109,7 +109,7 @@ fn key_mint_is_two_phase() {
     svc.key_finalize(&minted.credential_id).unwrap();
     let (owner, policy) = svc.resolve_bearer(minted.token.expose()).unwrap().unwrap();
     assert_eq!(owner, format!("key:{}", minted.credential_id));
-    assert_eq!(policy, Authority::default());
+    assert_eq!(policy, PolicyFragment::default());
     assert!(svc.key_finalize(&minted.credential_id).is_err());
 }
 
@@ -137,13 +137,13 @@ fn labels_are_group_handles() {
     let mut tokens = Vec::new();
     for _ in 0..3 {
         let m = svc
-            .key_create(&lb("claude"), Authority::default(), None)
+            .key_create(&lb("claude"), PolicyFragment::default(), None)
             .unwrap();
         svc.key_finalize(&m.credential_id).unwrap();
         tokens.push(m);
     }
     let other = svc
-        .key_create(&lb("backup"), Authority::default(), None)
+        .key_create(&lb("backup"), PolicyFragment::default(), None)
         .unwrap();
     svc.key_finalize(&other.credential_id).unwrap();
 
@@ -182,10 +182,10 @@ fn labels_are_group_handles() {
 fn setting_a_key_policy_is_bulk_and_reaches_one_key_by_id() {
     let (_d, svc) = service();
     let a = svc
-        .key_create(&lb("claude"), Authority::default(), None)
+        .key_create(&lb("claude"), PolicyFragment::default(), None)
         .unwrap();
     let b = svc
-        .key_create(&lb("claude"), Authority::default(), None)
+        .key_create(&lb("claude"), PolicyFragment::default(), None)
         .unwrap();
     svc.key_finalize(&a.credential_id).unwrap();
     svc.key_finalize(&b.credential_id).unwrap();
@@ -206,17 +206,17 @@ fn setting_a_key_policy_is_bulk_and_reaches_one_key_by_id() {
         );
     }
 
-    svc.key_set_policy(None, Some(&a.credential_id), Authority::default())
+    svc.key_set_policy(None, Some(&a.credential_id), PolicyFragment::default())
         .unwrap();
     let (_, policy) = svc.resolve_bearer(a.token.expose()).unwrap().unwrap();
-    assert_eq!(policy, Authority::default());
+    assert_eq!(policy, PolicyFragment::default());
     let (_, policy) = svc.resolve_bearer(b.token.expose()).unwrap().unwrap();
     assert_eq!(
         policy.to_string(),
         r#"{"access":{"read":true,"write":false}}"#
     );
     assert!(
-        svc.key_set_policy(Some(&lb("nope")), None, Authority::default())
+        svc.key_set_policy(Some(&lb("nope")), None, PolicyFragment::default())
             .is_err()
     );
 }
@@ -227,7 +227,7 @@ fn keys_expire_and_pending_rows_are_swept() {
     let dead = svc
         .key_create(
             &lb("ephemeral"),
-            Authority::default(),
+            PolicyFragment::default(),
             Some(noted::types::Ttl::from_secs(0)),
         )
         .unwrap();
@@ -235,7 +235,7 @@ fn keys_expire_and_pending_rows_are_swept() {
     assert!(svc.resolve_bearer(dead.token.expose()).unwrap().is_none());
 
     let pending = svc
-        .key_create(&lb("stuck"), Authority::default(), None)
+        .key_create(&lb("stuck"), PolicyFragment::default(), None)
         .unwrap();
     // a sweep with the cutoff in the future treats the fresh pending row as stale
     let now = noted::types::UnixEpochSeconds::now().unwrap();
@@ -286,7 +286,7 @@ fn a_live_policy_change_hits_outstanding_credentials() {
     svc.user_add(&un("alice"), &pw("pw")).unwrap();
     let (access, _, _) = svc.issue_login_pair("alice", "c").unwrap();
     let (_, policy) = svc.resolve_bearer(&access).unwrap().unwrap();
-    assert_eq!(policy, Authority::default());
+    assert_eq!(policy, PolicyFragment::default());
     svc.user_set_policy(
         &un("alice"),
         held(r#"{"access":{"read":true,"write":false}}"#),
@@ -311,7 +311,7 @@ fn no_plaintext_secret_at_rest() {
         let svc = AuthService::new(db, DEFAULT_TTL);
         svc.user_add(&un("alice"), &pw("hunter2-password")).unwrap();
         let minted = svc
-            .key_create(&lb("backup"), Authority::default(), None)
+            .key_create(&lb("backup"), PolicyFragment::default(), None)
             .unwrap();
         svc.key_finalize(&minted.credential_id).unwrap();
         key_token = minted.token.expose().to_string();

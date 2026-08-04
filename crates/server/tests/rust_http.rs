@@ -1,22 +1,19 @@
 mod common;
 
 use axum::http::StatusCode;
-use noted::Authority;
+use noted::PolicyFragment;
 use noted_server::http::build_app;
 use serde_json::json;
 
 use common::{json_body, post_json, post_mcp};
 
-fn keyed_app(dir: &tempfile::TempDir, policy: Authority) -> (axum::Router, String) {
+fn keyed_app(dir: &tempfile::TempDir, policy: PolicyFragment) -> (axum::Router, String) {
     let svc = common::auth_service(dir);
     let token = common::mint_key(&svc, "t", policy);
-    (
-        build_app(common::backend(dir), Some(svc), None),
-        token,
-    )
+    (build_app(common::backend(dir), Some(svc), None), token)
 }
 
-fn held(text: &str) -> Authority {
+fn held(text: &str) -> PolicyFragment {
     text.parse().unwrap()
 }
 
@@ -28,7 +25,7 @@ fn mcp_call(name: &str, args: serde_json::Value) -> serde_json::Value {
 #[tokio::test]
 async fn tool_search_fixed_glob_and_hidden_flags() {
     let dir = common::fixture_dir();
-    let (app, t) = keyed_app(&dir, Authority::default());
+    let (app, t) = keyed_app(&dir, PolicyFragment::default());
 
     let (s, b) = post_json(
         &app,
@@ -202,14 +199,14 @@ async fn mcp_refuses_a_write_the_policy_denies() {
 async fn resolver_rejects_everything_but_a_live_prefixed_bearer() {
     let dir = common::fixture_dir();
     let svc = common::auth_service(&dir);
-    let live = common::mint_key(&svc, "live", Authority::default());
+    let live = common::mint_key(&svc, "live", PolicyFragment::default());
     let pending = svc
-        .key_create(&lb("pending"), Authority::default(), None)
+        .key_create(&lb("pending"), PolicyFragment::default(), None)
         .unwrap()
         .token
         .expose()
         .to_string();
-    let revoked = common::mint_key(&svc, "dead", Authority::default());
+    let revoked = common::mint_key(&svc, "dead", PolicyFragment::default());
     svc.key_revoke(&noted_auth::oauth::service::RevokeBy::Label(lb("dead")))
         .unwrap();
     let app = build_app(common::backend(&dir), Some(svc), None);
@@ -352,7 +349,7 @@ async fn a_live_policy_edit_is_visible_to_the_next_request() {
     svc.key_set_policy(
         Some(&lb("agent")),
         None,
-        r#"{"access":{"read":true,"write":false}}"#.parse::<Authority>().unwrap(),
+        r#"{"access":{"read":true,"write":false}}"#.parse::<PolicyFragment>().unwrap(),
     )
     .unwrap();
     let (s, _) = post_json(
@@ -403,7 +400,7 @@ async fn mcp_stateless_needs_no_session() {
 #[tokio::test]
 async fn conditional_write_over_http() {
     let dir = common::fixture_dir();
-    let (app, t) = keyed_app(&dir, Authority::default());
+    let (app, t) = keyed_app(&dir, PolicyFragment::default());
 
     let (s, _) = post_json(
         &app,
@@ -436,7 +433,7 @@ async fn conditional_write_over_http() {
 #[tokio::test]
 async fn write_schema_hides_when_via_mcp() {
     let dir = common::fixture_dir();
-    let (app, t) = keyed_app(&dir, Authority::default());
+    let (app, t) = keyed_app(&dir, PolicyFragment::default());
     let (s, _h, b) = post_mcp(
         &app,
         Some(&t),

@@ -6,9 +6,9 @@ use grep::searcher::SearcherBuilder;
 use ignore::{WalkBuilder, WalkState};
 
 use crate::error::{NotedError, Result, io_error, rejected, unavailable};
-use crate::note::{Condition, Etag, Trashed};
-use crate::path::Path;
-use crate::policy::{ReadableFile, WriteableFile};
+use crate::note::{Condition, Etag};
+use crate::path::{DirPath, Path};
+use crate::policy::{Readable, Writeable};
 use crate::search::{Hit, LineSink, SearchMode, SearchQuery, build_matcher, narrow};
 use crate::util::{IgnoreFilter, atomic_write, normalize};
 
@@ -32,8 +32,8 @@ impl RawHit {
         &self.path
     }
 
-    pub(crate) fn into_hit(self, at: ReadableFile) -> Result<Hit> {
-        match at.path() == self.path {
+    pub(crate) fn into_hit(self, at: Readable) -> Result<Hit> {
+        match at.0 == self.path {
             true => Ok(Hit {
                 path: self.path,
                 lines: self.lines,
@@ -62,143 +62,6 @@ fn spare_names(at: &Path) -> impl Iterator<Item = String> + use<> {
     }))
 }
 
-fn within(prefix: Option<&Path>, at: &str) -> Option<Option<Path>> {
-    let Some(prefix) = prefix else {
-        return Some(Path::new(at).ok());
-    };
-    if at == prefix.as_str() {
-        return Some(None);
-    }
-    at.strip_prefix(prefix.as_str())
-        .and_then(|rest| rest.strip_prefix('/'))
-        .and_then(|rest| Path::new(rest).ok())
-        .map(Some)
-}
-
-fn joined(prefix: Option<&Path>, rest: Option<&Path>) -> Option<Path> {
-    match (prefix, rest) {
-        (Some(prefix), Some(rest)) => Some(prefix.join(rest)),
-        (Some(prefix), None) => Some(prefix.clone()),
-        (None, rest) => rest.cloned(),
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct Region {
-    store: Store,
-    base: Option<Path>,
-    frame: Option<Path>,
-}
-
-impl Region {
-    pub(crate) fn new(store: Store, base: Option<Path>, frame: Option<Path>) -> Region {
-        Region { store, base, frame }
-    }
-
-    pub(crate) fn store(&self) -> Store {
-        self.store.clone()
-    }
-
-    pub(crate) fn framed(&self, rel: Option<&Path>) -> Option<Path> {
-        joined(self.frame.as_ref(), rel)
-    }
-
-    pub(crate) fn relative(&self, framed: &Path) -> Option<Path> {
-        within(self.frame.as_ref(), framed.as_str()).flatten()
-    }
-
-    fn located(&self, granted: &str) -> Result<Path> {
-        within(self.frame.as_ref(), granted)
-            .and_then(|rel| joined(self.base.as_ref(), rel.as_ref()))
-            .ok_or(NotedError::Forbidden)
-    }
-
-    pub(crate) fn read(&self, at: &ReadableFile) -> Result<Vec<u8>> {
-        self.store.read(&self.located(at.as_str())?)
-    }
-
-    pub(crate) fn write(&self, at: &WriteableFile, data: &[u8], when: Condition) -> Result<()> {
-        self.store.write(&self.located(at.as_str())?, data, when)
-    }
-
-    pub(crate) fn rename(
-        &self,
-        from: &WriteableFile,
-        to: &WriteableFile,
-        when: Condition,
-    ) -> Result<()> {
-        self.store.rename(
-            &self.located(from.as_str())?,
-            &self.located(to.as_str())?,
-            when,
-        )
-    }
-
-    pub(crate) fn remove(&self, at: &WriteableFile) -> Result<Trashed> {
-        self.store.remove(&self.located(at.as_str())?)?;
-        self.relative(&at.path())
-            .map(Trashed::new)
-            .ok_or(NotedError::Forbidden)
-    }
-
-    fn from(&self, at: Option<&ReadableFile>) -> Result<Option<Path>> {
-        match at {
-            Some(at) => self.located(at.as_str()).map(Some),
-            None => Ok(self.base.clone()),
-        }
-    }
-
-    fn descending(
-        &self,
-        descend: impl Fn(&Path) -> bool + Send + Sync + 'static,
-    ) -> impl Fn(&Path) -> bool + Send + Sync + 'static {
-        let base = self.base.clone();
-        move |candidate| match within(base.as_ref(), candidate.as_str()) {
-            Some(Some(rel)) => descend(&rel),
-            Some(None) => true,
-            None => false,
-        }
-    }
-
-    pub(crate) fn walk(
-        &self,
-        at: Option<&ReadableFile>,
-        descend: impl Fn(&Path) -> bool + Send + Sync + 'static,
-    ) -> Vec<Path> {
-        let Ok(from) = self.from(at) else {
-            return Vec::new();
-        };
-        self.store
-            .walk(from.as_ref(), self.descending(descend))
-            .into_iter()
-            .filter_map(|found| within(self.base.as_ref(), found.as_str()).flatten())
-            .collect()
-    }
-
-    pub(crate) async fn search(
-        &self,
-        at: Option<&ReadableFile>,
-        query: &SearchQuery,
-        descend: impl Fn(&Path) -> bool + Send + Sync + 'static,
-    ) -> Result<Vec<RawHit>> {
-        let from = self.from(at)?;
-        let found = self
-            .store
-            .search(from.as_ref(), query, self.descending(descend))
-            .await?;
-        Ok(found
-            .into_iter()
-            .filter_map(|raw| {
-                let rel = within(self.base.as_ref(), raw.path.as_str()).flatten()?;
-                Some(RawHit {
-                    path: self.framed(Some(&rel))?,
-                    lines: raw.lines,
-                })
-            })
-            .collect())
-    }
-}
-
 struct StoreInner {
     root: PathBuf,
     writes: Mutex<()>,
@@ -222,9 +85,13 @@ impl Store {
         })))
     }
 
-    fn absolute(&self, at: Option<&Path>) -> PathBuf {
-        match at {
-            Some(at) => self.0.root.join(at.as_str()),
+    fn absolute(&self, at: &Path) -> PathBuf {
+        self.0.root.join(at.as_str())
+    }
+
+    fn directory(&self, from: &DirPath) -> PathBuf {
+        match from.to_path() {
+            Some(at) => self.absolute(&at),
             None => self.0.root.clone(),
         }
     }
@@ -236,7 +103,7 @@ impl Store {
     }
 
     fn addressable(&self, at: &Path) -> Result<PathBuf> {
-        let abs = self.absolute(Some(at));
+        let abs = self.absolute(at);
         if self.0.ignore.is_ignored(&abs) || self.crosses_symlink(at.as_str()) {
             return Err(rejected("invalid path"));
         }
@@ -287,20 +154,20 @@ impl Store {
         }
     }
 
-    fn read(&self, at: &Path) -> Result<Vec<u8>> {
-        std::fs::read(self.addressable(at)?).map_err(|e| io_error("no note", e))
+    pub(crate) fn read(&self, at: &Readable) -> Result<Vec<u8>> {
+        std::fs::read(self.addressable(&at.0)?).map_err(|e| io_error("no note", e))
     }
 
-    fn write(&self, at: &Path, data: &[u8], when: Condition) -> Result<()> {
-        let abs = self.addressable(at)?;
+    pub(crate) fn write(&self, at: &Writeable, data: &[u8], when: Condition) -> Result<()> {
+        let abs = self.addressable(&at.0)?;
         let _guard = self.lock();
         self.precondition(&abs, &when)?;
         atomic_write(&abs, data)
     }
 
-    fn rename(&self, from: &Path, to: &Path, when: Condition) -> Result<()> {
-        let source = self.addressable(from)?;
-        let target = self.addressable(to)?;
+    pub(crate) fn rename(&self, from: &Writeable, to: &Writeable, when: Condition) -> Result<()> {
+        let source = self.addressable(&from.0)?;
+        let target = self.addressable(&to.0)?;
         let _guard = self.lock();
         if !source.exists() {
             return Err(NotedError::NotFound);
@@ -312,7 +179,8 @@ impl Store {
         std::fs::rename(&source, &target).map_err(|e| io_error("cannot rename", e))
     }
 
-    fn remove(&self, at: &Path) -> Result<()> {
+    pub(crate) fn remove(&self, at: &Writeable) -> Result<()> {
+        let at = &at.0;
         let source = self.addressable(at)?;
         let _guard = self.lock();
         if !source.exists() {
@@ -334,18 +202,19 @@ impl Store {
         Err(NotedError::Conflict)
     }
 
-    fn walk(&self, at: Option<&Path>, descend: impl Fn(&Path) -> bool + Send + Sync) -> Vec<Path> {
+    pub(crate) fn walk(&self, from: &DirPath) -> Vec<Path> {
         let mut out = Vec::new();
-        self.collect(&self.absolute(at), &descend, &mut out);
+        self.collect(&self.directory(from), true, &mut out);
         out
     }
 
-    fn collect(
-        &self,
-        dir: &StdPath,
-        descend: &(impl Fn(&Path) -> bool + Send + Sync),
-        out: &mut Vec<Path>,
-    ) {
+    pub(crate) fn children(&self, from: &DirPath) -> Vec<Path> {
+        let mut out = Vec::new();
+        self.collect(&self.directory(from), false, &mut out);
+        out
+    }
+
+    fn collect(&self, dir: &StdPath, deep: bool, out: &mut Vec<Path>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
@@ -362,8 +231,8 @@ impl Store {
             }
             let Some(rel) = self.rel(&path) else { continue };
             if kind.is_dir() {
-                if descend(&rel) {
-                    self.collect(&path, descend, out);
+                if deep {
+                    self.collect(&path, deep, out);
                 }
             } else if kind.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
                 out.push(rel);
@@ -371,26 +240,20 @@ impl Store {
         }
     }
 
-    async fn search(
-        &self,
-        at: Option<&Path>,
-        query: &SearchQuery,
-        descend: impl Fn(&Path) -> bool + Send + Sync + 'static,
-    ) -> Result<Vec<RawHit>> {
+    pub(crate) async fn search(&self, from: &DirPath, query: &SearchQuery) -> Result<Vec<RawHit>> {
         let matcher = match query.mode {
             SearchMode::Path => None,
             _ => Some(build_matcher(query)?),
         };
         let store = self.clone();
-        let base = self.absolute(at);
+        let base = self.directory(from);
         let query = query.clone();
 
         tokio::task::spawn_blocking(move || {
-            let descend = Arc::new(descend);
             let lines: Mutex<HashMap<Path, BTreeMap<u64, String>>> = Mutex::new(HashMap::new());
             let walked: Mutex<Vec<Path>> = Mutex::new(Vec::new());
 
-            let mut wb = store.walk_builder(&base, descend);
+            let mut wb = store.walk_builder(&base);
             narrow(&mut wb, &base, &query)?;
             wb.build_parallel().run(|| {
                 let mut searcher = SearcherBuilder::new()
@@ -459,13 +322,8 @@ impl Store {
         .map_err(|e| unavailable(format!("search: {e}")))?
     }
 
-    fn walk_builder(
-        &self,
-        base: &StdPath,
-        descend: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
-    ) -> WalkBuilder {
+    fn walk_builder(&self, base: &StdPath) -> WalkBuilder {
         let filter = self.0.ignore.clone();
-        let store = self.clone();
         let mut wb = WalkBuilder::new(base);
         wb.hidden(true)
             .ignore(false)
@@ -473,18 +331,7 @@ impl Store {
             .git_global(false)
             .git_exclude(false)
             .parents(false)
-            .filter_entry(move |entry| {
-                if filter.is_ignored(entry.path()) {
-                    return false;
-                }
-                let Some(rel) = store.rel(entry.path()) else {
-                    return true;
-                };
-                match entry.file_type() {
-                    Some(kind) if kind.is_dir() => descend(&rel),
-                    _ => true,
-                }
-            });
+            .filter_entry(move |entry| !filter.is_ignored(entry.path()));
         wb
     }
 }

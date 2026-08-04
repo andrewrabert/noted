@@ -5,11 +5,11 @@ use std::sync::Arc;
 use axum::Router;
 use axum::http::{HeaderMap, StatusCode};
 use base64::Engine;
-use noted::Authority;
-use noted_server::http::build_app;
+use noted::PolicyFragment;
 use noted_auth::oauth::types::SessionId;
 use noted_auth::oauth::{AuthService, Macaroon, OAuthProvider};
 use noted_auth::password::{hash_password, verify_password};
+use noted_server::http::build_app;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -37,7 +37,7 @@ fn build(dir: &tempfile::TempDir, users: &[(&str, UserSpec)]) -> (Router, Arc<Au
     for (name, spec) in users {
         svc.user_add(&un(name), &pw(spec.password)).unwrap();
         if let Some(policy) = spec.policy {
-            svc.user_set_policy(&un(name), policy.parse::<Authority>().unwrap())
+            svc.user_set_policy(&un(name), policy.parse::<PolicyFragment>().unwrap())
                 .unwrap();
         }
     }
@@ -391,7 +391,7 @@ async fn tool_realm_closed_without_a_bearer() {
 async fn tool_realm_accepts_an_api_key() {
     let dir = common::fixture_dir();
     let (app, svc) = build(&dir, &[("a", UserSpec::new("pw"))]);
-    let key = common::mint_key(&svc, "bot", Authority::default());
+    let key = common::mint_key(&svc, "bot", PolicyFragment::default());
     let (s, _) = post_json(&app, "/tool/ReadNote", None, &json!({"path": "Inbox.md"})).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
     let (s, _) = post_json(
@@ -447,7 +447,7 @@ async fn login_cannot_distinguish_unknown_names_or_key_labels() {
     let dir = common::fixture_dir();
     let (app, svc) = build(&dir, &[("real", UserSpec::new("right"))]);
     // an API key label is not a username — keys are not in the user table
-    common::mint_key(&svc, "bot", Authority::default());
+    common::mint_key(&svc, "bot", PolicyFragment::default());
     let client_id = register(&app).await;
     let (_v, challenge) = pkce();
     let mut bodies = Vec::new();
@@ -506,7 +506,7 @@ fn verify_password_edges() {
 
 fn attenuate(
     root: &str,
-    authority: Option<&Authority>,
+    authority: Option<&PolicyFragment>,
     ttl: noted::types::Ttl,
     _id: &str,
     session: Option<&str>,
@@ -530,11 +530,11 @@ async fn tool(app: &Router, token: &str, name: &str, args: serde_json::Value) ->
         .0
 }
 
-fn held(text: &str) -> Authority {
+fn held(text: &str) -> PolicyFragment {
     text.parse().unwrap()
 }
 
-fn read_only() -> Authority {
+fn read_only() -> PolicyFragment {
     held(r#"{"access":{"read":true,"write":false}}"#)
 }
 
@@ -804,7 +804,7 @@ async fn access_tokens_live_one_hour() {
 async fn macaroon_parent_can_be_an_api_key_and_shrinks_live() {
     let dir = common::fixture_dir();
     let (app, svc) = build(&dir, &[("ann", UserSpec::new("pw"))]);
-    let key = common::mint_key(&svc, "agent", Authority::default());
+    let key = common::mint_key(&svc, "agent", PolicyFragment::default());
 
     let root = root_macaroon(&app, &key).await;
     let (child, _exp) = attenuate(
@@ -834,7 +834,7 @@ async fn macaroon_parent_can_be_an_api_key_and_shrinks_live() {
     svc.key_set_policy(
         Some(&lb("agent")),
         None,
-        r#"{"access":{"read":false,"write":false}}"#.parse::<Authority>().unwrap(),
+        r#"{"access":{"read":false,"write":false}}"#.parse::<PolicyFragment>().unwrap(),
     )
     .unwrap();
     assert_eq!(

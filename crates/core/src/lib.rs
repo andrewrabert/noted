@@ -1,10 +1,10 @@
-mod areas;
 mod backend;
+mod fragment;
 mod policy;
 mod policyargs;
+mod regions;
 mod root;
 
-pub mod authority;
 pub mod authorization;
 pub mod error;
 pub mod front_matter;
@@ -19,14 +19,16 @@ pub mod tools;
 pub mod types;
 pub mod util;
 
-pub use authority::Authority;
 pub use authorization::{Authorization, Bearer};
 pub use backend::{AuthorizedBackend, Backend, BackendArgs, ToolCall, ToolListing, Transport};
 pub use error::{NotedError, Result};
+pub use fragment::{AccessFragment, PolicyFragment};
 pub use httpurl::HttpUrl;
 pub use note::{BinaryNote, Etag, LogNote, Note, TextNote, Trashed};
-pub use path::Path;
+pub use path::{DirPath, Path};
+pub use policy::{Access, RegionPolicy};
 pub use policyargs::PolicyArgs;
+pub use regions::RegionDir;
 pub use root::NotedRoot;
 pub use store::NotedDir;
 pub use tasks::TaskNote;

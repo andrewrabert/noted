@@ -84,13 +84,6 @@ impl Path {
         self.0.starts_with(&base.0)
     }
 
-    pub(crate) fn ancestors(&self) -> impl Iterator<Item = Path> + '_ {
-        self.0
-            .ancestors()
-            .take_while(|path| !path.as_os_str().is_empty())
-            .map(|path| Path(path.to_path_buf()))
-    }
-
     pub(crate) fn join(&self, rest: &Path) -> Path {
         Path(self.0.join(&rest.0))
     }
@@ -111,6 +104,43 @@ impl Path {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .map(|parent| Path(parent.to_path_buf()))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DirPath(String);
+
+impl DirPath {
+    pub fn root() -> DirPath {
+        DirPath("/".to_string())
+    }
+
+    pub(crate) fn child(&self, name: &str) -> DirPath {
+        DirPath(format!("{}{name}/", self.0))
+    }
+
+    pub fn join(&self, rel: &Path) -> DirPath {
+        self.child(rel.as_str())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    // None for the notes root, whose trimmed form is the empty path
+    pub fn to_path(&self) -> Option<Path> {
+        Path::new(self.0.trim_matches('/')).ok()
+    }
+
+    pub fn relative(&self, at: &Path) -> Option<Path> {
+        let full = format!("/{}", at.as_str());
+        Path::new(full.strip_prefix(&self.0)?).ok()
+    }
+}
+
+impl fmt::Display for DirPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -195,9 +225,25 @@ mod tests {
     }
 
     #[test]
-    fn ancestors_run_nearest_first_to_the_top_level() {
-        let path = Path::new("a/b/c").unwrap();
-        let seen: Vec<String> = path.ancestors().map(|p| p.to_string()).collect();
-        assert_eq!(seen, ["a/b/c", "a/b", "a"]);
+    fn a_directory_always_closes_with_a_separator() {
+        let root = DirPath::root();
+        assert_eq!(root.as_str(), "/");
+        assert_eq!(root.to_path(), None);
+
+        let log = root.child("Log");
+        assert_eq!(log.as_str(), "/Log/");
+        assert_eq!(log.to_path().unwrap(), "Log");
+        assert_eq!(log.join(&Path::new("a/b").unwrap()).as_str(), "/Log/a/b/");
+    }
+
+    #[test]
+    fn relative_re_expresses_only_what_lies_inside() {
+        let work = DirPath::root().child("work");
+        assert_eq!(
+            work.relative(&Path::new("work/a.md").unwrap()).unwrap(),
+            "a.md"
+        );
+        assert_eq!(work.relative(&Path::new("workshop/a.md").unwrap()), None);
+        assert_eq!(work.relative(&Path::new("work").unwrap()), None);
     }
 }

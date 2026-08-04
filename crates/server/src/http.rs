@@ -154,10 +154,8 @@ async fn resolve(
             Some(BearerKind::Macaroon) => {
                 if let Ok(macaroon) = auth.from_bearer(token.expose())
                     && let Ok(grants) = macaroon.authority()
-                    && let Ok(authorization) = Authorization::new(
-                        grants.to_vec(),
-                        Some(Bearer::new(macaroon.expose())),
-                    )
+                    && let Ok(authorization) =
+                        Authorization::new(grants.to_vec(), Some(Bearer::new(macaroon.expose())))
                 {
                     return Ok(Some(authorization));
                 }

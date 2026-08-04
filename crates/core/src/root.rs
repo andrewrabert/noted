@@ -4,13 +4,13 @@ mod log;
 mod note;
 mod task;
 
-use crate::areas::Areas;
-use crate::authority::Authority;
 use crate::error::Result;
+use crate::fragment::PolicyFragment;
 use crate::note::{Condition, Edit, LogNote, LogQuery, TextNote, Trashed};
 use crate::path::Path;
-use crate::policy::Policy;
-use crate::search::{Hit, LogWindow, SearchQuery};
+use crate::policy::RegionPolicy;
+use crate::regions::{RegionDir, Regions};
+use crate::search::{Hit, SearchQuery};
 use crate::store::NotedDir;
 use crate::tasks::{GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskTitle};
 use crate::types::{LogBody, Source, TaskBody};
@@ -20,7 +20,7 @@ use self::note::NoteTools;
 use self::task::TaskTools;
 
 struct Root {
-    areas: Areas,
+    regions: Regions,
     source: Option<Source>,
     note: NoteTools,
     log: LogTools,
@@ -31,33 +31,48 @@ struct Root {
 pub struct NotedRoot(Arc<Root>);
 
 impl NotedRoot {
-    pub fn open(dir: NotedDir, grants: &[Authority], source: Option<Source>) -> Result<NotedRoot> {
-        let policy = Authority::policy(grants)?;
-        Ok(NotedRoot::over(Areas::new(dir, &policy)?, policy, source))
-    }
-
-    pub fn with_authority(&self, authority: &[Authority]) -> Result<NotedRoot> {
-        let policy = Authority::policy(authority)?;
-        let areas = Areas::over(self.0.areas.store(), &policy)?;
-        Ok(NotedRoot::over(areas, policy, self.0.source.clone()))
-    }
-
-    fn over(areas: Areas, policy: Policy, source: Option<Source>) -> NotedRoot {
-        NotedRoot(Arc::new(Root {
-            note: NoteTools::new(areas.notes.clone()),
-            log: LogTools::new(areas.log.clone(), source.clone(), policy.scope().cloned()),
-            task: TaskTools::new(areas.tasks.clone()),
-            areas,
+    pub fn open(dir: NotedDir, source: Option<Source>) -> Result<NotedRoot> {
+        let regions = Regions::open(dir)?;
+        Ok(NotedRoot(Arc::new(Root {
+            note: NoteTools::new(regions.notes.clone()),
+            log: LogTools::new(regions.log.clone(), source.clone()),
+            task: TaskTools::new(regions.tasks.clone()),
+            regions,
             source,
-        }))
+        })))
+    }
+
+    pub fn with_authority(&self, fragments: &[PolicyFragment]) -> Result<NotedRoot> {
+        let source = self.0.source.clone();
+        let regions = fragments.iter().try_fold(
+            self.0.regions.clone(),
+            |regions: Regions, fragment| -> Result<Regions> {
+                regions.with_policy_fragment(fragment)
+            },
+        )?;
+        Ok(NotedRoot(Arc::new(Root {
+            note: NoteTools::new(regions.notes.clone()),
+            log: LogTools::new(regions.log.clone(), source.clone()),
+            task: TaskTools::new(regions.tasks.clone()),
+            regions,
+            source,
+        })))
+    }
+
+    pub(crate) fn policy(&self, dir: RegionDir) -> &RegionPolicy {
+        match dir {
+            RegionDir::Notes => self.0.regions.notes.policy(),
+            RegionDir::Log => self.0.regions.log.policy(),
+            RegionDir::Tasks => self.0.regions.tasks.policy(),
+        }
     }
 
     pub async fn note_search(&self, query: &SearchQuery) -> Result<Vec<Hit>> {
         self.0.note.search(query).await
     }
 
-    pub async fn log_search(&self, window: &LogWindow, query: &SearchQuery) -> Result<Vec<Hit>> {
-        self.0.log.search(window, query).await
+    pub async fn log_search(&self, query: &LogQuery) -> Result<Vec<Hit>> {
+        self.0.log.search(query).await
     }
 
     pub async fn task_search(&self, search: &TaskSearch) -> Result<Vec<Hit<TaskRef>>> {

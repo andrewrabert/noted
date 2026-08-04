@@ -3,10 +3,10 @@ use std::path::Path as StdPath;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
-use noted::error::{NotedError, Result, db_error, io_error, json_error};
 use crate::oauth::types::{
     ClientId, CredentialId, Fingerprint, Label, Owner, PasswordHash, RevocationEpoch, SecretHash,
 };
+use noted::error::{NotedError, Result, db_error, io_error, json_error};
 use noted::types::UnixEpochSeconds;
 
 const USERS: TableDefinition<&str, &[u8]> = TableDefinition::new("users");
@@ -64,7 +64,7 @@ impl CredentialStatus {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct UserRecord {
     pub password_hash: PasswordHash,
-    pub policy: noted::authority::Authority,
+    pub policy: noted::PolicyFragment,
     pub created_at: UnixEpochSeconds,
 }
 
@@ -90,7 +90,7 @@ pub struct ApiKeyCred {
     #[serde(flatten)]
     pub core: CredentialCore,
     pub label: Label,
-    pub policy: noted::authority::Authority,
+    pub policy: noted::PolicyFragment,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -166,14 +166,14 @@ impl CredentialRecord {
         }
     }
 
-    pub fn policy(&self) -> Option<&noted::authority::Authority> {
+    pub fn policy(&self) -> Option<&noted::PolicyFragment> {
         match self {
             CredentialRecord::ApiKey(c) => Some(&c.policy),
             _ => None,
         }
     }
 
-    pub fn set_policy(&mut self, policy: noted::authority::Authority) {
+    pub fn set_policy(&mut self, policy: noted::PolicyFragment) {
         if let CredentialRecord::ApiKey(c) = self {
             c.policy = policy;
         }

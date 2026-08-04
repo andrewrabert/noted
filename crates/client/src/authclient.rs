@@ -7,12 +7,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use crate::credentials::{Credential, CredentialStore};
-use noted::error::{Result, http_error, io_error, rejected, unavailable};
 use noted::HttpUrl;
-use noted_auth::oauth::Macaroon;
-use noted_auth::oauth::types::{AccessToken, ClientId, RefreshToken};
+use noted::error::{Result, http_error, io_error, rejected, unavailable};
 use noted::types::{Ttl, UnixEpochSeconds};
 use noted::util::random_token;
+use noted_auth::oauth::Macaroon;
+use noted_auth::oauth::types::{AccessToken, ClientId, RefreshToken};
 
 async fn get_json(client: &reqwest::Client, url: &HttpUrl) -> Result<Value> {
     let resp = client

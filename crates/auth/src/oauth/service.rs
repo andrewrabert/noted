@@ -3,11 +3,11 @@ use std::sync::Arc;
 use rand::Rng;
 use sha2::{Digest, Sha256};
 
-use noted::authority::Authority;
-use noted::error::{Result, rejected};
 use crate::password::hash_password;
+use noted::error::{Result, rejected};
 use noted::types::{SecondsDuration, Ttl, UnixEpochSeconds};
 use noted::util::random_token;
+use noted::{Authorization, PolicyFragment};
 
 use super::db::{
     ApiKeyCred, CredentialCore, CredentialKind, CredentialRecord, CredentialStatus, Db, KeyRecord,
@@ -97,7 +97,7 @@ pub struct MintedKey {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct UserSummary {
     pub name: Username,
-    pub policy: Authority,
+    pub policy: PolicyFragment,
     pub created_at: UnixEpochSeconds,
 }
 
@@ -111,7 +111,7 @@ pub struct CredentialSummary {
     pub created_at: UnixEpochSeconds,
     pub expires_at: UnixEpochSeconds,
     pub label: Option<Label>,
-    pub policy: Option<Authority>,
+    pub policy: Option<PolicyFragment>,
 }
 
 impl From<CredentialRecord> for CredentialSummary {
@@ -194,11 +194,8 @@ impl AuthService {
                 let owner_authority = self
                     .owner_policy(&identifier)?
                     .ok_or_else(|| rejected("unknown macaroon owner"))?;
-                let fragments = self.verified_fragments(
-                    &macaroon,
-                    Some(&key_record),
-                    vec![owner_authority],
-                )?;
+                let fragments =
+                    self.verified_fragments(&macaroon, Some(&key_record), vec![owner_authority])?;
                 Ok(macaroon.resolved(owner, fragments))
             }
             Mode::Upstream(root) => {
@@ -220,8 +217,8 @@ impl AuthService {
         &self,
         macaroon: &Macaroon,
         key_record: Option<&KeyRecord>,
-        held: Vec<Authority>,
-    ) -> Result<Vec<Authority>> {
+        held: Vec<PolicyFragment>,
+    ) -> Result<Vec<PolicyFragment>> {
         let mut verification = CaveatVerification {
             auth: self,
             key_record,
@@ -233,7 +230,7 @@ impl AuthService {
                 .apply(&mut verification)
                 .ok_or_else(|| rejected("macaroon caveat rejected"))?;
         }
-        Authority::validate_chain(&verification.fragments)
+        Authorization::new(verification.fragments.clone(), None)
             .map_err(|_| rejected("macaroon authority rejected"))?;
         Ok(verification.fragments)
     }
@@ -256,7 +253,7 @@ impl AuthService {
             name.as_str(),
             &UserRecord {
                 password_hash: PasswordHash::new(hash_password(password.expose())),
-                policy: Authority::default(),
+                policy: PolicyFragment::default(),
                 created_at: UnixEpochSeconds::now()?,
             },
         )
@@ -271,7 +268,7 @@ impl AuthService {
         self.db()?.put_user(name.as_str(), &rec)
     }
 
-    pub fn user_set_policy(&self, name: &Username, policy: Authority) -> Result<()> {
+    pub fn user_set_policy(&self, name: &Username, policy: PolicyFragment) -> Result<()> {
         let mut rec = self.require_user(name)?;
         rec.policy = policy;
         self.db()?.put_user(name.as_str(), &rec)
@@ -353,7 +350,7 @@ impl AuthService {
     pub fn key_create(
         &self,
         label: &Label,
-        policy: Authority,
+        policy: PolicyFragment,
         ttl: Option<Ttl>,
     ) -> Result<MintedKey> {
         let secret = mint_secret(PREFIX_KEY);
@@ -399,7 +396,7 @@ impl AuthService {
         &self,
         label: Option<&Label>,
         id: Option<&CredentialId>,
-        policy: Authority,
+        policy: PolicyFragment,
     ) -> Result<usize> {
         let mut n = 0;
         for (hash, mut rec) in self.db()?.scan_credentials()? {
@@ -475,7 +472,7 @@ impl AuthService {
         }
     }
 
-    pub fn resolve_bearer(&self, secret: &str) -> Result<Option<(Owner, Authority)>> {
+    pub fn resolve_bearer(&self, secret: &str) -> Result<Option<(Owner, PolicyFragment)>> {
         let kind = match BearerKind::from_secret(secret) {
             Some(BearerKind::Access) => CredentialKind::Access,
             Some(BearerKind::ApiKey) => CredentialKind::ApiKey,
@@ -498,7 +495,7 @@ impl AuthService {
         }
     }
 
-    pub fn owner_policy(&self, owner: &str) -> Result<Option<Authority>> {
+    pub fn owner_policy(&self, owner: &str) -> Result<Option<PolicyFragment>> {
         match owner.parse::<Owner>() {
             Ok(Owner::User(name)) => match self.db()?.get_user(name.as_str())? {
                 Some(rec) => Ok(Some(rec.policy)),
@@ -519,7 +516,7 @@ impl AuthService {
         }
     }
 
-    fn fragment_of(&self, rec: &CredentialRecord) -> Result<Option<Authority>> {
+    fn fragment_of(&self, rec: &CredentialRecord) -> Result<Option<PolicyFragment>> {
         match rec.kind() {
             CredentialKind::ApiKey => Ok(Some(rec.policy().cloned().unwrap_or_default())),
             _ => match rec.owner() {

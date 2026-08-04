@@ -25,7 +25,11 @@ fn remote_with_token(dir: &tempfile::TempDir, token: Option<&str>) -> Backend {
     .unwrap()
 }
 
-async fn invoke(backend: &Backend, name: &str, args: serde_json::Value) -> noted::Result<ToolOutput> {
+async fn invoke(
+    backend: &Backend,
+    name: &str,
+    args: serde_json::Value,
+) -> noted::Result<ToolOutput> {
     let call = ToolCall::raw(name, args)?;
     backend.with_authority(None)?.invoke(&call).await
 }
@@ -34,9 +38,13 @@ async fn invoke(backend: &Backend, name: &str, args: serde_json::Value) -> noted
 async fn http_success_roundtrip() {
     let dir = common::fixture_dir();
     let backend = remote(&dir);
-    let out = invoke(&backend, "WriteNote", json!({"path": "r.md", "content": "hi"}))
-        .await
-        .unwrap();
+    let out = invoke(
+        &backend,
+        "WriteNote",
+        json!({"path": "r.md", "content": "hi"}),
+    )
+    .await
+    .unwrap();
     assert_eq!(out.render(), "wrote r.md");
     assert_eq!(
         std::fs::read_to_string(common::notes_root(&dir).join("r.md")).unwrap(),
@@ -75,7 +83,7 @@ async fn http_invalid_pattern_maps_from_4xx() {
 async fn http_sends_and_checks_bearer_token() {
     let dir = common::fixture_dir();
     let svc = common::auth_service(&dir);
-    let token = common::mint_key(&svc, "test", noted::Authority::default());
+    let token = common::mint_key(&svc, "test", noted::PolicyFragment::default());
     let authed_app = build_app(common::backend(&dir), Some(svc), None);
 
     let ok_backend = Backend::new(BackendArgs {

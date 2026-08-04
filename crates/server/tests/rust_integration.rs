@@ -288,7 +288,8 @@ async fn mcp_initialize_list_and_call() {
 #[tokio::test]
 async fn mcp_read_only_hides_and_refuses_mutators() {
     let dir = fixture_dir();
-    let policy = r#"{"access":{"read":true,"write":false}}"#.parse::<noted::Authority>().unwrap();
+    let policy =
+        r#"{"access":{"read":true,"write":false}}"#.parse::<noted::PolicyFragment>().unwrap();
     let app = noted_server::http::build_app(common::policed_backend(&dir, policy), None, None);
 
     let list = mcp_post(

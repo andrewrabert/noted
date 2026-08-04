@@ -6,14 +6,13 @@ use std::sync::Arc;
 use axum::Router;
 use axum::http::{HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
-use noted::authority::Authority;
 use noted::note::{Condition, TextNote};
-use noted_auth::oauth::{AuthService, Db};
 use noted::path::Path;
 use noted::search::{Hit, SearchMode, SearchQuery};
 use noted::store::NotedDir;
 use noted::types::Source;
-use noted::{Backend, BackendArgs, NotedRoot, PolicyArgs};
+use noted::{Backend, BackendArgs, NotedRoot, PolicyArgs, PolicyFragment};
+use noted_auth::oauth::{AuthService, Db};
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -34,7 +33,7 @@ pub fn write(root: &NotedRoot, note: &TextNote) -> noted::Result<()> {
     root.note_write(note, Condition::Always)
 }
 
-pub fn held(text: &str) -> Authority {
+pub fn held(text: &str) -> PolicyFragment {
     text.parse().unwrap()
 }
 
@@ -67,7 +66,7 @@ pub fn auth_service(dir: &tempfile::TempDir) -> Arc<AuthService> {
     ))
 }
 
-pub fn mint_key(svc: &AuthService, label: &str, policy: Authority) -> String {
+pub fn mint_key(svc: &AuthService, label: &str, policy: PolicyFragment) -> String {
     let minted = svc
         .key_create(
             &noted_auth::oauth::types::Label::new(label).unwrap(),
@@ -81,8 +80,11 @@ pub fn mint_key(svc: &AuthService, label: &str, policy: Authority) -> String {
 
 pub fn app_with_key(dir: &tempfile::TempDir) -> (Router, String) {
     let svc = auth_service(dir);
-    let token = mint_key(&svc, "test", Authority::default());
-    (noted_server::http::build_app(backend(dir), Some(svc), None), token)
+    let token = mint_key(&svc, "test", PolicyFragment::default());
+    (
+        noted_server::http::build_app(backend(dir), Some(svc), None),
+        token,
+    )
 }
 
 pub fn copy_tree(src: &StdPath, dst: &StdPath) {
@@ -112,27 +114,25 @@ pub fn notes_root(dir: &tempfile::TempDir) -> PathBuf {
 }
 
 pub fn root(dir: &tempfile::TempDir) -> NotedRoot {
-    policed_root(dir, Authority::default())
+    policed_root(dir, PolicyFragment::default())
 }
 
 pub fn confined(dir: &tempfile::TempDir, policy: &str) -> NotedRoot {
     policed_root(dir, held(policy))
 }
 
-pub fn policed_root(dir: &tempfile::TempDir, policy: Authority) -> NotedRoot {
-    NotedRoot::open(
-        NotedDir::new(notes_root(dir)),
-        &[policy],
-        Some(Source::new("test")),
-    )
-    .unwrap()
+pub fn policed_root(dir: &tempfile::TempDir, policy: PolicyFragment) -> NotedRoot {
+    NotedRoot::open(NotedDir::new(notes_root(dir)), Some(Source::new("test")))
+        .unwrap()
+        .with_authority(&[policy])
+        .unwrap()
 }
 
 pub fn backend(dir: &tempfile::TempDir) -> Arc<Backend> {
-    policed_backend(dir, Authority::default())
+    policed_backend(dir, PolicyFragment::default())
 }
 
-pub fn policed_backend(dir: &tempfile::TempDir, policy: Authority) -> Arc<Backend> {
+pub fn policed_backend(dir: &tempfile::TempDir, policy: PolicyFragment) -> Arc<Backend> {
     Arc::new(
         Backend::new(BackendArgs {
             dir: Some(notes_root(dir).display().to_string()),

@@ -2,14 +2,13 @@
 
 use std::path::{Path as StdPath, PathBuf};
 
-use noted::authority::Authority;
 use noted::note::{Condition, TextNote};
 use noted::path::Path;
 use noted::search::{Hit, SearchMode, SearchQuery};
 use noted::store::NotedDir;
 use noted::tools::ToolOutput;
 use noted::types::Source;
-use noted::{Backend, BackendArgs, NotedRoot, PolicyArgs, ToolCall};
+use noted::{Backend, BackendArgs, NotedRoot, PolicyArgs, PolicyFragment, ToolCall};
 use serde_json::Value;
 
 pub fn rp(s: &str) -> Path {
@@ -29,7 +28,7 @@ pub fn write(root: &NotedRoot, note: &TextNote) -> noted::Result<()> {
     root.note_write(note, Condition::Always)
 }
 
-pub fn held(text: &str) -> Authority {
+pub fn held(text: &str) -> PolicyFragment {
     text.parse().unwrap()
 }
 
@@ -81,31 +80,29 @@ pub fn notes_root(dir: &tempfile::TempDir) -> PathBuf {
 }
 
 pub fn root(dir: &tempfile::TempDir) -> NotedRoot {
-    policed_root(dir, Authority::default())
+    policed_root(dir, PolicyFragment::default())
 }
 
 pub fn confined(dir: &tempfile::TempDir, policy: &str) -> NotedRoot {
     policed_root(dir, held(policy))
 }
 
-pub fn policed_root(dir: &tempfile::TempDir, policy: Authority) -> NotedRoot {
-    NotedRoot::open(
-        NotedDir::new(notes_root(dir)),
-        &[policy],
-        Some(Source::new("test")),
-    )
-    .unwrap()
+pub fn policed_root(dir: &tempfile::TempDir, policy: PolicyFragment) -> NotedRoot {
+    NotedRoot::open(NotedDir::new(notes_root(dir)), Some(Source::new("test")))
+        .unwrap()
+        .with_authority(&[policy])
+        .unwrap()
 }
 
 pub fn backend(dir: &tempfile::TempDir) -> Backend {
-    policed_backend(dir, Authority::default())
+    policed_backend(dir, PolicyFragment::default())
 }
 
 pub fn confined_backend(dir: &tempfile::TempDir, policy: &str) -> Backend {
     policed_backend(dir, held(policy))
 }
 
-pub fn policed_backend(dir: &tempfile::TempDir, policy: Authority) -> Backend {
+pub fn policed_backend(dir: &tempfile::TempDir, policy: PolicyFragment) -> Backend {
     Backend::new(BackendArgs {
         dir: Some(notes_root(dir).display().to_string()),
         source: Some("test".to_string()),

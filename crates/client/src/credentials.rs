@@ -3,12 +3,12 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use noted::error::{Result, io_error, json_error, unavailable, yaml_error};
 use noted::HttpUrl;
-use noted_auth::oauth::Macaroon;
-use noted_auth::oauth::types::{AccessToken, ClientId, RefreshToken};
+use noted::error::{Result, io_error, json_error, unavailable, yaml_error};
 use noted::types::UnixEpochSeconds;
 use noted::util::atomic_write;
+use noted_auth::oauth::Macaroon;
+use noted_auth::oauth::types::{AccessToken, ClientId, RefreshToken};
 
 #[derive(Clone, Debug)]
 pub struct Credential {

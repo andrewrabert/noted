@@ -1,8 +1,8 @@
 mod common;
 
 use common::{backend, fixture_dir, invoke};
-use noted::authorization::Authorization;
 use noted::Backend;
+use noted::authorization::Authorization;
 use serde_json::json;
 
 /// Must match `run_tool`'s unknown-tool sentinel message verbatim.
@@ -81,8 +81,8 @@ fn arg_schema_defaults_are_pinned() {
         ("SearchTasks", "prefix", json!("")),
         ("SearchTasks", "include_completed", json!(false)),
         ("GetLog", "body", json!(false)),
-        ("GetLog", "offset", json!(0)),
         ("GetLog", "limit", json!(20)),
+        ("SearchLog", "limit", json!(20)),
         ("EditNote", "replace_all", json!(false)),
         ("MoveNote", "overwrite", json!(false)),
         ("CreateTask", "group", json!("")),
