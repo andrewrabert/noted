@@ -45,7 +45,7 @@ impl LogTools {
             let entry = LogNote::new(Path::new(&name)?, front.clone(), body.as_str());
             match self.region.write(
                 entry.path(),
-                &entry.to_bytes()?,
+                &entry.to_bytes(),
                 crate::note::Condition::Missing,
             ) {
                 Ok(()) => return Ok(entry),

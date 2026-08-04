@@ -55,7 +55,7 @@ impl fmt::Display for PolicyFragment {
 impl FromStr for PolicyFragment {
     type Err = NotedError;
     fn from_str(s: &str) -> Result<PolicyFragment> {
-        serde_yaml::from_str(s).map_err(|e| rejected(format!("invalid policy: {e}")))
+        serde_json::from_str(s).map_err(|e| rejected(format!("invalid policy: {e}")))
     }
 }
 

@@ -919,3 +919,20 @@ async fn search_admits_only_what_the_grant_allows() {
         "a prefix the policy denies outright is refused"
     );
 }
+
+// 'Fix: it', "don't", '- dash', 'naïve 🎉'
+#[test]
+fn a_tricky_title_round_trips_through_the_file() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    for (n, title) in ["Fix: it", "don't", "- dash", "naïve 🎉", "#1", "true"]
+        .iter()
+        .enumerate()
+    {
+        let group = format!("g{n}");
+        let made = create(&root, title, &group, "").unwrap();
+        assert_eq!(made.front().task, tt(title));
+        let read = get(&root, &group, true).unwrap();
+        assert_eq!(read[0].front().task, tt(title), "title {title:?}");
+    }
+}

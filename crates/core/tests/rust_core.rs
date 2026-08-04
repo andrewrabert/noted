@@ -68,9 +68,9 @@ fn log_note_writes_one_file_with_front_matter() {
     let rel = logged.path().to_string();
     assert!(rel.starts_with("20"), "{rel}");
     let on_disk = std::fs::read_to_string(notes_root(&dir).join("Log").join(&rel)).unwrap();
-    let text = String::from_utf8(logged.to_bytes().unwrap()).unwrap();
+    let text = String::from_utf8(logged.to_bytes()).unwrap();
     assert_eq!(text, on_disk);
-    assert_eq!(logged.etag().unwrap(), note(&rel, &on_disk).etag());
+    assert_eq!(logged.etag(), note(&rel, &on_disk).etag());
 
     assert!(text.starts_with("---\n"));
     assert!(text.ends_with('\n'));
@@ -102,7 +102,7 @@ fn log_note_records_no_source_when_the_caller_has_none() {
     let dir = fixture_dir();
     let root = noted::NotedRoot::open(noted::store::NotedDir::new(notes_root(&dir)), None).unwrap();
     let logged = root.log_note(&"anonymous\n".into()).unwrap();
-    let text = String::from_utf8(logged.to_bytes().unwrap()).unwrap();
+    let text = String::from_utf8(logged.to_bytes()).unwrap();
     assert!(!text.contains("source:"), "{text}");
 }
 

@@ -11,7 +11,7 @@ use noted_auth::oauth::{AuthService, Db, Macaroon};
 use noted_client::credentials::{Credential, CredentialStore};
 
 fn store(dir: &tempfile::TempDir) -> CredentialStore {
-    CredentialStore::open_plaintext_at(dir.path().join("hosts.yaml"))
+    CredentialStore::open_plaintext_at(dir.path().join("hosts.json"))
 }
 
 fn url(s: &str) -> HttpUrl {
@@ -88,7 +88,7 @@ fn pointer_file_holds_no_secret() {
     let c = cred(&dir);
     let root_macaroon = c.root_macaroon.as_ref().unwrap().expose().to_string();
     store(&dir).set(&url("https://notes.example"), &c).unwrap();
-    let hosts = std::fs::read_to_string(dir.path().join("hosts.yaml")).unwrap();
+    let hosts = std::fs::read_to_string(dir.path().join("hosts.json")).unwrap();
     assert!(hosts.contains("cid-123") && hosts.contains("ann"));
     assert!(!hosts.contains("acc-secret"));
     assert!(!hosts.contains("ref-secret"));

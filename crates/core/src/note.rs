@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::{NotedError, Result, rejected};
-use crate::front_matter::{dump_front, split_front};
+use crate::front_matter::{FrontMatter, split_front};
 use crate::path::Path;
 use crate::search::SearchQuery;
 use crate::timerange::TimeRange;
@@ -143,10 +143,9 @@ impl fmt::Display for Trashed {
 
 /// The one contract every note kind shares: it can serialize itself to the exact
 /// bytes it persists as. Everything else — mutability, schema, immutability — is
-/// the concern of the specific kind. `to_bytes` is fallible because a kind with
-/// structured frontmatter (Task, Log) can fail to serialize.
+/// the concern of the specific kind.
 pub trait Note {
-    fn to_bytes(&self) -> Result<Vec<u8>>;
+    fn to_bytes(&self) -> Vec<u8>;
 }
 
 /// A freeform, mutable, unstructured markdown note — the default kind. No schema,
@@ -190,20 +189,37 @@ impl TextNote {
 }
 
 impl Note for TextNote {
-    fn to_bytes(&self) -> Result<Vec<u8>> {
-        Ok(self.body.as_str().as_bytes().to_vec())
+    fn to_bytes(&self) -> Vec<u8> {
+        self.body.as_str().as_bytes().to_vec()
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct LogFront {
     pub created: Timestamp,
-    #[serde(default)]
     pub cwd: String,
-    #[serde(default)]
     pub host: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<Source>,
+}
+
+impl LogFront {
+    pub(crate) fn read(front: &FrontMatter) -> Result<LogFront> {
+        Ok(LogFront {
+            created: front.field("created")?,
+            cwd: front.get("cwd").unwrap_or_default().to_string(),
+            host: front.get("host").unwrap_or_default().to_string(),
+            source: front.opt_field("source")?,
+        })
+    }
+
+    pub(crate) fn write(&self) -> FrontMatter {
+        let mut front = FrontMatter::default();
+        front.set("created", self.created.to_string());
+        front.set("cwd", self.cwd.clone());
+        front.set("host", self.host.clone());
+        front.set_opt("source", self.source.clone().map(String::from));
+        front
+    }
 }
 
 pub struct LogQuery {
@@ -231,8 +247,8 @@ impl LogNote {
     pub(crate) fn from_bytes(path: Path, bytes: &[u8]) -> Result<LogNote> {
         let text = std::str::from_utf8(bytes).map_err(|_| rejected("not a log entry"))?;
         let (block, body) = split_front(text).ok_or_else(|| rejected("not a log entry"))?;
-        let front: LogFront =
-            serde_yaml::from_str(block).map_err(|_| rejected("not a log entry"))?;
+        let front = FrontMatter::parse(block).map_err(|_| rejected("not a log entry"))?;
+        let front = LogFront::read(&front).map_err(|_| rejected("not a log entry"))?;
         Ok(LogNote::new(path, front, body))
     }
 
@@ -248,14 +264,14 @@ impl LogNote {
         &self.body
     }
 
-    pub fn etag(&self) -> Result<Etag> {
-        Ok(Etag::of(&self.to_bytes()?))
+    pub fn etag(&self) -> Etag {
+        Etag::of(&self.to_bytes())
     }
 }
 
 impl Note for LogNote {
-    fn to_bytes(&self) -> Result<Vec<u8>> {
-        Ok(dump_front(&self.front, &self.body)?.into_bytes())
+    fn to_bytes(&self) -> Vec<u8> {
+        self.front.write().dump(&self.body).into_bytes()
     }
 }
 
@@ -289,7 +305,7 @@ impl BinaryNote {
 }
 
 impl Note for BinaryNote {
-    fn to_bytes(&self) -> Result<Vec<u8>> {
-        Ok(self.bytes.clone())
+    fn to_bytes(&self) -> Vec<u8> {
+        self.bytes.clone()
     }
 }

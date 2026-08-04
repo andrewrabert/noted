@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use noted::HttpUrl;
-use noted::error::{Result, io_error, json_error, unavailable, yaml_error};
+use noted::error::{Result, io_error, json_error, unavailable};
 use noted::types::UnixEpochSeconds;
 use noted::util::atomic_write;
 use noted_auth::oauth::Macaroon;
@@ -84,10 +84,10 @@ struct PlaintextFile {
 
 impl PlaintextFile {
     fn load(&self) -> Result<BTreeMap<String, String>> {
-        load_yaml(&self.path)
+        load_json(&self.path)
     }
     fn save(&self, map: &BTreeMap<String, String>) -> Result<()> {
-        save_yaml(&self.path, map)
+        save_json(&self.path, map)
     }
 }
 
@@ -225,16 +225,16 @@ impl CredentialStore {
     }
 
     fn load_hosts(&self) -> Result<BTreeMap<String, Pointer>> {
-        load_yaml(&self.hosts_path)
+        load_json(&self.hosts_path)
     }
 
     fn save_hosts(&self, hosts: &BTreeMap<String, Pointer>) -> Result<()> {
-        save_yaml(&self.hosts_path, hosts)
+        save_json(&self.hosts_path, hosts)
     }
 }
 
 fn secrets_path(hosts_path: &std::path::Path) -> PathBuf {
-    hosts_path.with_file_name("secrets.yaml")
+    hosts_path.with_file_name("secrets.json")
 }
 
 fn keyring_available() -> bool {
@@ -247,20 +247,22 @@ fn keyring_available() -> bool {
     }
 }
 
-fn load_yaml<T: for<'de> Deserialize<'de> + Default>(path: &std::path::Path) -> Result<T> {
+fn load_json<T: for<'de> Deserialize<'de> + Default>(path: &std::path::Path) -> Result<T> {
     match std::fs::read_to_string(path) {
-        Ok(text) => serde_yaml::from_str(&text).map_err(|e| yaml_error("credential store", e)),
+        Ok(text) => serde_json::from_str(&text).map_err(|e| json_error("credential store", e)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
         Err(e) => Err(io_error("credential store", e)),
     }
 }
 
-fn save_yaml<T: Serialize>(path: &std::path::Path, value: &T) -> Result<()> {
+fn save_json<T: Serialize>(path: &std::path::Path, value: &T) -> Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
         std::fs::create_dir_all(parent).map_err(|e| io_error("credential store", e))?;
     }
-    let yaml = serde_yaml::to_string(value).map_err(|e| yaml_error("credential store", e))?;
-    atomic_write(path, yaml.as_bytes())
+    let mut json =
+        serde_json::to_string_pretty(value).map_err(|e| json_error("credential store", e))?;
+    json.push('\n');
+    atomic_write(path, json.as_bytes())
 }

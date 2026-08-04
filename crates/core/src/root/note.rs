@@ -28,7 +28,7 @@ impl NoteTools {
     }
 
     pub(super) fn write(&self, note: &TextNote, condition: Condition) -> Result<()> {
-        self.region.write(note.path(), &note.to_bytes()?, condition)
+        self.region.write(note.path(), &note.to_bytes(), condition)
     }
 
     pub(super) fn edit(&self, path: &Path, edit: &Edit) -> Result<TextNote> {

@@ -30,7 +30,6 @@ fn error_response(error: NotedError) -> Response {
         NotedError::Unavailable(_)
         | NotedError::Io { .. }
         | NotedError::Json { .. }
-        | NotedError::Yaml { .. }
         | NotedError::Db { .. }
         | NotedError::Http { .. } => StatusCode::SERVICE_UNAVAILABLE,
     };

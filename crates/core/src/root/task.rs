@@ -113,7 +113,7 @@ impl TaskTools {
         let draft = TaskNote::new(title.clone(), body.clone());
         let path = self.claim(
             group.to_path().as_ref(),
-            Placement::Fresh(&draft.to_bytes()?),
+            Placement::Fresh(&draft.to_bytes()),
         )?;
         Ok(draft.with_path(TaskTools::named_by(&path)?))
     }
@@ -184,7 +184,7 @@ impl TaskTools {
         let updated = self.existing(&entry)?.changed(change)?;
         self.region.write(
             &self.region.body_of(&entry, Reserved::TaskBody)?,
-            &updated.to_bytes()?,
+            &updated.to_bytes(),
             Condition::Always,
         )?;
         Ok(updated)
@@ -216,7 +216,7 @@ impl TaskTools {
         };
         self.region.write(
             &self.region.body_of(&dest, Reserved::TaskBody)?,
-            &relocated.to_bytes()?,
+            &relocated.to_bytes(),
             Condition::Always,
         )?;
         Ok(relocated.with_path(TaskTools::named_by(&dest)?))

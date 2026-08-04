@@ -27,12 +27,6 @@ pub enum NotedError {
         source: serde_json::Error,
     },
     #[error("{context}")]
-    Yaml {
-        context: String,
-        #[source]
-        source: serde_yaml::Error,
-    },
-    #[error("{context}")]
     Db {
         context: String,
         #[source]
@@ -55,7 +49,6 @@ impl NotedError {
             NotedError::InvalidInput(m) | NotedError::Unavailable(m) => Cow::Borrowed(m),
             NotedError::Io { context, .. }
             | NotedError::Json { context, .. }
-            | NotedError::Yaml { context, .. }
             | NotedError::Db { context, .. }
             | NotedError::Http { context, .. } => Cow::Borrowed(context),
         }
@@ -97,13 +90,6 @@ pub fn io_error(context: impl Into<String>, source: std::io::Error) -> NotedErro
 
 pub fn json_error(context: impl Into<String>, source: serde_json::Error) -> NotedError {
     NotedError::Json {
-        context: context.into(),
-        source,
-    }
-}
-
-pub fn yaml_error(context: impl Into<String>, source: serde_yaml::Error) -> NotedError {
-    NotedError::Yaml {
         context: context.into(),
         source,
     }

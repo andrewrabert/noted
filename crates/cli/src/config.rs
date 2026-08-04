@@ -39,7 +39,7 @@ pub fn credential_store_config() -> Result<CredentialStoreConfig> {
         _ => {
             let dir = dirs::config_dir().ok_or_else(|| rejected("cannot determine config dir"))?;
             Ok(CredentialStoreConfig {
-                hosts_path: dir.join("noted").join("hosts.yaml"),
+                hosts_path: dir.join("noted").join("hosts.json"),
                 storage: SecretStorage::Auto,
             })
         }

@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{NotedError, Result, rejected};
-use crate::front_matter::{dump_front, split_front};
+use crate::front_matter::{FrontMatter, split_front};
 use crate::newtype::{str_newtype_validated, str_surface};
 use crate::note::Note;
 use crate::path::{Path, Reserved};
@@ -243,7 +243,7 @@ pub(crate) fn numbered(stem: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct TaskFront {
     pub task: TaskTitle,
     pub state: TaskState,
@@ -251,33 +251,31 @@ pub struct TaskFront {
     pub updated_at: Timestamp,
 }
 
-#[derive(Deserialize)]
-struct TaskFrontWire {
-    task: Option<TaskTitle>,
-    #[serde(default)]
-    state: TaskState,
-    created_at: Option<Timestamp>,
-    updated_at: Option<Timestamp>,
-}
-
-impl TaskFrontWire {
-    fn into_front(self) -> Option<TaskFront> {
-        let task = self.task?;
-        let created_at = self.created_at?;
-        let updated_at = self.updated_at.unwrap_or(created_at);
-        Some(TaskFront {
-            task,
-            state: self.state,
+impl TaskFront {
+    pub(crate) fn read(front: &FrontMatter) -> Result<TaskFront> {
+        let created_at: Timestamp = front.field("created_at")?;
+        Ok(TaskFront {
+            task: front.field("task")?,
+            state: front.opt_field("state")?.unwrap_or_default(),
             created_at,
-            updated_at,
+            updated_at: front.opt_field("updated_at")?.unwrap_or(created_at),
         })
+    }
+
+    pub(crate) fn write(&self) -> FrontMatter {
+        let mut front = FrontMatter::default();
+        front.set("task", self.task.as_str());
+        front.set("state", self.state.as_str());
+        front.set("created_at", self.created_at.to_string());
+        front.set("updated_at", self.updated_at.to_string());
+        front
     }
 }
 
 pub fn parse_task_file(text: &str) -> (Option<TaskFront>, TaskBody) {
     match split_front(text) {
-        Some((block, body)) => match serde_yaml::from_str::<TaskFrontWire>(block) {
-            Ok(wire) => (wire.into_front(), TaskBody::new(body)),
+        Some((block, body)) => match FrontMatter::parse(block).and_then(|f| TaskFront::read(&f)) {
+            Ok(front) => (Some(front), TaskBody::new(body)),
             Err(_) => (None, TaskBody::new(text)),
         },
         None => (None, TaskBody::new(text)),
@@ -404,7 +402,7 @@ impl TaskNote {
 }
 
 impl Note for TaskNote {
-    fn to_bytes(&self) -> Result<Vec<u8>> {
-        Ok(dump_front(&self.front, self.body.as_str())?.into_bytes())
+    fn to_bytes(&self) -> Vec<u8> {
+        self.front.write().dump(self.body.as_str()).into_bytes()
     }
 }

@@ -25,7 +25,7 @@ fn text_that_is_not_an_instant_is_refused() {
 #[test]
 fn serde_refuses_a_bad_stamp() {
     assert!(serde_json::from_str::<Timestamp>("\"X\"").is_err());
-    assert!(serde_yaml::from_str::<Timestamp>("X").is_err());
+    assert!(serde_json::from_str::<Timestamp>("\"X\"").is_err());
 }
 
 #[test]

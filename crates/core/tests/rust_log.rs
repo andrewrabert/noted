@@ -1,7 +1,7 @@
 mod common;
 
-use common::{backend, confined_backend, fixture_dir, invoke};
-use noted::Backend;
+use common::{backend, confined_backend, fixture_dir, invoke, root};
+use noted::{Backend, Note as _};
 use serde_json::{Value, json};
 
 const JUNE: &str = "2026-06-15T08-30-00.000000-0700.md";
@@ -219,4 +219,23 @@ async fn search_refuses_an_unusable_pattern() {
             .await
             .is_err()
     );
+}
+
+// created, cwd, host, source, each on its own plain line
+#[test]
+fn a_minted_entry_writes_the_fields_in_order() {
+    let dir = fixture_dir();
+    let entry = root(&dir).log_note(&"minted\n".into()).unwrap();
+    let text = String::from_utf8(entry.to_bytes()).unwrap();
+    let block = text
+        .strip_prefix("---\n")
+        .and_then(|rest| rest.split_once("\n---\n"))
+        .expect("an entry frames its front matter")
+        .0;
+    let keys: Vec<&str> = block
+        .lines()
+        .map(|line| line.split_once(": ").expect("a plain pair").0)
+        .collect();
+    assert_eq!(keys, vec!["created", "cwd", "host", "source"], "{block}");
+    assert!(block.contains("source: test"), "{block}");
 }

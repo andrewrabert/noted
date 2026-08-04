@@ -413,3 +413,9 @@ fn a_name_never_matches_across_a_name_boundary() {
     assert!(read(&root, "work/a.md").is_err());
     assert!(read(&root, "workshop/a.md").is_ok());
 }
+
+#[test]
+fn a_yaml_fragment_is_refused() {
+    assert!("scope: dev\n".parse::<PolicyFragment>().is_err());
+    assert!("access:\n  read: true\n".parse::<PolicyFragment>().is_err());
+}
