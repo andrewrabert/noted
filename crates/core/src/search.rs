@@ -89,10 +89,21 @@ fn validate_file_type(s: &str) -> Result<()> {
     Ok(())
 }
 
+// 'path' is case-insensitive path order
+// 'modified' puts the most recently modified file first, ties broken by path
+#[derive(Serialize, Deserialize, JsonSchema, ValueEnum, Default, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchOrder {
+    #[default]
+    Path,
+    Modified,
+}
+
 #[derive(Clone, Default)]
 pub struct SearchQuery {
     pub pattern: SearchPattern,
     pub mode: SearchMode,
+    pub order: SearchOrder,
     pub context: u32,
     pub fixed: bool,
     pub case: CaseMode,

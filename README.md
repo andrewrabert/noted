@@ -21,7 +21,7 @@ noted <command>
   read    Read a note by relative path
   write   Write a note, overwriting it
   edit    Revise a note via string-replace
-  open    Open a note in $EDITOR; with no path, fuzzy-pick one
+  open    Open a note in $EDITOR; with no path, fuzzy-pick one, newest first
   move    Move or rename a note or folder
   delete  Move a note to .trash/ (recoverable)
   log     Log entries (create/get/search)

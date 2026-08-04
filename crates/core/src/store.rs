@@ -1,6 +1,7 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use grep::searcher::SearcherBuilder;
 use ignore::{WalkBuilder, WalkState};
@@ -9,7 +10,7 @@ use crate::error::{NotedError, Result, io_error, rejected, unavailable};
 use crate::note::{Condition, Etag};
 use crate::path::{DirPath, Path};
 use crate::policy::{Readable, Writeable};
-use crate::search::{Hit, LineSink, SearchMode, SearchQuery, build_matcher, narrow};
+use crate::search::{Hit, LineSink, SearchMode, SearchOrder, SearchQuery, build_matcher, narrow};
 use crate::util::{IgnoreFilter, atomic_write, normalize};
 
 const TRASH: &str = ".trash";
@@ -24,7 +25,19 @@ impl NotedDir {
 
 pub(crate) struct RawHit {
     path: Path,
+    modified: SystemTime,
     lines: BTreeMap<u64, String>,
+}
+
+fn ordered(hits: &mut [RawHit], order: SearchOrder) {
+    match order {
+        SearchOrder::Path => hits.sort_by(|a, b| a.path.cmp(&b.path)),
+        SearchOrder::Modified => hits.sort_by(|a, b| {
+            b.modified
+                .cmp(&a.modified)
+                .then_with(|| a.path.cmp(&b.path))
+        }),
+    }
 }
 
 impl RawHit {
@@ -250,8 +263,8 @@ impl Store {
         let query = query.clone();
 
         tokio::task::spawn_blocking(move || {
-            let lines: Mutex<HashMap<Path, BTreeMap<u64, String>>> = Mutex::new(HashMap::new());
-            let walked: Mutex<Vec<Path>> = Mutex::new(Vec::new());
+            let matched: Mutex<Vec<RawHit>> = Mutex::new(Vec::new());
+            let walked: Mutex<Vec<RawHit>> = Mutex::new(Vec::new());
 
             let mut wb = store.walk_builder(&base);
             narrow(&mut wb, &base, &query)?;
@@ -263,7 +276,7 @@ impl Store {
                     .after_context(query.context as usize)
                     .build();
                 let matcher = matcher.as_ref();
-                let lines = &lines;
+                let matched = &matched;
                 let walked = &walked;
                 let store = &store;
                 Box::new(move |entry| {
@@ -274,6 +287,10 @@ impl Store {
                         Some(kind) if kind.is_file() => {}
                         _ => return WalkState::Continue,
                     }
+                    let modified = entry
+                        .metadata()
+                        .and_then(|meta| meta.modified().map_err(ignore::Error::from))
+                        .unwrap_or(SystemTime::UNIX_EPOCH);
                     let path = entry.into_path();
                     let Some(rel) = store.rel(&path) else {
                         return WalkState::Continue;
@@ -284,38 +301,34 @@ impl Store {
                             return WalkState::Continue;
                         }
                         if !sink.lines.is_empty() {
-                            lines
+                            matched
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
-                                .entry(rel)
-                                .or_default()
-                                .extend(sink.lines);
+                                .push(RawHit {
+                                    path: rel,
+                                    modified,
+                                    lines: sink.lines,
+                                });
                             return WalkState::Continue;
                         }
                     }
-                    walked.lock().unwrap_or_else(|e| e.into_inner()).push(rel);
+                    walked
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(RawHit {
+                            path: rel,
+                            modified,
+                            lines: BTreeMap::new(),
+                        });
                     WalkState::Continue
                 })
             });
 
-            let mut hits: Vec<RawHit> = lines
-                .into_inner()
-                .unwrap_or_else(|e| e.into_inner())
-                .into_iter()
-                .map(|(path, lines)| RawHit { path, lines })
-                .collect();
+            let mut hits = matched.into_inner().unwrap_or_else(|e| e.into_inner());
             if matches!(query.mode, SearchMode::Any | SearchMode::Path) {
-                hits.extend(
-                    walked
-                        .into_inner()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .into_iter()
-                        .map(|path| RawHit {
-                            path,
-                            lines: BTreeMap::new(),
-                        }),
-                );
+                hits.extend(walked.into_inner().unwrap_or_else(|e| e.into_inner()));
             }
+            ordered(&mut hits, query.order);
             Ok(hits)
         })
         .await

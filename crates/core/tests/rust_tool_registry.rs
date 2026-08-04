@@ -70,6 +70,7 @@ fn arg_schema_defaults_are_pinned() {
     for (tool, field, want) in [
         ("SearchNotes", "pattern", json!(".")),
         ("SearchNotes", "mode", json!("any")),
+        ("SearchNotes", "sort", json!("path")),
         ("SearchNotes", "context", json!(1)),
         ("SearchNotes", "fixed", json!(false)),
         ("SearchLog", "pattern", json!(".")),
@@ -148,4 +149,11 @@ async fn unregistered_name_is_rejected() {
         matches!(err, noted::NotedError::NotFound),
         "expected an unknown tool name to be not-found, got: {err:?}"
     );
+}
+
+#[test]
+fn the_picker_query_asks_for_recency() {
+    let args = serde_json::to_value(noted::tools::SearchNotesArgs::recent()).unwrap();
+    assert_eq!(args["mode"], json!("path"));
+    assert_eq!(args["sort"], json!("modified"));
 }

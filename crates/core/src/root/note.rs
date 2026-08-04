@@ -15,9 +15,7 @@ impl NoteTools {
 
     pub(super) async fn search(&self, query: &SearchQuery) -> Result<Vec<Hit>> {
         let hits = self.region.search(None, query).await?;
-        let mut hits = assemble(query, hits)?;
-        hits.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(hits)
+        assemble(query, hits)
     }
 
     pub(super) fn read(&self, path: &Path) -> Result<TextNote> {

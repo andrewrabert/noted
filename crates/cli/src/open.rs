@@ -87,7 +87,7 @@ fn pick_path(backend: &AuthorizedBackend<'_>) -> Result<Pick> {
 }
 
 async fn list_paths(backend: &AuthorizedBackend<'_>) -> Result<Vec<String>> {
-    let call = ToolCall::new(SearchNotesArgs::paths())?;
+    let call = ToolCall::new(SearchNotesArgs::recent())?;
     match backend.invoke(&call).await? {
         ToolOutput::Text(s) => Ok(parse_paths(&s)),
         other => Err(rejected(format!(

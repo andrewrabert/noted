@@ -542,3 +542,58 @@ fn condition_from_str_and_etag_roundtrip() {
     assert!("zz".parse::<Etag>().is_err());
     assert!(format!("exists:{h}").parse::<Condition>().is_ok());
 }
+
+fn stamp(dir: &tempfile::TempDir, rel: &str, body: &str, seconds: u64) {
+    let path = notes_root(dir).join(rel);
+    std::fs::write(&path, body).unwrap();
+    let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+        .unwrap();
+}
+
+#[tokio::test]
+async fn search_sorted_by_modified_lists_newest_first() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    stamp(&dir, "sorta.md", "sortable\n", 1_000);
+    stamp(&dir, "sortb.md", "sortable\n", 2_000);
+    stamp(&dir, "sortc.md", "sortable\n", 3_000);
+
+    let recent = SearchQuery {
+        order: noted::search::SearchOrder::Modified,
+        ..query("sortable", SearchMode::File)
+    };
+    let paths: Vec<String> = root
+        .note_search(&recent)
+        .await
+        .unwrap()
+        .iter()
+        .map(|h| h.path.to_string())
+        .collect();
+    assert_eq!(paths, vec!["sortc.md", "sortb.md", "sorta.md"]);
+}
+
+#[tokio::test]
+async fn search_without_sort_keeps_path_order() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    stamp(&dir, "sorta.md", "sortable\n", 3_000);
+    stamp(&dir, "sortb.md", "sortable\n", 2_000);
+    stamp(&dir, "sortc.md", "sortable\n", 1_000);
+
+    for mode in [SearchMode::Path, SearchMode::File, SearchMode::Line] {
+        let pattern = match mode {
+            SearchMode::Path => "sort",
+            _ => "sortable",
+        };
+        let paths: Vec<String> = root
+            .note_search(&query(pattern, mode))
+            .await
+            .unwrap()
+            .iter()
+            .map(|h| h.path.to_string())
+            .filter(|p| p.starts_with("sort"))
+            .collect();
+        assert_eq!(paths, vec!["sorta.md", "sortb.md", "sortc.md"]);
+    }
+}

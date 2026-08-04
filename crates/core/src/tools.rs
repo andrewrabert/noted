@@ -9,7 +9,9 @@ use crate::path::Path;
 use crate::policy::RegionPolicy;
 use crate::regions::RegionDir;
 use crate::root::NotedRoot;
-use crate::search::{CaseMode, FileType, GlobPattern, Hit, SearchMode, SearchPattern, SearchQuery};
+use crate::search::{
+    CaseMode, FileType, GlobPattern, Hit, SearchMode, SearchOrder, SearchPattern, SearchQuery,
+};
 use crate::tasks::{
     GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskState, TaskTitle,
 };
@@ -265,7 +267,7 @@ pub(crate) fn permitted(
         .collect()
 }
 
-const D_SEARCH_NOTES: &str = "Find notes by regular expression. 'pattern' is smart-case by default (case-insensitive unless it contains an uppercase letter; use '(?i)'/'(?-i)' to force) and defaults to '.' (matches everything, i.e. lists). 'mode' picks the result: 'any' (default) returns files matching by contents or path; 'line' returns 'path:lineno:text' matches ('--' between files) with 'context' surrounding lines; 'file' returns files whose contents match; 'path' returns files whose path matches. 'fixed' matches the pattern literally instead of as a regex. 'glob' restricts which paths are searched: a bare name scopes to that subtree/file, a '!'-prefixed entry excludes (repeatable). Log/ and Tasks/ are never searched here — use SearchLog and SearchTasks for those.";
+const D_SEARCH_NOTES: &str = "Find notes by regular expression. 'pattern' is smart-case by default (case-insensitive unless it contains an uppercase letter; use '(?i)'/'(?-i)' to force) and defaults to '.' (matches everything, i.e. lists). 'mode' picks the result: 'any' (default) returns files matching by contents or path; 'line' returns 'path:lineno:text' matches ('--' between files) with 'context' surrounding lines; 'file' returns files whose contents match; 'path' returns files whose path matches. 'fixed' matches the pattern literally instead of as a regex. 'glob' restricts which paths are searched: a bare name scopes to that subtree/file, a '!'-prefixed entry excludes (repeatable). 'sort' orders the result: 'path' (default) is case-insensitive path order; 'modified' puts the most recently modified note first. Log/ and Tasks/ are never searched here — use SearchLog and SearchTasks for those.";
 const D_SEARCH_LOG: &str = "Find log entries by regular expression. Searches the log region and nothing else; results come back newest entry first. 'pattern', 'mode', 'context' and 'fixed' work as in SearchNotes, except 'mode' defaults to 'line'. 'since', 'until' and 'limit' bound which entries are considered, exactly as in GetLog. There is no 'glob'.";
 const D_SEARCH_TASKS: &str = "Find tasks by regular expression. Searches Tasks/ and nothing else; results come back newest-updated first, one task path per line (e.g. 'dev/noted/task_0001'). 'pattern', 'mode', 'context' and 'fixed' work as in SearchNotes. 'prefix' narrows to a group (e.g. 'dev') and defaults to the whole tree. Closed tasks (completed/rejected/invalid) are hidden unless include_completed is set. There is no 'glob' — the prefix is the only narrowing. Read a matched task in full with GetTasks.";
 const D_GET_LOG: &str = "Read log entries as summary records, newest first, without a pattern. 'since' and 'until' are inclusive bounds, each an iso8601 datetime ('2026-07-01T09:15'), a date ('2026-07-01'), a year or month ('2026', '2026-07'), or a duration back from now ('P7D', 'PT36H'); a coarse bound widens to its span. 'body' attaches each entry's text to the record. 'limit' caps the result (default 20, max 1000). Page by passing the oldest returned entry's 'created' back as 'until'. Always returns a JSON array. Use SearchLog to match text instead.";
@@ -301,6 +303,9 @@ pub struct SearchNotesArgs {
     #[arg(long, default_value = "any")]
     #[serde(default)]
     mode: SearchMode,
+    #[arg(long, default_value = "path")]
+    #[serde(default)]
+    sort: SearchOrder,
     #[arg(long, default_value_t = 1)]
     #[serde(default = "default_context")]
     context: i64,
@@ -329,10 +334,11 @@ pub struct SearchNotesArgs {
 }
 
 impl SearchNotesArgs {
-    pub fn paths() -> SearchNotesArgs {
+    pub fn recent() -> SearchNotesArgs {
         SearchNotesArgs {
             pattern: default_pattern(),
             mode: SearchMode::Path,
+            sort: SearchOrder::Modified,
             context: default_context(),
             fixed: false,
             glob: Vec::new(),
@@ -347,6 +353,7 @@ impl SearchNotesArgs {
         SearchQuery {
             pattern: self.pattern,
             mode: self.mode,
+            order: self.sort,
             context: self.context.max(0) as u32,
             fixed: self.fixed,
             case: self.case,
@@ -402,6 +409,7 @@ impl SearchLogArgs {
             query: SearchQuery {
                 pattern: self.pattern,
                 mode: self.mode,
+                order: SearchOrder::default(),
                 context: self.context.max(0) as u32,
                 fixed: self.fixed,
                 case: self.case,
@@ -457,6 +465,7 @@ impl SearchTasksArgs {
             query: SearchQuery {
                 pattern: self.pattern,
                 mode: self.mode,
+                order: SearchOrder::default(),
                 context: self.context.max(0) as u32,
                 fixed: self.fixed,
                 case: self.case,
