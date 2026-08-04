@@ -7,7 +7,8 @@ use sha2::{Digest, Sha256};
 use crate::error::{NotedError, Result, rejected};
 use crate::front_matter::{dump_front, split_front};
 use crate::path::Path;
-use crate::search::LogWindow;
+use crate::search::SearchQuery;
+use crate::timerange::TimeRange;
 use crate::types::{NoteBody, Source, Timestamp};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -197,8 +198,6 @@ impl Note for TextNote {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LogFront {
     pub created: Timestamp,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<Path>,
     #[serde(default)]
     pub cwd: String,
     #[serde(default)]
@@ -208,8 +207,8 @@ pub struct LogFront {
 }
 
 pub struct LogQuery {
-    pub window: LogWindow,
-    pub offset: u64,
+    pub range: TimeRange,
+    pub query: SearchQuery,
     pub limit: u32,
 }
 

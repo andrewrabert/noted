@@ -1,10 +1,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::{Datelike, Local, NaiveDate};
+use chrono::Local;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{NotedError, Result, rejected, unavailable};
+use crate::error::{Result, rejected, unavailable};
 use crate::newtype::str_newtype;
 
 #[derive(
@@ -128,67 +128,6 @@ impl Timestamp {
 
     pub fn parse_rfc3339(&self) -> Option<chrono::DateTime<chrono::FixedOffset>> {
         chrono::DateTime::parse_from_rfc3339(&self.0).ok()
-    }
-
-    pub fn date(&self) -> Option<Date> {
-        self.parse_rfc3339().map(|dt| Date(dt.date_naive()))
-    }
-}
-
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
-)]
-#[serde(try_from = "String", into = "String")]
-#[schemars(with = "String")]
-pub struct Date(NaiveDate);
-
-const DATE_FORMAT: &str = "%Y-%m-%d";
-
-impl Date {
-    pub fn new(year: i32, month: u32, day: u32) -> Result<Date> {
-        NaiveDate::from_ymd_opt(year, month, day)
-            .map(Date)
-            .ok_or_else(|| rejected(format!("invalid date: '{year:04}-{month:02}-{day:02}'")))
-    }
-
-    pub fn today() -> Date {
-        Date(Local::now().date_naive())
-    }
-
-    pub(crate) fn month_key(self) -> i32 {
-        self.0.year() * 12 + self.0.month() as i32 - 1
-    }
-
-    pub(crate) fn year(self) -> i32 {
-        self.0.year()
-    }
-}
-
-impl std::fmt::Display for Date {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0.format(DATE_FORMAT))
-    }
-}
-
-impl std::str::FromStr for Date {
-    type Err = NotedError;
-    fn from_str(s: &str) -> Result<Date> {
-        NaiveDate::parse_from_str(s.trim(), DATE_FORMAT)
-            .map(Date)
-            .map_err(|_| rejected(format!("invalid date: '{s}' (expected YYYY-MM-DD)")))
-    }
-}
-
-impl TryFrom<String> for Date {
-    type Error = NotedError;
-    fn try_from(s: String) -> Result<Date> {
-        s.parse()
-    }
-}
-
-impl From<Date> for String {
-    fn from(d: Date) -> String {
-        d.to_string()
     }
 }
 

@@ -1,34 +1,36 @@
 use std::cmp::Reverse;
+use std::ops::RangeBounds as _;
 
 use chrono::{DateTime, FixedOffset, Local};
 
-use crate::areas::Area;
 use crate::error::{NotedError, Result, rejected};
 use crate::note::{LogFront, LogNote, LogQuery, Note as _};
 use crate::path::Path;
-use crate::search::{Hit, LogWindow, SearchQuery, assemble};
+use crate::regions::RegionStore;
+use crate::search::{Hit, assemble};
 use crate::types::{LogBody, Source, Timestamp};
 
+/// 2026-08-03T09-15-30.123456-0700
+const STAMP: &str = "%Y-%m-%dT%H-%M-%S.%6f%z";
+
+fn stamp_of(name: &str) -> Option<DateTime<FixedOffset>> {
+    DateTime::parse_from_str(name.get(..31)?, STAMP).ok()
+}
+
 pub(super) struct LogTools {
-    area: Area,
+    region: RegionStore,
     source: Option<Source>,
-    scope: Option<Path>,
 }
 
 impl LogTools {
-    pub(super) fn new(area: Area, source: Option<Source>, scope: Option<Path>) -> LogTools {
-        LogTools {
-            area,
-            source,
-            scope,
-        }
+    pub(super) fn new(region: RegionStore, source: Option<Source>) -> LogTools {
+        LogTools { region, source }
     }
 
     pub(super) fn note(&self, body: &LogBody) -> Result<LogNote> {
         let now = Local::now();
         let front = LogFront {
             created: Timestamp::from_local(now),
-            scope: self.scope.clone(),
             cwd: std::env::current_dir()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default(),
@@ -38,11 +40,10 @@ impl LogTools {
             source: self.source.clone(),
         };
 
-        let dir = Path::new(format!("{}/{}", now.format("%Y"), now.format("%m")))?;
-        let stamp = now.format("%Y-%m-%dT%H-%M-%S.%6f").to_string();
+        let stamp = now.format(STAMP).to_string();
         for name in LogTools::spare_stamps(&stamp) {
-            let entry = LogNote::new(dir.joined(&name)?, front.clone(), body.as_str());
-            match self.area.write(
+            let entry = LogNote::new(Path::new(&name)?, front.clone(), body.as_str());
+            match self.region.write(
                 entry.path(),
                 &entry.to_bytes()?,
                 crate::note::Condition::Missing,
@@ -65,69 +66,49 @@ impl LogTools {
 
     pub(super) fn get(&self, query: &LogQuery) -> Result<Vec<LogNote>> {
         let mut found = Vec::new();
-        for path in self.walk(&query.window) {
-            let Ok(bytes) = self.area.read(&path) else {
+        for path in self.within(query) {
+            let Ok(bytes) = self.region.read(&path) else {
                 continue;
             };
             let Ok(entry) = LogNote::from_bytes(path, &bytes) else {
                 continue;
             };
-            if self.admits(&entry, &query.window) {
-                found.push(entry);
-            }
+            found.push(entry);
         }
         found.sort_by_cached_key(LogTools::newest_first);
-        Ok(found
-            .into_iter()
-            .skip(query.offset as usize)
-            .take(query.limit as usize)
-            .collect())
+        Ok(found.into_iter().take(query.limit as usize).collect())
     }
 
-    pub(super) async fn search(&self, window: &LogWindow, query: &SearchQuery) -> Result<Vec<Hit>> {
-        let window = *window;
-        let hits = self
-            .area
-            .search(None, query, move |dir| window.admits_dir(&dir.to_string()))
-            .await?;
+    pub(super) async fn search(&self, query: &LogQuery) -> Result<Vec<Hit>> {
+        let hits = self.region.search(None, &query.query).await?;
 
         let mut dated = Vec::new();
-        for hit in assemble(query, hits)? {
-            let Ok(bytes) = self.area.read(&hit.path) else {
+        for hit in assemble(&query.query, hits)? {
+            if stamp_of(hit.path.file_name()).is_none_or(|at| !query.range.contains(&at)) {
+                continue;
+            }
+            let Ok(bytes) = self.region.read(&hit.path) else {
                 continue;
             };
             let Ok(entry) = LogNote::from_bytes(hit.path.clone(), &bytes) else {
                 continue;
             };
-            if self.admits(&entry, &window) {
-                dated.push((LogTools::newest_first(&entry), hit));
-            }
+            dated.push((LogTools::newest_first(&entry), hit));
         }
         dated.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(dated.into_iter().map(|(_, hit)| hit).collect())
+        Ok(dated
+            .into_iter()
+            .map(|(_, hit)| hit)
+            .take(query.limit as usize)
+            .collect())
     }
 
-    fn walk(&self, window: &LogWindow) -> Vec<Path> {
-        let window = *window;
-        self.area
-            .walk(None, move |dir| window.admits_dir(&dir.to_string()))
-    }
-
-    fn admits(&self, entry: &LogNote, window: &LogWindow) -> bool {
-        let within = match (&self.scope, &entry.front().scope) {
-            (None, _) => true,
-            (Some(_), None) => false,
-            (Some(held), Some(stamped)) => stamped.under(held),
-        };
-        if !within {
-            return false;
-        }
-        window.is_open()
-            || entry
-                .front()
-                .created
-                .date()
-                .is_some_and(|d| window.admits(d))
+    fn within(&self, query: &LogQuery) -> Vec<Path> {
+        let names = self.region.walk(None);
+        names
+            .into_iter()
+            .filter(|path| stamp_of(path.file_name()).is_some_and(|at| query.range.contains(&at)))
+            .collect()
     }
 
     fn newest_first(entry: &LogNote) -> (Reverse<Option<DateTime<FixedOffset>>>, Path) {

@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Result, rejected};
 use crate::newtype::str_newtype_validated;
 use crate::path::Path;
-use crate::types::Date;
 
 #[derive(Serialize, Deserialize, JsonSchema, ValueEnum, Default, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -112,52 +111,6 @@ pub struct Hit<A = Path> {
 impl<A> Hit<A> {
     pub fn lines(&self) -> impl Iterator<Item = (u64, &str)> {
         self.lines.iter().map(|(n, t)| (*n, t.as_str()))
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct LogWindow {
-    since: Option<Date>,
-    until: Option<Date>,
-}
-
-impl LogWindow {
-    pub fn new(since: Option<Date>, until: Option<Date>) -> Result<LogWindow> {
-        if let (Some(from), Some(to)) = (since, until)
-            && from > to
-        {
-            return Err(rejected(format!(
-                "since '{from}' is later than until '{to}'"
-            )));
-        }
-        Ok(LogWindow { since, until })
-    }
-
-    pub fn is_open(&self) -> bool {
-        self.since.is_none() && self.until.is_none()
-    }
-
-    pub fn admits(&self, day: Date) -> bool {
-        self.since.is_none_or(|from| day >= from) && self.until.is_none_or(|to| day <= to)
-    }
-
-    pub(crate) fn admits_dir(&self, under_log: &str) -> bool {
-        let mut parts = under_log.split('/').filter(|p| !p.is_empty());
-        let Some(year) = parts.next().and_then(|p| p.parse::<i32>().ok()) else {
-            return true;
-        };
-        let Some(month) = parts.next() else {
-            return self.since.is_none_or(|from| year >= from.year())
-                && self.until.is_none_or(|to| year <= to.year());
-        };
-        let Ok(month) = month.parse::<u32>() else {
-            return true;
-        };
-        let Ok(key) = Date::new(year, month, 1).map(Date::month_key) else {
-            return true;
-        };
-        self.since.is_none_or(|from| key >= from.month_key())
-            && self.until.is_none_or(|to| key <= to.month_key())
     }
 }
 

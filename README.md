@@ -6,7 +6,8 @@ A tree of `.md` notes exposed three ways over one set of file operations:
 - **HTTP API** — REST at `/tool/{Name}`, plus MCP (Streamable HTTP) at `/mcp`, under OAuth 2.1
 - **MCP** — over stdio for a local client
 
-Features: regex search across the tree, quick timestamped log entries, and a scoped task tracker.
+Features: regex search across the tree, timestamped log entries named by the instant they
+were written, and a scoped task tracker.
 
 The tree has one open region plus two reserved ones, and each gets its own search:
 `SearchNotes` for ordinary notes, `SearchLog` for `Log/`, `SearchTasks` for `Tasks/`.
@@ -34,7 +35,7 @@ Tools, as the MCP and HTTP interfaces expose them:
 | Tool | What it does |
 | --- | --- |
 | `SearchNotes` | Find notes by regex, outside `Log/` and `Tasks/` |
-| `SearchLog` | Find log entries by regex, within a date window |
+| `SearchLog` | Find log entries by regex, within a time range |
 | `SearchTasks` | Find tasks by regex, within a group |
 | `ReadNote` | Read a note's text by relative path |
 | `WriteNote` | Write a note, overwriting it |

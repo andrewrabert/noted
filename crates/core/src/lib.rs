@@ -4,6 +4,7 @@ mod policy;
 mod policyargs;
 mod regions;
 mod root;
+mod timerange;
 
 pub mod authorization;
 pub mod error;
@@ -32,3 +33,4 @@ pub use regions::RegionDir;
 pub use root::NotedRoot;
 pub use store::NotedDir;
 pub use tasks::TaskNote;
+pub use timerange::{TimeRange, TimeRangeBound};

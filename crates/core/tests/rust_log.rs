@@ -1,11 +1,11 @@
 mod common;
 
-use common::{confined_backend, backend, fixture_dir, invoke};
+use common::{backend, confined_backend, fixture_dir, invoke};
 use noted::Backend;
 use serde_json::{Value, json};
 
-const JUNE: &str = "2026/06/2026-06-15T08-30-00.000000.md";
-const JULY: &str = "2026/07/2026-07-01T09-00-00.000000.md";
+const JUNE: &str = "2026-06-15T08-30-00.000000-0700.md";
+const JULY: &str = "2026-07-01T09-00-00.000000-0700.md";
 
 async fn records(backend: &Backend, args: Value) -> Vec<Value> {
     let out = invoke(backend, "GetLog", args).await.unwrap();
@@ -28,7 +28,7 @@ async fn search(backend: &Backend, args: Value) -> String {
 }
 
 #[tokio::test]
-async fn get_lists_the_window_newest_first() {
+async fn get_lists_the_log_newest_first() {
     let dir = fixture_dir();
     let root = backend(&dir);
     assert_eq!(paths(&root, json!({})).await, vec![JULY, JUNE]);
@@ -43,6 +43,7 @@ async fn get_summaries_carry_the_minted_metadata() {
     assert_eq!(bare["host"], json!("testhost"));
     assert_eq!(bare["source"], json!("seed"));
     assert!(bare.get("body").is_none(), "body is opt-in");
+    assert!(bare.get("scope").is_none(), "an entry records no scope");
 
     let full = &records(&root, json!({"body": true})).await[0];
     assert!(
@@ -52,21 +53,28 @@ async fn get_summaries_carry_the_minted_metadata() {
 }
 
 #[tokio::test]
-async fn get_window_bounds_are_inclusive_local_dates() {
+async fn the_bounds_take_every_iso8601_shape() {
     let dir = fixture_dir();
     let root = backend(&dir);
-    assert_eq!(
-        paths(&root, json!({"since": "2026-07-01"})).await,
-        vec![JULY]
-    );
-    assert_eq!(
-        paths(&root, json!({"until": "2026-06-30"})).await,
-        vec![JUNE]
-    );
+    for since in [
+        "2026-07",
+        "2026-07-01",
+        "2026-07-01T09:00:00-07:00",
+        "2026-182",
+    ] {
+        assert_eq!(
+            paths(&root, json!({"since": since})).await,
+            vec![JULY],
+            "since {since}"
+        );
+    }
+    assert_eq!(paths(&root, json!({"until": "2026-06"})).await, vec![JUNE]);
     assert_eq!(
         paths(&root, json!({"since": "2026-06-15", "until": "2026-06-15"})).await,
         vec![JUNE]
     );
+    assert_eq!(paths(&root, json!({"since": "2026"})).await.len(), 2);
+    assert!(paths(&root, json!({"since": "P1D"})).await.is_empty());
     assert!(
         paths(&root, json!({"since": "2027-01-01"}))
             .await
@@ -75,13 +83,13 @@ async fn get_window_bounds_are_inclusive_local_dates() {
 }
 
 #[tokio::test]
-async fn get_refuses_a_backwards_window_and_bad_dates() {
+async fn get_refuses_a_backwards_range_and_bad_bounds() {
     let dir = fixture_dir();
     let root = backend(&dir);
     for args in [
         json!({"since": "2026-08-01", "until": "2026-07-01"}),
         json!({"since": "yesterday"}),
-        json!({"until": "2026-13-40"}),
+        json!({"until": "2026-13-01"}),
     ] {
         assert!(
             invoke(&root, "GetLog", args.clone()).await.is_err(),
@@ -91,21 +99,25 @@ async fn get_refuses_a_backwards_window_and_bad_dates() {
 }
 
 #[tokio::test]
-async fn get_pages_the_ordered_result() {
+async fn limit_pages_from_the_newest_entry() {
     let dir = fixture_dir();
     let root = backend(&dir);
     assert_eq!(paths(&root, json!({"limit": 1})).await, vec![JULY]);
-    assert_eq!(
-        paths(&root, json!({"offset": 1, "limit": 1})).await,
-        vec![JUNE]
-    );
-    assert!(paths(&root, json!({"offset": 99})).await.is_empty());
     assert_eq!(paths(&root, json!({"limit": 0})).await.len(), 1);
     assert_eq!(paths(&root, json!({"limit": 99_999})).await.len(), 2);
+
+    let newest = &records(&root, json!({"limit": 1})).await[0];
+    let oldest_seen = newest["created"].as_str().unwrap().to_string();
+    let next = paths(&root, json!({"until": oldest_seen, "limit": 1})).await;
+    assert_eq!(next, vec![JULY], "the bound is inclusive of its own entry");
+    assert_eq!(
+        paths(&root, json!({"until": "2026-06-30", "limit": 1})).await,
+        vec![JUNE]
+    );
 }
 
 #[tokio::test]
-async fn get_applies_the_policy_per_file_instead_of_refusing() {
+async fn a_denied_entry_leaves_the_rest_of_the_log() {
     let dir = fixture_dir();
     assert!(
         paths(
@@ -115,16 +127,14 @@ async fn get_applies_the_policy_per_file_instead_of_refusing() {
         .await
         .is_empty()
     );
-    assert_eq!(
-        paths(
-            &confined_backend(
-                &dir,
-                r#"{"paths":{"Log/2026/07":{"read":false,"write":false}}}"#
-            ),
-            json!({})
-        )
-        .await,
-        vec![JUNE]
+
+    let denied = format!(r#"{{"paths":{{"Log/{JULY}":{{"read":false,"write":false}}}}}}"#);
+    let root = confined_backend(&dir, &denied);
+    assert_eq!(paths(&root, json!({})).await, vec![JUNE]);
+    assert!(
+        !search(&root, json!({"pattern": "claude-code"}))
+            .await
+            .contains(JULY)
     );
 }
 
@@ -155,7 +165,7 @@ async fn search_is_scoped_to_the_log() {
 }
 
 #[tokio::test]
-async fn search_narrows_by_the_same_window_as_get() {
+async fn search_narrows_by_the_same_bounds_as_get() {
     let dir = fixture_dir();
     let root = backend(&dir);
     let june = search(
@@ -164,6 +174,13 @@ async fn search_narrows_by_the_same_window_as_get() {
     )
     .await;
     assert!(june.contains(JUNE) && !june.contains(JULY), "{june}");
+    assert_eq!(
+        search(&root, json!({"mode": "path", "limit": 1}))
+            .await
+            .lines()
+            .count(),
+        1
+    );
     assert!(
         invoke(
             &root,
