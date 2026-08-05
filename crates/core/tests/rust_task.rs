@@ -446,8 +446,6 @@ fn empty_task_ref_and_headless_task_rejected() {
 fn ignored_tasks_are_unreachable_and_ignored_by_numbering() {
     let dir = fixture_dir();
     let root = root(&dir);
-    // The ignore file has to be in place before the store first reads the
-    // directory: its matchers are cached per directory.
     std::fs::create_dir_all(notes_root(&dir).join("Tasks")).unwrap();
     std::fs::write(
         notes_root(&dir).join("Tasks").join(".ignore"),

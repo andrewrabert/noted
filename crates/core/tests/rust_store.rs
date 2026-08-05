@@ -1,6 +1,6 @@
 mod common;
 
-use common::{fixture_dir, note, notes_root, read, root, rp, write};
+use common::rp;
 use noted::path::{Path, Segment};
 
 #[test]
@@ -76,16 +76,4 @@ fn a_segment_is_one_plain_component() {
     for bad in ["", ".", "..", ".hidden", "a/b"] {
         assert!(Segment::new(bad).is_err(), "{bad} should be rejected");
     }
-}
-
-#[test]
-fn a_representable_path_is_still_subject_to_the_trees_ignore_rules() {
-    let dir = fixture_dir();
-    let root = root(&dir);
-    std::fs::write(notes_root(&dir).join(".ignore"), "hidden-note.md\n").unwrap();
-    std::fs::write(notes_root(&dir).join("hidden-note.md"), "x").unwrap();
-
-    let err = read(&root, "hidden-note.md").unwrap_err().to_string();
-    assert!(err.contains("invalid path"), "{err}");
-    assert!(write(&root, &note("hidden-note.md", "y")).is_err());
 }

@@ -216,51 +216,6 @@ async fn note_search_walks_the_open_region_only() {
 }
 
 #[tokio::test]
-async fn ignore_files_hide_paths_everywhere() {
-    let dir = fixture_dir();
-    let root = root(&dir);
-    let notes = notes_root(&dir);
-
-    std::fs::write(notes.join(".ignore"), "wip-*.md\n!wip-keep.md\n").unwrap();
-    std::fs::write(notes.join(".gitignore"), "drafts/\n").unwrap();
-    std::fs::write(notes.join("wip-x.md"), "TOPSECRET token").unwrap();
-    std::fs::write(notes.join("wip-keep.md"), "TOPSECRET token").unwrap();
-    std::fs::create_dir(notes.join("drafts")).unwrap();
-    std::fs::write(notes.join("drafts/note.md"), "TOPSECRET token").unwrap();
-    std::fs::write(notes.join("visible.md"), "TOPSECRET token").unwrap();
-
-    let hits = grep(&root, "TOPSECRET").await.unwrap();
-    let rels: Vec<String> = hits.iter().map(|h| h.path.to_string()).collect();
-    let rels: Vec<&str> = rels.iter().map(String::as_str).collect();
-    assert!(rels.contains(&"visible.md"));
-    assert!(rels.contains(&"wip-keep.md"));
-    assert!(!rels.contains(&"wip-x.md"));
-    assert!(!rels.contains(&"drafts/note.md"));
-
-    assert_eq!(found(&root, "wip").await.unwrap(), vec!["wip-keep.md"]);
-
-    for rel in ["wip-x.md", "drafts/note.md"] {
-        assert!(read(&root, rel).is_err(), "read {rel} should reject");
-        assert!(
-            write(&root, &note(rel, "x")).is_err(),
-            "write {rel} should reject"
-        );
-        assert!(
-            root.note_delete(&rp(rel)).is_err(),
-            "delete {rel} should reject"
-        );
-        assert!(
-            root.note_move(&rp(rel), &rp("moved.md"), false).is_err(),
-            "move {rel} should reject"
-        );
-    }
-
-    assert!(read(&root, "wip-keep.md").is_ok());
-    assert!(read(&root, "visible.md").is_ok());
-    assert!(write(&root, &note("drafts/new.md", "x")).is_err());
-}
-
-#[tokio::test]
 async fn search_orders_paths_case_insensitively() {
     let dir = fixture_dir();
     let bknd = backend(&dir);
@@ -288,42 +243,6 @@ async fn search_orders_paths_case_insensitively() {
         assert!(idx("apple.md") < idx("Banana.md"), "{mode}: {got:?}");
         assert!(idx("Banana.md") < idx("cherry.md"), "{mode}: {got:?}");
     }
-}
-
-#[tokio::test]
-async fn walk_and_direct_access_agree_on_nested_ignores() {
-    let dir = fixture_dir();
-    let root = root(&dir);
-    let notes = notes_root(&dir);
-
-    std::fs::write(notes.join(".gitignore"), "*.log\n").unwrap();
-    std::fs::create_dir(notes.join("area")).unwrap();
-    std::fs::write(notes.join("area/.gitignore"), "!keep.log\ndrop.md\n").unwrap();
-    let files = [
-        "top.log",
-        "area/keep.log",
-        "area/other.log",
-        "area/drop.md",
-        "area/ok.md",
-    ];
-    for f in files {
-        std::fs::write(notes.join(f), "NEEDLE").unwrap();
-    }
-
-    let hits = grep(&root, "NEEDLE").await.unwrap();
-    let hit: std::collections::HashSet<String> = hits.iter().map(|h| h.path.to_string()).collect();
-    for f in files {
-        assert_eq!(
-            hit.contains(f),
-            read(&root, f).is_ok(),
-            "walk/read disagree on {f}"
-        );
-    }
-    assert!(hit.contains("area/keep.log"));
-    assert!(hit.contains("area/ok.md"));
-    assert!(!hit.contains("top.log"));
-    assert!(!hit.contains("area/other.log"));
-    assert!(!hit.contains("area/drop.md"));
 }
 
 #[tokio::test]

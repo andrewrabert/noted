@@ -4,14 +4,14 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use grep::searcher::SearcherBuilder;
-use ignore::{WalkBuilder, WalkState};
+use ignore::{IncrementalIgnore, WalkBuilder, WalkState};
 
 use crate::error::{NotedError, Result, io_error, rejected, unavailable};
 use crate::note::{Condition, Etag};
 use crate::path::{DirPath, Path, Reserved};
 use crate::policy::{Readable, Writeable};
 use crate::search::{Hit, LineSink, SearchMode, SearchOrder, SearchQuery, build_matcher, narrow};
-use crate::util::{IgnoreFilter, atomic_create, atomic_write, normalize, temp_dir_in};
+use crate::util::{atomic_create, atomic_write, normalize, temp_dir_in};
 
 const TRASH: &str = ".trash";
 
@@ -86,7 +86,6 @@ fn spare_names(at: &Path) -> impl Iterator<Item = String> + use<> {
 struct StoreInner {
     root: PathBuf,
     writes: Mutex<()>,
-    ignore: IgnoreFilter,
 }
 
 #[derive(Clone)]
@@ -98,12 +97,32 @@ impl Store {
             .0
             .canonicalize()
             .map_err(|e| io_error("notes dir unusable", e))?;
-        let ignore = IgnoreFilter::new(&root);
         Ok(Store(Arc::new(StoreInner {
             root,
             writes: Mutex::new(()),
-            ignore,
         })))
+    }
+
+    // the tree's only ignore configuration: '.ignore' and '.gitignore' as the
+    // ignore crate reads them, rooted at the notes root
+    fn ignoring(&self) -> WalkBuilder {
+        let mut wb = WalkBuilder::new(&self.0.root);
+        wb.hidden(false)
+            .parents(false)
+            .ignore(true)
+            .git_ignore(true)
+            .git_global(false)
+            .git_exclude(false)
+            .require_git(false);
+        wb
+    }
+
+    // that same configuration as a matcher for a path reached without a walk
+    fn gate(&self) -> IncrementalIgnore {
+        match self.ignoring().build_matchers().into_iter().next() {
+            Some(gate) => gate,
+            None => unreachable!("a walk builder always carries its root"),
+        }
     }
 
     fn absolute(&self, at: &Path) -> PathBuf {
@@ -125,7 +144,9 @@ impl Store {
 
     fn addressable(&self, at: &Path) -> Result<PathBuf> {
         let abs = self.absolute(at);
-        if self.0.ignore.is_ignored(&abs) || self.crosses_symlink(at.as_str()) {
+        if self.crosses_symlink(at.as_str())
+            || self.gate().matched(at.as_str(), abs.is_dir()).is_ignore()
+        {
             return Err(rejected("invalid path"));
         }
         Ok(abs)
@@ -226,6 +247,7 @@ impl Store {
     pub(crate) fn walk(&self, from: &DirPath) -> Vec<Path> {
         let mut out = Vec::new();
         self.collect(
+            &mut self.gate(),
             &self.directory(from),
             Listing::Notes { deep: true },
             &mut out,
@@ -236,6 +258,7 @@ impl Store {
     pub(crate) fn children(&self, from: &DirPath) -> Vec<Path> {
         let mut out = Vec::new();
         self.collect(
+            &mut self.gate(),
             &self.directory(from),
             Listing::Notes { deep: false },
             &mut out,
@@ -246,7 +269,12 @@ impl Store {
     // every plain file directly inside 'from', whatever its extension
     pub(crate) fn files(&self, from: &DirPath) -> Vec<Path> {
         let mut out = Vec::new();
-        self.collect(&self.directory(from), Listing::Files, &mut out);
+        self.collect(
+            &mut self.gate(),
+            &self.directory(from),
+            Listing::Files,
+            &mut out,
+        );
         out
     }
 
@@ -297,7 +325,13 @@ impl Store {
         }
     }
 
-    fn collect(&self, dir: &StdPath, listing: Listing, out: &mut Vec<Path>) {
+    fn collect(
+        &self,
+        gate: &mut IncrementalIgnore,
+        dir: &StdPath,
+        listing: Listing,
+        out: &mut Vec<Path>,
+    ) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
@@ -310,10 +344,10 @@ impl Store {
                 continue;
             }
             let path = entry.path();
-            if self.0.ignore.is_ignored(&path) {
+            let Some(rel) = self.rel(&path) else { continue };
+            if gate.matched(rel.as_str(), kind.is_dir()).is_ignore() {
                 continue;
             }
-            let Some(rel) = self.rel(&path) else { continue };
             match listing {
                 Listing::Files if kind.is_file() => out.push(rel),
                 Listing::Files => {}
@@ -323,7 +357,9 @@ impl Store {
                     }
                 }
                 Listing::Notes { .. } if name.ends_with(".md") && kind.is_dir() => out.push(rel),
-                Listing::Notes { deep: true } if kind.is_dir() => self.collect(&path, listing, out),
+                Listing::Notes { deep: true } if kind.is_dir() => {
+                    self.collect(gate, &path, listing, out)
+                }
                 Listing::Notes { .. } => {}
             }
         }
@@ -412,21 +448,16 @@ impl Store {
     }
 
     fn walk_builder(&self, base: &StdPath) -> WalkBuilder {
-        let filter = self.0.ignore.clone();
-        let mut wb = WalkBuilder::new(base);
-        wb.hidden(false)
-            .ignore(false)
-            .git_ignore(false)
-            .git_global(false)
-            .git_exclude(false)
-            .parents(false)
-            .filter_entry(move |entry| {
-                let name = entry.file_name().to_string_lossy();
-                let visible = entry.depth() == 0
-                    || !name.starts_with('.')
-                    || name == Reserved::TaskBody.as_str();
-                visible && !filter.is_ignored(entry.path())
-            });
+        let base = base.to_path_buf();
+        let mut wb = self.ignoring();
+        wb.filter_entry(move |entry| {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy();
+            let toward_base = base.starts_with(path);
+            let visible =
+                toward_base || !name.starts_with('.') || name == Reserved::TaskBody.as_str();
+            (toward_base || path.starts_with(&base)) && visible && !entry.path_is_symlink()
+        });
         wb
     }
 }
