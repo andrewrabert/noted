@@ -1,6 +1,7 @@
 use serde_json::Value;
 
 use crate::authorization::{Authorization, Bearer};
+use crate::endpoint::Endpoint;
 use crate::error::{NotedError, Result, json_error, rejected, unavailable};
 use crate::fragment::PolicyFragment;
 use crate::httpurl::HttpUrl;
@@ -18,7 +19,7 @@ const INSTRUCTIONS: &str = "This is the user's personal notes — the canonical 
 #[derive(Default)]
 pub struct BackendArgs {
     pub dir: Option<String>,
-    pub url: Option<String>,
+    pub endpoint: Option<Endpoint>,
     pub token: Option<Bearer>,
     pub source: Option<String>,
     pub policy: PolicyArgs,
@@ -74,27 +75,41 @@ impl Backend {
     pub fn new(args: BackendArgs) -> Result<Backend> {
         let BackendArgs {
             dir,
-            url,
+            endpoint,
             token,
             source,
             policy,
             transport,
         } = args;
-        match url.filter(|s| !s.is_empty()) {
-            Some(url) => {
+        match endpoint {
+            Some(endpoint) => {
                 if policy != PolicyArgs::default() {
                     return Err(rejected(
                         "a remote server holds its own policy: a policy cannot be set here",
                     ));
                 }
+                #[cfg(unix)]
+                if matches!(endpoint, Endpoint::Unix(_))
+                    && matches!(transport, Some(Transport::Router(_)))
+                {
+                    return Err(rejected(
+                        "a socket is dialed by a real client: it takes no in-process router",
+                    ));
+                }
+                let client = match &endpoint {
+                    Endpoint::Tcp(_) => reqwest::Client::builder(),
+                    #[cfg(unix)]
+                    Endpoint::Unix(path) => reqwest::Client::builder().unix_socket(path.clone()),
+                }
+                .build()
+                .map_err(|e| unavailable(format!("cannot build an HTTP client: {e}")))?;
                 Ok(Backend {
                     inner: Box::new(RemoteBackend {
-                        url: url.parse()?,
+                        base: endpoint.base_url()?,
+                        endpoint,
                         token,
                         transport: transport.unwrap_or(Transport::Real),
-                        client: reqwest::Client::builder().build().map_err(|e| {
-                            unavailable(format!("cannot build an HTTP client: {e}"))
-                        })?,
+                        client,
                     }),
                 })
             }
@@ -209,7 +224,8 @@ impl AuthorizedBackendImpl for AuthorizedLocalBackend {
 }
 
 struct RemoteBackend {
-    url: HttpUrl,
+    endpoint: Endpoint,
+    base: HttpUrl,
     token: Option<Bearer>,
     transport: Transport,
     client: reqwest::Client,
@@ -272,12 +288,14 @@ impl AuthorizedBackendImpl for AuthorizedRemoteBackend<'_> {
 
 impl RemoteBackend {
     async fn roundtrip(&self, token: Option<&str>, name: &str, args: &Value) -> Result<ToolOutput> {
-        let url = &self.url;
+        let url = &self.base;
         let body = serde_json::to_vec(args).unwrap_or_default();
         let target = url.join(&format!("tool/{name}"));
         let (status, resp_body) = match self.send(&target, token, body).await {
             Ok(pair) => pair,
-            Err(e) => return Err(unavailable(format!("cannot reach {url}: {e}"))),
+            Err(e) => {
+                return Err(unavailable(format!("cannot reach {}: {e}", self.endpoint)));
+            }
         };
         if status >= 500 {
             return Err(unavailable(

@@ -340,7 +340,7 @@ pub fn record(output: ToolOutput) -> serde_json::Value {
 pub async fn invoke(call: noted::Result<ToolCall>) -> Result<ToolOutput, String> {
     let call = call.map_err(message)?;
     let backend = Backend::new(BackendArgs {
-        url: Some(origin()?),
+        endpoint: Some(origin()?.parse().map_err(message)?),
         ..Default::default()
     })
     .map_err(message)?;

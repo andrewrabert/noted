@@ -2,9 +2,9 @@ use std::process::ExitCode;
 
 use clap::{Args, Subcommand};
 
-use noted::HttpUrl;
 use noted::error::{Result, rejected};
 use noted::types::Ttl;
+use noted::{Endpoint, HttpUrl};
 use noted_auth::oauth::types::SessionId;
 use noted_client::authclient::{self, RevokeSelector, Session};
 use noted_client::credentials::CredentialStore;
@@ -63,7 +63,7 @@ fn resolve_url(explicit: Option<&str>, globals: &GlobalArgs) -> Result<HttpUrl> 
         .filter(|s| !s.is_empty())
         .or_else(|| globals.url.as_deref().filter(|s| !s.is_empty()))
         .ok_or_else(|| rejected("a server URL is required (--url or NOTED_URL)"))?;
-    raw.parse()
+    raw.parse::<Endpoint>()?.login_url()
 }
 
 pub(crate) fn run_auth(cmd: AuthCmd, globals: &GlobalArgs) -> Result<ExitCode> {

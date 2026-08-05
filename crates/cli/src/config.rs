@@ -4,22 +4,29 @@ use noted::error::{Result, io_error, rejected};
 use noted::types::Ttl;
 use noted_client::credentials::{CredentialStoreConfig, SecretStorage};
 
-pub fn expand_home(path: &str) -> PathBuf {
-    match path.strip_prefix("~/") {
-        Some(rest) => match dirs::home_dir() {
-            Some(home) => home.join(rest),
-            None => PathBuf::from(path),
-        },
-        None => PathBuf::from(path),
-    }
-}
-
 pub fn block_on<F, T>(fut: F) -> Result<T>
 where
     F: Future<Output = Result<T>>,
 {
     let runtime = tokio::runtime::Runtime::new().map_err(|e| io_error("runtime", e))?;
     runtime.block_on(fut)
+}
+
+/// Replaces a leading `~` component with the invoking user's home directory. A
+/// path with no leading `~`, and any path when no home is known, is taken as
+/// written.
+pub fn expand_home(path: &Path) -> PathBuf {
+    let mut parts = path.components();
+    let Some(std::path::Component::Normal(first)) = parts.next() else {
+        return path.to_path_buf();
+    };
+    if first != "~" {
+        return path.to_path_buf();
+    }
+    match dirs::home_dir() {
+        Some(home) => home.join(parts.as_path()),
+        None => path.to_path_buf(),
+    }
 }
 
 pub fn parse_ttl(s: &str) -> std::result::Result<Ttl, String> {
@@ -33,7 +40,7 @@ pub fn parse_ttl(s: &str) -> std::result::Result<Ttl, String> {
 pub fn credential_store_config() -> Result<CredentialStoreConfig> {
     match std::env::var("NOTED_HOSTS_FILE") {
         Ok(p) if !p.is_empty() => Ok(CredentialStoreConfig {
-            hosts_path: expand_home(&p),
+            hosts_path: expand_home(Path::new(&p)),
             storage: SecretStorage::Plaintext,
         }),
         _ => {
@@ -50,7 +57,7 @@ fn env_file_path() -> Option<PathBuf> {
     if let Ok(override_) = std::env::var("NOTED_ENV_FILE")
         && !override_.is_empty()
     {
-        return Some(expand_home(&override_));
+        return Some(expand_home(Path::new(&override_)));
     }
     Some(dirs::config_dir()?.join("noted.env"))
 }
@@ -73,7 +80,7 @@ pub fn setup_logging(
 
     match file {
         Some(path) => {
-            let path = expand_home(&path.to_string_lossy());
+            let path = expand_home(path);
             let dir = match path.parent() {
                 Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
                 _ => PathBuf::from("."),

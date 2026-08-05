@@ -32,7 +32,7 @@
 - A new test helper goes in that crate's `tests/common/mod.rs`.
 
 ## Core code guidelines
-- Constraint: All I/O must be non-blocking
+- Constraint: All I/O must be non-blocking. One exception: a one-shot listener bind at server startup, and its guard's unlink at shutdown.
 - Constraint: All files are atomically written
 
 - Non-negotiable:

@@ -8,6 +8,7 @@ mod root;
 mod timerange;
 
 pub mod authorization;
+pub mod endpoint;
 pub mod error;
 pub mod front_matter;
 pub mod httpurl;
@@ -23,6 +24,7 @@ pub mod util;
 
 pub use authorization::{Authorization, Bearer};
 pub use backend::{AuthorizedBackend, Backend, BackendArgs, ToolCall, ToolListing, Transport};
+pub use endpoint::Endpoint;
 pub use error::{NotedError, Result};
 pub use fragment::{AccessFragment, PolicyFragment};
 pub use httpurl::HttpUrl;

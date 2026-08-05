@@ -2,8 +2,8 @@
 
 A tree of `.md` notes exposed three ways over one set of file operations:
 
-- **CLI** — local files, or drive a remote server with `NOTED_URL`
-- **HTTP API** — REST at `/tool/{Name}`, plus MCP (Streamable HTTP) at `/mcp`, under OAuth 2.1
+- **CLI** — local files, or drive a remote server with `NOTED_URL`, over TCP or a Unix socket
+- **HTTP API** — REST at `/tool/{Name}`, plus MCP (Streamable HTTP) at `/mcp`, under OAuth 2.1, over TCP or a Unix socket
 - **MCP** — over stdio for a local client
 
 Features: regex search across the tree, timestamped log entries named by the instant they
@@ -28,7 +28,12 @@ noted <command>
   task    Task tracker (create/get/update/move/search)
   auth    Log in to a remote server, mint agent credentials
   web     Serve the web UI in a browser
-  server  Run and manage the server (http/mcp/user/key)
+  server  Run and manage the server (http/socket/mcp/user/key)
+```
+
+```sh
+noted server socket /run/noted/noted.sock                # serve the HTTP app on a socket
+noted --url unix:///run/noted/noted.sock read Inbox.md   # dial it
 ```
 
 Tools, as the MCP and HTTP interfaces expose them:
@@ -73,7 +78,7 @@ environment wins. CLI flags override both.
 | `NOTED_SOURCE`       | `-s`/`--source`  | -                     | `source` metadata recorded on log entries.           |
 | `NOTED_POLICY`       | `--policy`       | *(everything)*        | A policy fragment as JSON, or `@<path>` to a file holding one. |
 | `NOTED_SCOPE`        | `--scope`        | *(whole tree)*        | The scope the process is anchored at.                |
-| `NOTED_URL`          | `--url`          | -                     | Drive a remote server instead of local files.        |
+| `NOTED_URL`          | `--url`          | -                     | Drive a remote server instead of local files: `http(s)://host[:port]` or `unix:///path.sock`. |
 | `NOTED_TOKEN`        | `--token`        | *(stored login)*      | Bearer for the remote server.                        |
 | `NOTED_HOST`         | `--host`         | `127.0.0.1`           | `server http` bind address.                          |
 | `NOTED_PORT`         | `--port`         | `8000`                | `server http` port.                                  |

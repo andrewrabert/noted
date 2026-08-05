@@ -11,7 +11,7 @@ use noted::tools::{
     AttachToTaskArgs, CreateTaskArgs, GetLogArgs, GetTasksArgs, LogArgs, MoveTaskArgs,
     SearchLogArgs, SearchTasksArgs, ToolArgs, ToolOutput, UpdateTaskArgs,
 };
-use noted::{Backend, HttpUrl, ToolCall};
+use noted::{Backend, Endpoint, ToolCall};
 use noted_client::authclient::Session;
 use noted_client::credentials::CredentialStore;
 
@@ -135,21 +135,21 @@ pub(crate) fn run_dispatch(globals: &GlobalArgs, dispatch: Dispatch) -> Result<E
 }
 
 pub(crate) fn build_backend(globals: &GlobalArgs) -> Result<Backend> {
-    let mut args = globals.backend_args(&crate::EntryFlags::default());
-    if let Some(url) = remote_url(globals)? {
-        let store = CredentialStore::open(credential_store_config()?);
-        let session = Session::open(&url, globals.token.as_deref(), store);
-        let token = block_on(session.bearer())?;
-        args.token = token.map(Bearer::new);
-    }
+    let mut args = globals.backend_args(&crate::EntryFlags::default())?;
+    let token = match args.endpoint.as_ref().and_then(Endpoint::tcp) {
+        Some(url) => {
+            let store = CredentialStore::open(credential_store_config()?);
+            let session = Session::open(url, globals.token.as_deref(), store);
+            block_on(session.bearer())?.map(Bearer::new)
+        }
+        None => globals
+            .token
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(Bearer::new),
+    };
+    args.token = token;
     Backend::new(args)
-}
-
-pub(crate) fn remote_url(globals: &GlobalArgs) -> Result<Option<HttpUrl>> {
-    match globals.url.as_deref().filter(|s| !s.is_empty()) {
-        None => Ok(None),
-        Some(s) => Ok(Some(s.parse()?)),
-    }
 }
 
 fn render(render: &Render, result: &ToolOutput, color: bool) -> String {

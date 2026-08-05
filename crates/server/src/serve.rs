@@ -10,12 +10,21 @@ use noted::types::Ttl;
 use noted::{Backend, BackendArgs};
 use noted_auth::{AuthService, OAuthProvider};
 
+/// What the HTTP app listens on.
+pub enum Bind {
+    Tcp {
+        host: String,
+        port: u16,
+    },
+    #[cfg(unix)]
+    Socket(PathBuf),
+}
+
 /// Everything the HTTP server needs, already resolved: no clap type, flag
 /// spelling, or environment lookup crosses this boundary.
 pub struct HttpConfig {
     pub backend: BackendArgs,
-    pub host: String,
-    pub port: u16,
+    pub bind: Bind,
     pub public_url: Option<String>,
     pub auth_db: Option<PathBuf>,
     #[cfg(unix)]
@@ -37,11 +46,7 @@ where
 }
 
 pub fn serve_http(cfg: HttpConfig) -> Result<()> {
-    let proxying = cfg
-        .backend
-        .url
-        .as_deref()
-        .is_some_and(|url| !url.is_empty());
+    let proxying = cfg.backend.endpoint.is_some();
     if proxying && cfg.auth_db.is_some() {
         return Err(rejected(
             "a server standing in front of another holds no auth database",
@@ -77,10 +82,11 @@ pub fn serve_http(cfg: HttpConfig) -> Result<()> {
     let backend = Arc::new(Backend::new(cfg.backend)?);
     let auth_for_socket = auth.clone();
     let app = crate::http::build_app(backend, auth, oauth.clone());
-    let host = cfg.host;
-    let port = cfg.port;
+    let bind = cfg.bind;
 
     block_on(async move {
+        #[cfg(not(unix))]
+        let admin_handle: Option<tokio::task::JoinHandle<()>> = None;
         #[cfg(unix)]
         let admin_handle = match (&admin_socket, &auth_for_socket) {
             (Some(path), Some(svc)) => {
@@ -93,36 +99,91 @@ pub fn serve_http(cfg: HttpConfig) -> Result<()> {
             }
             _ => None,
         };
-        let addr = format!("{host}:{port}");
-        let listener = tokio::net::TcpListener::bind(&addr)
-            .await
-            .map_err(|e| rejected(format!("bind {addr}: {e}")))?;
-        tracing::info!(
-            %addr,
-            auth = auth_for_socket.is_some(),
-            oauth = oauth.is_some(),
-            "serving http"
-        );
-        let server = std::future::IntoFuture::into_future(axum::serve(listener, app));
-        tokio::pin!(server);
-        #[cfg(unix)]
-        if let Some(mut handle) = admin_handle {
-            use noted::error::unavailable;
-            return tokio::select! {
-                r = &mut server => {
-                    handle.abort();
-                    let _ = handle.await;
-                    r.map_err(|e| rejected(format!("serve: {e}")))
-                }
-                joined = &mut handle => match joined {
-                    Ok(()) => Err(unavailable("admin socket server exited unexpectedly")),
-                    Err(e) if e.is_cancelled() => Ok(()),
-                    Err(e) => Err(unavailable(format!("admin socket task failed: {e}"))),
-                },
-            };
+        match bind {
+            Bind::Tcp { host, port } => {
+                let addr = format!("{host}:{port}");
+                let listener = tokio::net::TcpListener::bind(&addr)
+                    .await
+                    .map_err(|e| rejected(format!("bind {addr}: {e}")))?;
+                tracing::info!(
+                    %addr,
+                    auth = auth_for_socket.is_some(),
+                    oauth = oauth.is_some(),
+                    "serving http"
+                );
+                serve_listener(listener, app, admin_handle).await
+            }
+            #[cfg(unix)]
+            Bind::Socket(path) => {
+                let (listener, _guard) = crate::socket::bind_unix_socket(&path)?;
+                tracing::info!(
+                    socket = %path.display(),
+                    auth = auth_for_socket.is_some(),
+                    oauth = oauth.is_some(),
+                    "serving http"
+                );
+                serve_listener(listener, app, admin_handle).await
+            }
         }
-        server.await.map_err(|e| rejected(format!("serve: {e}")))
     })
+}
+
+/// Resolves when the process is told to stop: SIGINT or SIGTERM. The serve
+/// future then finishes in-flight requests and returns, so every bind guard
+/// drops and every socket file is unlinked.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut term = match signal(SignalKind::terminate()) {
+            Ok(term) => term,
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+/// Serves the app until a stop signal lands, the listener fails, or the
+/// admin socket task ends.
+async fn serve_listener<L>(
+    listener: L,
+    app: axum::Router,
+    admin: Option<tokio::task::JoinHandle<()>>,
+) -> Result<()>
+where
+    L: axum::serve::Listener,
+    L::Addr: std::fmt::Debug,
+{
+    let server = std::future::IntoFuture::into_future(
+        axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()),
+    );
+    tokio::pin!(server);
+    if let Some(mut handle) = admin {
+        use noted::error::unavailable;
+        return tokio::select! {
+            r = &mut server => {
+                handle.abort();
+                let _ = handle.await;
+                r.map_err(|e| rejected(format!("serve: {e}")))
+            }
+            joined = &mut handle => match joined {
+                Ok(()) => Err(unavailable("admin socket server exited unexpectedly")),
+                Err(e) if e.is_cancelled() => Ok(()),
+                Err(e) => Err(unavailable(format!("admin socket task failed: {e}"))),
+            },
+        };
+    }
+    server.await.map_err(|e| rejected(format!("serve: {e}")))
 }
 
 pub fn serve_stdio(cfg: StdioConfig) -> Result<()> {

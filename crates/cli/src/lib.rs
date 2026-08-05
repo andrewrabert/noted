@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
@@ -6,9 +6,9 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use noted::error::{Result, rejected, unavailable};
 use noted::tools::{DeleteArgs, EditArgs, MoveArgs, ReadArgs, SearchNotesArgs, WriteArgs};
 use noted::types::Ttl;
-use noted::{BackendArgs, PolicyArgs};
+use noted::{BackendArgs, Endpoint, PolicyArgs};
 use noted_auth::oauth::service::DEFAULT_CREDENTIAL_TTL_HUMAN;
-use noted_server::serve::{HttpConfig, StdioConfig};
+use noted_server::serve::{Bind, HttpConfig, StdioConfig};
 
 use crate::config::{parse_ttl, setup_logging};
 
@@ -92,7 +92,9 @@ impl GlobalArgs {
                 .policy
                 .as_deref()
                 .map(|raw| match raw.strip_prefix('@') {
-                    Some(path) => format!("@{}", config::expand_home(path).display()),
+                    Some(path) => {
+                        format!("@{}", config::expand_home(Path::new(path)).display())
+                    }
                     None => raw.to_string(),
                 }),
             scope: self.scope.clone(),
@@ -100,19 +102,27 @@ impl GlobalArgs {
         }
     }
 
-    pub(crate) fn backend_args(&self, entries: &EntryFlags) -> BackendArgs {
-        BackendArgs {
-            dir: self
-                .dir
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .map(|dir| config::expand_home(dir).to_string_lossy().into_owned()),
-            url: self.url.clone(),
+    /// `--url`/`NOTED_URL` parsed once: an http(s) server or a unix socket.
+    pub(crate) fn endpoint(&self) -> Result<Option<Endpoint>> {
+        match self.url.as_deref().filter(|s| !s.is_empty()) {
+            None => Ok(None),
+            Some(raw) => Ok(Some(raw.parse()?)),
+        }
+    }
+
+    pub(crate) fn backend_args(&self, entries: &EntryFlags) -> Result<BackendArgs> {
+        Ok(BackendArgs {
+            dir: self.dir.as_deref().filter(|s| !s.is_empty()).map(|dir| {
+                config::expand_home(Path::new(dir))
+                    .to_string_lossy()
+                    .into_owned()
+            }),
+            endpoint: self.endpoint()?,
             token: None,
             source: self.source.clone(),
             policy: self.policy_args(entries),
             transport: None,
-        }
+        })
     }
 }
 
@@ -158,19 +168,16 @@ struct ServerCmd {
 #[derive(Subcommand)]
 enum ServerSub {
     Http(ServeCmd),
+    #[cfg(unix)]
+    Socket(SocketCmd),
     Mcp(McpCmd),
     User(UserCmd),
     Key(KeyCmd),
 }
 
+/// What every served backend takes, whatever it binds
 #[derive(Args)]
-struct ServeCmd {
-    #[arg(long, env = "NOTED_HOST", default_value = "127.0.0.1")]
-    host: String,
-    #[arg(long, env = "NOTED_PORT", default_value_t = 8000)]
-    port: u16,
-    #[arg(long = "public-url", env = "NOTED_PUBLIC_URL")]
-    public_url: Option<String>,
+struct ServerArgs {
     #[arg(long = "auth-db", env = "NOTED_AUTH_DB")]
     auth_db: Option<PathBuf>,
     #[cfg(unix)]
@@ -187,29 +194,71 @@ struct ServeCmd {
     entries: EntryFlags,
 }
 
-impl ServeCmd {
+impl ServerArgs {
     /// The sole adapter from flags to core's server config. Validations whose
     /// messages name CLI flags belong here, not in core.
-    fn into_config(self, globals: &GlobalArgs) -> Result<HttpConfig> {
+    fn into_config(
+        self,
+        globals: &GlobalArgs,
+        bind: Bind,
+        public_url: Option<String>,
+    ) -> Result<HttpConfig> {
         #[cfg(unix)]
         if self.admin_socket.is_some() && self.auth_db.is_none() {
             return Err(rejected("--admin-socket requires --auth-db"));
         }
-        if self.public_url.is_some() && self.auth_db.is_none() {
-            return Err(rejected("--public-url requires --auth-db"));
-        }
         Ok(HttpConfig {
-            backend: globals.backend_args(&self.entries),
-            host: self.host,
-            port: self.port,
-            public_url: self.public_url,
-            auth_db: self
-                .auth_db
-                .map(|p| config::expand_home(&p.to_string_lossy())),
+            backend: globals.backend_args(&self.entries)?,
+            bind,
+            public_url,
+            auth_db: self.auth_db.as_deref().map(config::expand_home),
             #[cfg(unix)]
             admin_socket: self.admin_socket,
             default_ttl: self.default_ttl,
         })
+    }
+}
+
+#[derive(Args)]
+struct ServeCmd {
+    #[arg(long, env = "NOTED_HOST", default_value = "127.0.0.1")]
+    host: String,
+    #[arg(long, env = "NOTED_PORT", default_value_t = 8000)]
+    port: u16,
+    #[arg(long = "public-url", env = "NOTED_PUBLIC_URL")]
+    public_url: Option<String>,
+    #[command(flatten)]
+    server: ServerArgs,
+}
+
+impl ServeCmd {
+    fn into_config(self, globals: &GlobalArgs) -> Result<HttpConfig> {
+        if self.public_url.is_some() && self.server.auth_db.is_none() {
+            return Err(rejected("--public-url requires --auth-db"));
+        }
+        let bind = Bind::Tcp {
+            host: self.host,
+            port: self.port,
+        };
+        self.server.into_config(globals, bind, self.public_url)
+    }
+}
+
+/// Serve the HTTP app on a Unix socket
+#[cfg(unix)]
+#[derive(Args)]
+struct SocketCmd {
+    /// Socket to bind
+    path: PathBuf,
+    #[command(flatten)]
+    server: ServerArgs,
+}
+
+#[cfg(unix)]
+impl SocketCmd {
+    fn into_config(self, globals: &GlobalArgs) -> Result<HttpConfig> {
+        let bind = Bind::Socket(noted::endpoint::socket_path(&self.path)?);
+        self.server.into_config(globals, bind, None)
     }
 }
 
@@ -222,7 +271,7 @@ struct McpCmd {
 impl McpCmd {
     fn into_config(self, globals: &GlobalArgs) -> Result<StdioConfig> {
         Ok(StdioConfig {
-            backend: globals.backend_args(&self.entries),
+            backend: globals.backend_args(&self.entries)?,
         })
     }
 }
@@ -255,6 +304,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
 fn run_server(cmd: ServerCmd, globals: &GlobalArgs) -> Result<ExitCode> {
     match cmd.sub {
         ServerSub::Http(c) => {
+            noted_server::serve::serve_http(c.into_config(globals)?).map(|()| ExitCode::SUCCESS)
+        }
+        #[cfg(unix)]
+        ServerSub::Socket(c) => {
             noted_server::serve::serve_http(c.into_config(globals)?).map(|()| ExitCode::SUCCESS)
         }
         ServerSub::Mcp(c) => {

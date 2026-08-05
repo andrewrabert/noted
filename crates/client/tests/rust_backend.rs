@@ -17,7 +17,7 @@ fn remote(dir: &tempfile::TempDir) -> Backend {
 
 fn remote_with_token(dir: &tempfile::TempDir, token: Option<&str>) -> Backend {
     Backend::new(BackendArgs {
-        url: Some("http://test".to_string()),
+        endpoint: Some("http://test".parse().unwrap()),
         token: token.map(Bearer::new),
         transport: Some(Transport::Router(open_app(dir))),
         ..Default::default()
@@ -87,7 +87,7 @@ async fn http_sends_and_checks_bearer_token() {
     let authed_app = build_app(common::backend(&dir), Some(svc), None);
 
     let ok_backend = Backend::new(BackendArgs {
-        url: Some("http://test".to_string()),
+        endpoint: Some("http://test".parse().unwrap()),
         token: Some(Bearer::new(token)),
         transport: Some(Transport::Router(authed_app.clone())),
         ..Default::default()
@@ -99,7 +99,7 @@ async fn http_sends_and_checks_bearer_token() {
     assert!(ok.render().contains("# Inbox"));
 
     let bad_backend = Backend::new(BackendArgs {
-        url: Some("http://test".to_string()),
+        endpoint: Some("http://test".parse().unwrap()),
         token: Some(Bearer::new("noted_key_wrong")),
         transport: Some(Transport::Router(authed_app)),
         ..Default::default()
@@ -137,7 +137,7 @@ fn canned(status: u16, body: &'static str) -> axum::Router {
 
 async fn invoke_canned(status: u16, body: &'static str) -> Result<ToolOutput, NotedError> {
     let backend = Backend::new(BackendArgs {
-        url: Some("http://x".to_string()),
+        endpoint: Some("http://x".parse().unwrap()),
         transport: Some(Transport::Router(canned(status, body))),
         ..Default::default()
     })
@@ -210,4 +210,22 @@ async fn search_path_mode_lists_every_note_for_the_picker() {
         !paths.iter().any(|p| p.starts_with("Log/")),
         "the picker offers the open region only, never the log"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_socket_endpoint_refuses_an_in_process_router() {
+    let dir = common::fixture_dir();
+    let result = Backend::new(BackendArgs {
+        endpoint: Some("unix:///run/noted.sock".parse().unwrap()),
+        transport: Some(Transport::Router(open_app(&dir))),
+        ..Default::default()
+    });
+    let Err(err) = result else {
+        panic!("expected a socket endpoint to refuse a router");
+    };
+    let NotedError::InvalidInput(msg) = &err else {
+        panic!("expected InvalidInput, got {err:?}");
+    };
+    assert!(msg.contains("in-process router"), "{msg}");
 }
