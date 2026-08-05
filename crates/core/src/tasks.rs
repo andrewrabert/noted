@@ -11,6 +11,7 @@ use crate::note::Note;
 use crate::path::{Path, Reserved};
 use crate::search::SearchQuery;
 use crate::types::{TaskBody, Timestamp};
+use crate::util::case_order;
 
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ValueEnum,
@@ -222,10 +223,7 @@ impl TryFrom<String> for TaskRef {
 
 impl Ord for TaskRef {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0
-            .to_lowercase()
-            .cmp(&other.0.to_lowercase())
-            .then_with(|| self.0.cmp(&other.0))
+        case_order(self.as_str(), other.as_str())
     }
 }
 

@@ -68,6 +68,8 @@ fn paths_order_case_insensitively_then_by_bytes() {
             rp("cherry.md")
         ]
     );
+    assert!(rp("A/b.md") < rp("a/b.md"));
+    assert!(rp("а.md") < rp("Я.md"));
 }
 
 #[test]

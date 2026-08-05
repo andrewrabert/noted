@@ -25,6 +25,15 @@ impl HttpUrl {
         }
         HttpUrl(url)
     }
+
+    // the url's path, with '?' and the query appended when the url carries one
+    // always begins with '/'
+    pub fn path_and_query(&self) -> String {
+        match self.0.query() {
+            Some(query) => format!("{}?{}", self.0.path(), query),
+            None => self.0.path().to_string(),
+        }
+    }
 }
 
 impl std::str::FromStr for HttpUrl {
@@ -79,6 +88,18 @@ mod tests {
             prefixed.join("macaroon/revoke").as_str(),
             "http://host:8000/api/macaroon/revoke"
         );
+    }
+
+    #[test]
+    fn path_and_query_carries_the_base_path_and_query() {
+        let prefixed: HttpUrl = "http://host:8000/api".parse().unwrap();
+        assert_eq!(
+            prefixed.join("tool/ReadNote").path_and_query(),
+            "/api/tool/ReadNote"
+        );
+
+        let queried: HttpUrl = "http://host:8000/tool/ReadNote?x=1".parse().unwrap();
+        assert_eq!(queried.path_and_query(), "/tool/ReadNote?x=1");
     }
 
     #[test]

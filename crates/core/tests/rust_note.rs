@@ -66,3 +66,15 @@ fn read_returns_a_note_matching_the_file() {
         TextNote::new(rp("g.md"), "hello world\n").etag()
     );
 }
+
+#[test]
+fn etag_parses_either_case_and_rejects_malformed_tokens() {
+    let etag = TextNote::new(rp("a.md"), "payload").etag();
+    let lower = etag.to_string();
+    let upper: Etag = lower.to_uppercase().parse().unwrap();
+    assert_eq!(upper, lower.parse::<Etag>().unwrap());
+
+    for bad in [&lower[..63], &format!("{lower}0")[..], "", &"z".repeat(64)] {
+        assert!(bad.parse::<Etag>().is_err(), "accepted {bad:?}");
+    }
+}

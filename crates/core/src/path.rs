@@ -6,6 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{NotedError, Result, rejected};
+use crate::util::case_order;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Segment(String);
@@ -192,10 +193,7 @@ impl TryFrom<String> for Path {
 
 impl Ord for Path {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.as_str()
-            .to_lowercase()
-            .cmp(&other.as_str().to_lowercase())
-            .then_with(|| self.0.cmp(&other.0))
+        case_order(self.as_str(), other.as_str())
     }
 }
 

@@ -12,6 +12,15 @@ pub fn random_token(n_bytes: usize) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&bytes)
 }
 
+// orders by unicode-lowercased chars, falling back to raw order as the
+// tiebreak; allocates nothing per comparison
+pub fn case_order(a: &str, b: &str) -> std::cmp::Ordering {
+    a.chars()
+        .flat_map(char::to_lowercase)
+        .cmp(b.chars().flat_map(char::to_lowercase))
+        .then_with(|| a.cmp(b))
+}
+
 fn new_temp(parent: &StdPath) -> Result<tempfile::NamedTempFile> {
     std::fs::create_dir_all(parent).map_err(|e| io_error("mkdir failed", e))?;
     tempfile::Builder::new()

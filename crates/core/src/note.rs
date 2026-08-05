@@ -22,24 +22,15 @@ impl Etag {
 
 impl fmt::Display for Etag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for b in self.0 {
-            write!(f, "{b:02x}")?;
-        }
-        Ok(())
+        f.write_str(&hex::encode(self.0))
     }
 }
 
 impl FromStr for Etag {
     type Err = NotedError;
     fn from_str(s: &str) -> Result<Etag> {
-        if s.len() != 64 {
-            return Err(rejected("invalid write condition token"));
-        }
         let mut out = [0u8; 32];
-        for (i, byte) in out.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
-                .map_err(|_| rejected("invalid write condition token"))?;
-        }
+        hex::decode_to_slice(s, &mut out).map_err(|_| rejected("invalid write condition token"))?;
         Ok(Etag(out))
     }
 }

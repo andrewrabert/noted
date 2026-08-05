@@ -96,6 +96,9 @@ impl Backend {
                         url: url.parse()?,
                         token,
                         transport: transport.unwrap_or(Transport::Real),
+                        client: reqwest::Client::builder().build().map_err(|e| {
+                            unavailable(format!("cannot build an HTTP client: {e}"))
+                        })?,
                     }),
                 })
             }
@@ -213,6 +216,7 @@ struct RemoteBackend {
     url: HttpUrl,
     token: Option<Bearer>,
     transport: Transport,
+    client: reqwest::Client,
 }
 
 impl BackendImpl for RemoteBackend {
@@ -251,14 +255,13 @@ struct AuthorizedRemoteBackend<'a> {
 impl AuthorizedBackendImpl for AuthorizedRemoteBackend<'_> {
     fn invoke<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, Result<ToolOutput>> {
         Box::pin(async move {
-            roundtrip(
-                &self.remote.url,
-                self.bearer.as_ref().map(Bearer::expose),
-                &self.remote.transport,
-                &call.name,
-                &call.args,
-            )
-            .await
+            self.remote
+                .roundtrip(
+                    self.bearer.as_ref().map(Bearer::expose),
+                    &call.name,
+                    &call.args,
+                )
+                .await
         })
     }
 
@@ -271,39 +274,49 @@ impl AuthorizedBackendImpl for AuthorizedRemoteBackend<'_> {
     }
 }
 
-async fn roundtrip(
-    url: &HttpUrl,
-    token: Option<&str>,
-    transport: &Transport,
-    name: &str,
-    args: &Value,
-) -> Result<ToolOutput> {
-    let body = serde_json::to_vec(args).unwrap_or_default();
-    let target = url.join(&format!("tool/{name}"));
-    let (status, resp_body) = match send(transport, target.as_str(), token, body).await {
-        Ok(pair) => pair,
-        Err(e) => return Err(unavailable(format!("cannot reach {url}: {e}"))),
-    };
-    if status >= 500 {
-        return Err(unavailable(
-            detail(&resp_body).unwrap_or_else(|| format!("{url}: HTTP {status}")),
-        ));
+impl RemoteBackend {
+    async fn roundtrip(&self, token: Option<&str>, name: &str, args: &Value) -> Result<ToolOutput> {
+        let url = &self.url;
+        let body = serde_json::to_vec(args).unwrap_or_default();
+        let target = url.join(&format!("tool/{name}"));
+        let (status, resp_body) = match self.send(&target, token, body).await {
+            Ok(pair) => pair,
+            Err(e) => return Err(unavailable(format!("cannot reach {url}: {e}"))),
+        };
+        if status >= 500 {
+            return Err(unavailable(
+                detail(&resp_body).unwrap_or_else(|| format!("{url}: HTTP {status}")),
+            ));
+        }
+        if status >= 400 {
+            let msg = detail(&resp_body).unwrap_or_else(|| format!("HTTP {status}"));
+            return Err(match status {
+                404 => NotedError::NotFound,
+                403 => NotedError::Forbidden,
+                409 => NotedError::Conflict,
+                _ => rejected(msg),
+            });
+        }
+        let parsed: Value = serde_json::from_slice(&resp_body)
+            .map_err(|e| json_error(format!("{url}: malformed response"), e))?;
+        match parsed.get("ok") {
+            Some(ok) => serde_json::from_value::<ToolOutput>(ok.clone())
+                .map_err(|e| json_error(format!("{url}: malformed response"), e)),
+            None => Err(unavailable(format!("{url}: malformed response"))),
+        }
     }
-    if status >= 400 {
-        let msg = detail(&resp_body).unwrap_or_else(|| format!("HTTP {status}"));
-        return Err(match status {
-            404 => NotedError::NotFound,
-            403 => NotedError::Forbidden,
-            409 => NotedError::Conflict,
-            _ => rejected(msg),
-        });
-    }
-    let parsed: Value = serde_json::from_slice(&resp_body)
-        .map_err(|e| json_error(format!("{url}: malformed response"), e))?;
-    match parsed.get("ok") {
-        Some(ok) => serde_json::from_value::<ToolOutput>(ok.clone())
-            .map_err(|e| json_error(format!("{url}: malformed response"), e)),
-        None => Err(unavailable(format!("{url}: malformed response"))),
+
+    // dispatches to the real client or the in-process router
+    async fn send(
+        &self,
+        target: &HttpUrl,
+        token: Option<&str>,
+        body: Vec<u8>,
+    ) -> std::result::Result<(u16, Vec<u8>), String> {
+        match &self.transport {
+            Transport::Real => send_reqwest(&self.client, target, token, body).await,
+            Transport::Router(router) => send_router(router.clone(), target, token, body).await,
+        }
     }
 }
 
@@ -316,26 +329,14 @@ fn detail(body: &[u8]) -> Option<String> {
     }
 }
 
-async fn send(
-    transport: &Transport,
-    target: &str,
-    token: Option<&str>,
-    body: Vec<u8>,
-) -> std::result::Result<(u16, Vec<u8>), String> {
-    match transport {
-        Transport::Real => send_reqwest(target, token, body).await,
-        Transport::Router(router) => send_router(router.clone(), target, token, body).await,
-    }
-}
-
 async fn send_reqwest(
-    target: &str,
+    client: &reqwest::Client,
+    target: &HttpUrl,
     token: Option<&str>,
     body: Vec<u8>,
 ) -> std::result::Result<(u16, Vec<u8>), String> {
-    let client = reqwest::Client::new();
     let mut req = client
-        .post(target)
+        .post(target.as_str())
         .header("content-type", "application/json")
         .body(body);
     if let Some(token) = token {
@@ -349,7 +350,7 @@ async fn send_reqwest(
 
 async fn send_router(
     router: axum::Router,
-    target: &str,
+    target: &HttpUrl,
     token: Option<&str>,
     body: Vec<u8>,
 ) -> std::result::Result<(u16, Vec<u8>), String> {
@@ -357,13 +358,9 @@ async fn send_router(
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    let path = target
-        .split_once("://")
-        .and_then(|(_, rest)| rest.split_once('/').map(|(_, p)| format!("/{p}")))
-        .unwrap_or_else(|| target.to_string());
     let mut builder = Request::builder()
         .method("POST")
-        .uri(path)
+        .uri(target.path_and_query())
         .header("content-type", "application/json");
     if let Some(token) = token {
         builder = builder.header("authorization", format!("Bearer {token}"));

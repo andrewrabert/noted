@@ -934,3 +934,12 @@ fn a_tricky_title_round_trips_through_the_file() {
         assert_eq!(read[0].front().task, tt(title), "title {title:?}");
     }
 }
+
+#[test]
+fn task_refs_order_case_insensitively_then_by_bytes() {
+    let tr = |s: &str| TaskRef::new(s).unwrap();
+    let mut refs = vec![tr("Cherry"), tr("apple"), tr("Banana")];
+    refs.sort();
+    assert_eq!(refs, vec![tr("apple"), tr("Banana"), tr("Cherry")]);
+    assert!(tr("g/A") < tr("g/a"));
+}
