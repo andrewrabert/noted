@@ -162,59 +162,62 @@ impl RegionStore {
         }
     }
 
-    pub(crate) fn read(&self, rel: &Path) -> Result<Vec<u8>> {
-        self.store.read(&self.readable(rel)?)
+    pub(crate) async fn read(&self, rel: &Path) -> Result<Vec<u8>> {
+        self.store.read(&self.readable(rel)?).await
     }
 
-    pub(crate) fn write(&self, rel: &Path, data: &[u8], when: Condition) -> Result<()> {
-        self.store.write(&self.writeable(rel)?, data, when)
+    pub(crate) async fn write(&self, rel: &Path, data: &[u8], when: Condition) -> Result<()> {
+        self.store.write(&self.writeable(rel)?, data, when).await
     }
 
-    pub(crate) fn rename(&self, from: &Path, to: &Path, when: Condition) -> Result<()> {
+    pub(crate) async fn rename(&self, from: &Path, to: &Path, when: Condition) -> Result<()> {
         self.store
             .rename(&self.writeable(from)?, &self.writeable(to)?, when)
+            .await
     }
 
-    pub(crate) fn remove(&self, rel: &Path) -> Result<Trashed> {
-        self.store.remove(&self.writeable(rel)?)?;
+    pub(crate) async fn remove(&self, rel: &Path) -> Result<Trashed> {
+        self.store.remove(&self.writeable(rel)?).await?;
         Ok(Trashed::new(rel.clone()))
     }
 
     // the file carrying an entry's markdown: the entry itself, or 'leaf' inside it
     // when the entry is a directory
-    pub(crate) fn body_of(&self, entry: &Path, leaf: Reserved) -> Result<Path> {
-        match self.store.is_dir(&self.readable(entry)?) {
+    pub(crate) async fn body_of(&self, entry: &Path, leaf: Reserved) -> Result<Path> {
+        match self.store.is_dir(&self.readable(entry)?).await {
             true => Ok(entry.joined_reserved(leaf)),
             false => Ok(entry.clone()),
         }
     }
 
     // every attachment file directly inside 'dir'
-    pub(crate) fn files(&self, dir: &Path) -> Vec<Path> {
-        self.admitted(self.store.files(&self.from(Some(dir))))
+    pub(crate) async fn files(&self, dir: &Path) -> Vec<Path> {
+        self.admitted(self.store.files(&self.from(Some(dir))).await)
     }
 
-    pub(crate) fn attach(
+    pub(crate) async fn attach(
         &self,
         entry: &Path,
         leaf: Reserved,
         file: &Path,
         data: &[u8],
     ) -> Result<()> {
-        self.store.attach(
-            &self.writeable(entry)?,
-            &self.writeable(&entry.joined_reserved(leaf))?,
-            &self.writeable(file)?,
-            data,
-        )
+        self.store
+            .attach(
+                &self.writeable(entry)?,
+                &self.writeable(&entry.joined_reserved(leaf))?,
+                &self.writeable(file)?,
+                data,
+            )
+            .await
     }
 
-    pub(crate) fn walk(&self, dir: Option<&Path>) -> Vec<Path> {
-        self.admitted(self.store.walk(&self.from(dir)))
+    pub(crate) async fn walk(&self, dir: Option<&Path>) -> Vec<Path> {
+        self.admitted(self.store.walk(&self.from(dir)).await)
     }
 
-    pub(crate) fn children(&self, dir: Option<&Path>) -> Vec<Path> {
-        self.admitted(self.store.children(&self.from(dir)))
+    pub(crate) async fn children(&self, dir: Option<&Path>) -> Vec<Path> {
+        self.admitted(self.store.children(&self.from(dir)).await)
     }
 
     fn admitted(&self, found: Vec<Path>) -> Vec<Path> {

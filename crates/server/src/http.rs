@@ -1,12 +1,12 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use axum::{
     Extension, Json, Router,
     extract::{Path, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
-    routing::post,
+    response::{Html, IntoResponse, Response},
+    routing::{get, post},
 };
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
@@ -20,6 +20,40 @@ use noted::{Backend, ToolCall};
 use noted_auth::oauth::service::BearerKind;
 use noted_auth::oauth::types::Secret;
 use noted_auth::{AuthService, AuthState, OAuthProvider};
+
+const APP_JS: &str = "/noted_ui.js";
+const GLUE: &str = include_str!(concat!(env!("OUT_DIR"), "/noted_ui.js"));
+
+static DOCUMENT: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "<!DOCTYPE html>\
+         <html lang=\"en\">\
+         <head>\
+         <meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+         <title>noted</title>\
+         <style>html,body{{margin:0;height:100%;overflow:hidden;background:#1a1b26}}</style>\
+         </head>\
+         <body>\
+         <script type=\"module\">\
+         import init, {{ WASM }} from \"{APP_JS}\";\
+         init({{ module_or_path: Uint8Array.from(atob(WASM), c => c.charCodeAt(0)) }});\
+         </script>\
+         </body>\
+         </html>"
+    )
+});
+
+async fn document() -> Html<&'static str> {
+    Html(DOCUMENT.as_str())
+}
+
+async fn glue() -> ([(HeaderName, &'static str); 1], &'static str) {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        GLUE,
+    )
+}
 
 fn error_response(error: NotedError) -> Response {
     let status = match &error {
@@ -93,6 +127,8 @@ pub fn build_app(
     Router::new()
         .nest_service("/mcp", mcp_service)
         .merge(tool_router)
+        .route("/", get(document))
+        .route(APP_JS, get(glue))
 }
 
 fn bearer(headers: &HeaderMap) -> Option<Secret> {

@@ -18,8 +18,8 @@ impl NoteTools {
         assemble(query, hits)
     }
 
-    pub(super) fn read(&self, path: &Path) -> Result<TextNote> {
-        let bytes = self.region.read(path).map_err(|e| match e {
+    pub(super) async fn read(&self, path: &Path) -> Result<TextNote> {
+        let bytes = self.region.read(path).await.map_err(|e| match e {
             NotedError::Io { .. } => NotedError::NotFound,
             other => other,
         })?;
@@ -27,18 +27,21 @@ impl NoteTools {
         Ok(TextNote::new(path.clone(), text))
     }
 
-    pub(super) fn write(&self, note: &TextNote, condition: Condition) -> Result<()> {
-        self.region.write(note.path(), &note.to_bytes(), condition)
+    pub(super) async fn write(&self, note: &TextNote, condition: Condition) -> Result<()> {
+        self.region
+            .write(note.path(), &note.to_bytes(), condition)
+            .await
     }
 
-    pub(super) fn edit(&self, path: &Path, edit: &Edit) -> Result<TextNote> {
-        let original = self.read(path)?;
+    pub(super) async fn edit(&self, path: &Path, edit: &Edit) -> Result<TextNote> {
+        let original = self.read(path).await?;
         let revised = original.clone().with_body(edit.apply(original.body())?);
-        self.write(&revised, Condition::Matching(original.etag()))?;
+        self.write(&revised, Condition::Matching(original.etag()))
+            .await?;
         Ok(revised)
     }
 
-    pub(super) fn move_(&self, path: &Path, dest: &Path, overwrite: bool) -> Result<()> {
+    pub(super) async fn move_(&self, path: &Path, dest: &Path, overwrite: bool) -> Result<()> {
         if dest == path {
             return Err(rejected("source and destination are the same"));
         }
@@ -49,13 +52,16 @@ impl NoteTools {
             true => Condition::Always,
             false => Condition::Missing,
         };
-        self.region.rename(path, dest, when).map_err(|e| match e {
-            NotedError::Io { .. } => rejected("cannot overwrite non-empty folder"),
-            other => other,
-        })
+        self.region
+            .rename(path, dest, when)
+            .await
+            .map_err(|e| match e {
+                NotedError::Io { .. } => rejected("cannot overwrite non-empty folder"),
+                other => other,
+            })
     }
 
-    pub(super) fn delete(&self, path: &Path) -> Result<Trashed> {
-        self.region.remove(path)
+    pub(super) async fn delete(&self, path: &Path) -> Result<Trashed> {
+        self.region.remove(path).await
     }
 }

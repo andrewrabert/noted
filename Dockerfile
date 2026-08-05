@@ -5,6 +5,9 @@
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY . .
+# crates/server's build script compiles the web UI to wasm and embeds it, so
+# the target is required to build the binary at all.
+RUN rustup target add wasm32-unknown-unknown
 RUN cargo build --release --bin noted
 
 FROM debian:bookworm-slim AS runtime

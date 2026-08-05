@@ -27,6 +27,7 @@ noted <command>
   log     Log entries (create/get/search)
   task    Task tracker (create/get/update/move/search)
   auth    Log in to a remote server, mint agent credentials
+  web     Serve the web UI in a browser
   server  Run and manage the server (http/mcp/user/key)
 ```
 
@@ -54,6 +55,12 @@ A task carrying attachments is a directory named exactly like its markdown file
 (`task_0001.md/`), holding the markdown as `.task.md` alongside the attachments; its
 path in every task tool is unchanged.
 
+`noted web` serves a self-contained WebAssembly UI — the whole surface, over the
+same fifteen tools — on loopback and opens a browser at it. It honors `--dir` and
+`--url` like the client commands, so the same UI drives local files or a remote
+server, and it owns the credentials: the browser gets a session cookie, never a
+bearer token.
+
 ## Configuration
 
 Every `NOTED_*` var can also live in a dotenv file at `NOTED_ENV_FILE`; the process
@@ -70,6 +77,8 @@ environment wins. CLI flags override both.
 | `NOTED_TOKEN`        | `--token`        | *(stored login)*      | Bearer for the remote server.                        |
 | `NOTED_HOST`         | `--host`         | `127.0.0.1`           | `server http` bind address.                          |
 | `NOTED_PORT`         | `--port`         | `8000`                | `server http` port.                                  |
+| `NOTED_WEB_HOST`     | `--host`         | `127.0.0.1`           | `web` bind address.                                  |
+| `NOTED_WEB_PORT`     | `--port`         | `8001`                | `web` port.                                          |
 | `NOTED_AUTH_DB`      | `--auth-db`      | -                     | Auth database; setting it enables auth.              |
 | `NOTED_ADMIN_SOCKET` | `--admin-socket` | -                     | Unix socket for live user/key admin (mode 0600).     |
 | `NOTED_PUBLIC_URL`   | `--public-url`   | -                     | External `https` base URL; enables the OAuth server. |
@@ -150,7 +159,7 @@ UI requires; sign in with a username/password from the auth DB.
 Uses [just](https://github.com/casey/just):
 
 ```
-build          Build the crate
+build          Build the crates
 check          Run all static checks + tests
 fmt            Format the sources
 fmt-check      Verify formatting without writing
@@ -160,3 +169,17 @@ lint           Lint with clippy (warnings are errors)
 test           Run the test suite
 run *args      Run the noted CLI (NOTED_DIR must be set)
 ```
+
+Building `noted` requires the wasm target:
+
+```
+rustup target add wasm32-unknown-unknown
+```
+
+`crates/web` (the UI) is excluded from the workspace: `webgl` and `fira-sans` are
+wasm-only iced features, and a member would drag winit/wgpu into every host
+build. `crates/web-host`'s build script reaches it anyway — a nested `cargo` run
+against its manifest, then wasm-bindgen as a library — and embeds the document,
+the glue and the module into the binary. Nothing generated is committed and no
+tool beyond the rustup target has to be installed, so a plain `cargo build`
+produces a `noted` that serves the UI.

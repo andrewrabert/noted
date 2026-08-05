@@ -1,17 +1,15 @@
 use std::collections::BTreeMap;
 use std::path::{Path as StdPath, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::SystemTime;
 
-use grep::searcher::SearcherBuilder;
-use ignore::{IncrementalIgnore, WalkBuilder, WalkState};
-
-use crate::error::{NotedError, Result, io_error, rejected, unavailable};
+use crate::error::{NotedError, Result, io_error, rejected};
 use crate::note::{Condition, Etag};
-use crate::path::{DirPath, Path, Reserved};
+use crate::path::{DirPath, Path};
+use crate::platform::{self, Entry};
 use crate::policy::{Readable, Writeable};
-use crate::search::{Hit, LineSink, SearchMode, SearchOrder, SearchQuery, build_matcher, narrow};
-use crate::util::{atomic_create, atomic_write, normalize, temp_dir_in};
+use crate::search::{Hit, SearchQuery};
+use crate::util::random_token;
 
 const TRASH: &str = ".trash";
 
@@ -32,20 +30,10 @@ impl NotedDir {
 }
 
 pub(crate) struct RawHit {
-    path: Path,
-    modified: SystemTime,
-    lines: BTreeMap<u64, String>,
-}
-
-fn ordered(hits: &mut [RawHit], order: SearchOrder) {
-    match order {
-        SearchOrder::Path => hits.sort_by(|a, b| a.path.cmp(&b.path)),
-        SearchOrder::Modified => hits.sort_by(|a, b| {
-            b.modified
-                .cmp(&a.modified)
-                .then_with(|| a.path.cmp(&b.path))
-        }),
-    }
+    pub(crate) path: Path,
+    #[allow(dead_code)]
+    pub(crate) modified: SystemTime,
+    pub(crate) lines: BTreeMap<u64, String>,
 }
 
 impl RawHit {
@@ -59,9 +47,7 @@ impl RawHit {
                 path: self.path,
                 lines: self.lines,
             }),
-            false => Err(crate::error::rejected(
-                "search hit unlocked by another path",
-            )),
+            false => Err(rejected("search hit unlocked by another path")),
         }
     }
 }
@@ -84,281 +70,227 @@ fn spare_names(at: &Path) -> impl Iterator<Item = String> + use<> {
 }
 
 struct StoreInner {
-    root: PathBuf,
-    writes: Mutex<()>,
+    base: PathBuf,
+    writes: platform::Lock,
 }
 
 #[derive(Clone)]
-pub(crate) struct Store(Arc<StoreInner>);
+pub(crate) struct Store {
+    inner: Arc<StoreInner>,
+}
 
 impl Store {
     pub(crate) fn open(dir: NotedDir) -> Result<Store> {
-        let root = dir
+        let base = dir
             .0
             .canonicalize()
             .map_err(|e| io_error("notes dir unusable", e))?;
-        Ok(Store(Arc::new(StoreInner {
-            root,
-            writes: Mutex::new(()),
-        })))
+        Ok(Store {
+            inner: Arc::new(StoreInner {
+                base,
+                writes: platform::Lock::new(),
+            }),
+        })
     }
 
-    // the tree's only ignore configuration: '.ignore' and '.gitignore' as the
-    // ignore crate reads them, rooted at the notes root
-    fn ignoring(&self) -> WalkBuilder {
-        let mut wb = WalkBuilder::new(&self.0.root);
-        wb.hidden(false)
-            .parents(false)
-            .ignore(true)
-            .git_ignore(true)
-            .git_global(false)
-            .git_exclude(false)
-            .require_git(false);
-        wb
-    }
-
-    // that same configuration as a matcher for a path reached without a walk
-    fn gate(&self) -> IncrementalIgnore {
-        match self.ignoring().build_matchers().into_iter().next() {
-            Some(gate) => gate,
-            None => unreachable!("a walk builder always carries its root"),
-        }
+    fn base(&self) -> &StdPath {
+        &self.inner.base
     }
 
     fn absolute(&self, at: &Path) -> PathBuf {
-        self.0.root.join(at.as_str())
+        self.inner.base.join(at.as_str())
     }
 
     fn directory(&self, from: &DirPath) -> PathBuf {
         match from.to_path() {
             Some(at) => self.absolute(&at),
-            None => self.0.root.clone(),
+            None => self.inner.base.clone(),
         }
     }
 
-    fn rel(&self, abs: &StdPath) -> Option<Path> {
-        let cleaned = normalize(abs);
-        let under = cleaned.strip_prefix(&self.0.root).ok()?;
-        Path::stored(under.to_string_lossy().as_ref()).ok()
+    // where a listing of 'from' starts in root-relative terms
+    fn prefix(&self, from: &DirPath) -> String {
+        match from.to_path() {
+            Some(at) => format!("{at}/"),
+            None => String::new(),
+        }
     }
 
-    fn addressable(&self, at: &Path) -> Result<PathBuf> {
+    async fn addressable(&self, at: &Path) -> Result<PathBuf> {
         let abs = self.absolute(at);
-        if self.crosses_symlink(at.as_str())
-            || self.gate().matched(at.as_str(), abs.is_dir()).is_ignore()
+        if platform::crosses_symlink(self.base(), &abs)
+            || platform::ignored(self.base(), &abs).await?
         {
             return Err(rejected("invalid path"));
         }
         Ok(abs)
     }
 
-    fn crosses_symlink(&self, at: &str) -> bool {
-        let mut walked = self.0.root.clone();
-        for part in at.split('/').filter(|p| !p.is_empty()) {
-            walked.push(part);
-            if let Ok(meta) = std::fs::symlink_metadata(&walked)
-                && meta.file_type().is_symlink()
-            {
-                return true;
-            }
-        }
-        false
+    // the entry's kind as its parent directory reports it, None when it is not
+    // there at all
+    async fn kind(&self, abs: &StdPath) -> Option<bool> {
+        let parent = abs.parent()?;
+        let name = abs.file_name()?.to_string_lossy().into_owned();
+        platform::entries(self.base(), parent, false)
+            .await
+            .ok()?
+            .into_iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.is_dir)
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.0.writes.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn current(&self, abs: &StdPath) -> Result<Option<Vec<u8>>> {
-        match std::fs::read(abs) {
+    async fn current(&self, abs: &StdPath) -> Result<Option<Vec<u8>>> {
+        match platform::read(abs).await {
             Ok(bytes) => Ok(Some(bytes)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(io_error("cannot read note", e)),
+            Err(NotedError::NotFound) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
-    fn precondition(&self, abs: &StdPath, when: &Condition) -> Result<()> {
+    pub(crate) async fn read(&self, at: &Readable) -> Result<Vec<u8>> {
+        platform::read(&self.addressable(&at.0).await?).await
+    }
+
+    pub(crate) async fn write(&self, at: &Writeable, data: &[u8], when: Condition) -> Result<()> {
+        let abs = self.addressable(&at.0).await?;
+        let _guard = self.inner.writes.hold().await;
         match when {
-            Condition::Always => Ok(()),
-            Condition::Missing => match std::fs::symlink_metadata(abs).is_ok() {
-                false => Ok(()),
-                true => Err(NotedError::Conflict),
+            Condition::Always => platform::write(&abs, data).await,
+            Condition::Missing => platform::create(&abs, data).await,
+            Condition::Exists => match self.kind(&abs).await {
+                Some(_) => platform::write(&abs, data).await,
+                None => Err(NotedError::NotFound),
             },
-            Condition::Exists => match std::fs::symlink_metadata(abs).is_ok() {
-                true => Ok(()),
-                false => Err(NotedError::NotFound),
-            },
-            Condition::Matching(token) => match self.current(abs)? {
-                Some(bytes) if &Etag::of(&bytes) == token => Ok(()),
-                Some(_) => Err(NotedError::Conflict),
-                None => Err(NotedError::Conflict),
+            Condition::Matching(token) => match self.current(&abs).await? {
+                Some(bytes) if Etag::of(&bytes) == token => platform::write(&abs, data).await,
+                _ => Err(NotedError::Conflict),
             },
         }
     }
 
-    pub(crate) fn read(&self, at: &Readable) -> Result<Vec<u8>> {
-        std::fs::read(self.addressable(&at.0)?).map_err(|e| io_error("no note", e))
+    pub(crate) async fn rename(
+        &self,
+        from: &Writeable,
+        to: &Writeable,
+        when: Condition,
+    ) -> Result<()> {
+        let source = self.addressable(&from.0).await?;
+        let target = self.addressable(&to.0).await?;
+        let _guard = self.inner.writes.hold().await;
+        match when {
+            Condition::Missing => platform::rename(&source, &target, false).await,
+            Condition::Always => platform::rename(&source, &target, true).await,
+            Condition::Exists => match self.kind(&target).await {
+                Some(_) => platform::rename(&source, &target, true).await,
+                None => Err(NotedError::NotFound),
+            },
+            Condition::Matching(token) => match self.current(&target).await? {
+                Some(bytes) if Etag::of(&bytes) == token => {
+                    platform::rename(&source, &target, true).await
+                }
+                _ => Err(NotedError::Conflict),
+            },
+        }
     }
 
-    pub(crate) fn write(&self, at: &Writeable, data: &[u8], when: Condition) -> Result<()> {
-        let abs = self.addressable(&at.0)?;
-        let _guard = self.lock();
-        self.precondition(&abs, &when)?;
-        atomic_write(&abs, data)
-    }
-
-    pub(crate) fn rename(&self, from: &Writeable, to: &Writeable, when: Condition) -> Result<()> {
-        let source = self.addressable(&from.0)?;
-        let target = self.addressable(&to.0)?;
-        let _guard = self.lock();
-        if !source.exists() {
-            return Err(NotedError::NotFound);
-        }
-        self.precondition(&target, &when)?;
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| io_error("cannot create folder", e))?;
-        }
-        std::fs::rename(&source, &target).map_err(|e| io_error("cannot rename", e))
-    }
-
-    pub(crate) fn remove(&self, at: &Writeable) -> Result<()> {
-        let at = &at.0;
-        let source = self.addressable(at)?;
-        let _guard = self.lock();
-        if !source.exists() {
-            return Err(NotedError::NotFound);
-        }
-        for candidate in spare_names(at) {
-            let target = self.0.root.join(TRASH).join(&candidate);
-            if target.exists() {
-                continue;
+    pub(crate) async fn remove(&self, at: &Writeable) -> Result<()> {
+        let from = self.addressable(&at.0).await?;
+        let _guard = self.inner.writes.hold().await;
+        for candidate in spare_names(&at.0) {
+            let target = self.inner.base.join(TRASH).join(&candidate);
+            match platform::relocate(&from, &target).await {
+                Err(NotedError::Conflict) => continue,
+                other => return other,
             }
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| io_error("delete failed", e))?;
-            }
-            return match std::fs::rename(&source, &target) {
-                Ok(()) => Ok(()),
-                Err(e) => Err(io_error("delete failed", e)),
-            };
         }
         Err(NotedError::Conflict)
     }
 
-    pub(crate) fn walk(&self, from: &DirPath) -> Vec<Path> {
-        let mut out = Vec::new();
-        self.collect(
-            &mut self.gate(),
-            &self.directory(from),
-            Listing::Notes { deep: true },
-            &mut out,
-        );
-        out
+    pub(crate) async fn walk(&self, from: &DirPath) -> Vec<Path> {
+        self.listing(from, Listing::Notes { deep: true }).await
     }
 
-    pub(crate) fn children(&self, from: &DirPath) -> Vec<Path> {
-        let mut out = Vec::new();
-        self.collect(
-            &mut self.gate(),
-            &self.directory(from),
-            Listing::Notes { deep: false },
-            &mut out,
-        );
-        out
+    pub(crate) async fn children(&self, from: &DirPath) -> Vec<Path> {
+        self.listing(from, Listing::Notes { deep: false }).await
     }
 
     // every plain file directly inside 'from', whatever its extension
-    pub(crate) fn files(&self, from: &DirPath) -> Vec<Path> {
+    pub(crate) async fn files(&self, from: &DirPath) -> Vec<Path> {
+        self.listing(from, Listing::Files).await
+    }
+
+    async fn listing(&self, from: &DirPath, listing: Listing) -> Vec<Path> {
         let mut out = Vec::new();
-        self.collect(
-            &mut self.gate(),
-            &self.directory(from),
-            Listing::Files,
-            &mut out,
-        );
+        self.collect(&self.directory(from), &self.prefix(from), listing, &mut out)
+            .await;
         out
     }
 
-    pub(crate) fn is_dir(&self, at: &Readable) -> bool {
-        match self.addressable(&at.0) {
-            Ok(abs) => abs.is_dir(),
+    pub(crate) async fn is_dir(&self, at: &Readable) -> bool {
+        match self.addressable(&at.0).await {
+            Ok(abs) => self.kind(&abs).await.unwrap_or(false),
             Err(_) => false,
         }
     }
 
     // makes 'entry' a directory carrying its markdown at 'body' when 'entry' is a
     // plain file, then writes 'data' at 'file' inside it, in one rename
-    pub(crate) fn attach(
+    pub(crate) async fn attach(
         &self,
         entry: &Writeable,
         body: &Writeable,
         file: &Writeable,
         data: &[u8],
     ) -> Result<()> {
-        let entry_abs = self.addressable(&entry.0)?;
-        let file_abs = self.addressable(&file.0)?;
+        let entry_abs = self.addressable(&entry.0).await?;
+        let file_abs = self.addressable(&file.0).await?;
         let leaf = body.0.file_name().to_string();
         let name = file.0.file_name().to_string();
-        let _guard = self.lock();
-        let meta = std::fs::symlink_metadata(&entry_abs).map_err(|_| NotedError::NotFound)?;
-        if meta.is_dir() {
-            return atomic_create(&file_abs, data).map_err(|e| match e.kind() {
-                std::io::ErrorKind::AlreadyExists => NotedError::Conflict,
-                _ => io_error("cannot attach", e),
-            });
+        let _guard = self.inner.writes.hold().await;
+        match self.kind(&entry_abs).await {
+            None => return Err(NotedError::NotFound),
+            Some(true) => return platform::create(&file_abs, data).await,
+            Some(false) => {}
         }
 
         let parent = entry_abs.parent().unwrap_or_else(|| StdPath::new("."));
-        let staged = temp_dir_in(parent)?;
-        atomic_write(&staged.path().join(&name), data)?;
-        let held = staged.path().join(&leaf);
-        std::fs::rename(&entry_abs, &held).map_err(|e| io_error("cannot attach", e))?;
-        match std::fs::rename(staged.path(), &entry_abs) {
-            Ok(()) => {
-                let _ = staged.keep();
-                Ok(())
-            }
+        let staged = parent.join(format!(".noted-tmp-{}", random_token(9)));
+        platform::create(&staged.join(&name), data).await?;
+        let held = staged.join(&leaf);
+        platform::rename(&entry_abs, &held, false).await?;
+        match platform::rename(&staged, &entry_abs, false).await {
+            Ok(()) => Ok(()),
             // a failed attach leaves the task where it was
             Err(e) => {
-                let _ = std::fs::rename(&held, &entry_abs);
-                Err(io_error("cannot attach", e))
+                let _ = platform::rename(&held, &entry_abs, true).await;
+                Err(e)
             }
         }
     }
 
-    fn collect(
-        &self,
-        gate: &mut IncrementalIgnore,
-        dir: &StdPath,
-        listing: Listing,
-        out: &mut Vec<Path>,
-    ) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let Ok(kind) = entry.file_type() else {
+    async fn collect(&self, dir: &StdPath, prefix: &str, listing: Listing, out: &mut Vec<Path>) {
+        let found = platform::entries(self.base(), dir, false)
+            .await
+            .unwrap_or_default();
+        for Entry { name, is_dir, .. } in found {
+            if name.starts_with('.') {
+                continue;
+            }
+            let at = format!("{prefix}{name}");
+            let Ok(rel) = Path::stored(&at) else {
                 continue;
             };
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if kind.is_symlink() || name.starts_with('.') {
-                continue;
-            }
-            let path = entry.path();
-            let Some(rel) = self.rel(&path) else { continue };
-            if gate.matched(rel.as_str(), kind.is_dir()).is_ignore() {
-                continue;
-            }
             match listing {
-                Listing::Files if kind.is_file() => out.push(rel),
+                Listing::Files if !is_dir => out.push(rel),
                 Listing::Files => {}
-                Listing::Notes { .. } if kind.is_file() => {
+                Listing::Notes { .. } if !is_dir => {
                     if name.ends_with(".md") {
                         out.push(rel);
                     }
                 }
-                Listing::Notes { .. } if name.ends_with(".md") && kind.is_dir() => out.push(rel),
-                Listing::Notes { deep: true } if kind.is_dir() => {
-                    self.collect(gate, &path, listing, out)
+                Listing::Notes { .. } if name.ends_with(".md") => out.push(rel),
+                Listing::Notes { deep: true } => {
+                    Box::pin(self.collect(&dir.join(&name), &format!("{at}/"), listing, out)).await
                 }
                 Listing::Notes { .. } => {}
             }
@@ -366,98 +298,6 @@ impl Store {
     }
 
     pub(crate) async fn search(&self, from: &DirPath, query: &SearchQuery) -> Result<Vec<RawHit>> {
-        let matcher = match query.mode {
-            SearchMode::Path => None,
-            _ => Some(build_matcher(query)?),
-        };
-        let store = self.clone();
-        let base = self.directory(from);
-        let query = query.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let matched: Mutex<Vec<RawHit>> = Mutex::new(Vec::new());
-            let walked: Mutex<Vec<RawHit>> = Mutex::new(Vec::new());
-
-            let mut wb = store.walk_builder(&base);
-            narrow(&mut wb, &base, &query)?;
-            wb.build_parallel().run(|| {
-                let mut searcher = SearcherBuilder::new()
-                    .line_number(true)
-                    .multi_line(query.multiline)
-                    .before_context(query.context as usize)
-                    .after_context(query.context as usize)
-                    .build();
-                let matcher = matcher.as_ref();
-                let matched = &matched;
-                let walked = &walked;
-                let store = &store;
-                Box::new(move |entry| {
-                    let Ok(entry) = entry else {
-                        return WalkState::Continue;
-                    };
-                    match entry.file_type() {
-                        Some(kind) if kind.is_file() => {}
-                        _ => return WalkState::Continue,
-                    }
-                    let modified = entry
-                        .metadata()
-                        .and_then(|meta| meta.modified().map_err(ignore::Error::from))
-                        .unwrap_or(SystemTime::UNIX_EPOCH);
-                    let path = entry.into_path();
-                    let Some(rel) = store.rel(&path) else {
-                        return WalkState::Continue;
-                    };
-                    if let Some(matcher) = matcher {
-                        let mut sink = LineSink::new();
-                        if searcher.search_path(matcher, &path, &mut sink).is_err() {
-                            return WalkState::Continue;
-                        }
-                        if !sink.lines.is_empty() {
-                            matched
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .push(RawHit {
-                                    path: rel,
-                                    modified,
-                                    lines: sink.lines,
-                                });
-                            return WalkState::Continue;
-                        }
-                    }
-                    walked
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .push(RawHit {
-                            path: rel,
-                            modified,
-                            lines: BTreeMap::new(),
-                        });
-                    WalkState::Continue
-                })
-            });
-
-            let mut hits = matched.into_inner().unwrap_or_else(|e| e.into_inner());
-            if matches!(query.mode, SearchMode::Any | SearchMode::Path) {
-                hits.extend(walked.into_inner().unwrap_or_else(|e| e.into_inner()));
-            }
-            ordered(&mut hits, query.order);
-            Ok(hits)
-        })
-        .await
-        .map_err(|e| unavailable(format!("search: {e}")))?
-    }
-
-    fn walk_builder(&self, base: &StdPath) -> WalkBuilder {
-        let base = base.to_path_buf();
-        let mut wb = self.ignoring();
-        wb.filter_entry(move |entry| {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy();
-            let toward_base = base.starts_with(path);
-            let visible =
-                toward_base || !name.starts_with('.') || name == Reserved::TaskBody.as_str();
-            (toward_base || path.starts_with(&base)) && visible && !entry.path_is_symlink()
-        });
-        wb
+        platform::grep(self.base(), &self.directory(from), query).await
     }
 }

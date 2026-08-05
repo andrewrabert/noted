@@ -1,12 +1,10 @@
-use std::future::Future;
-use std::pin::Pin;
-
 use serde_json::Value;
 
 use crate::authorization::{Authorization, Bearer};
 use crate::error::{NotedError, Result, json_error, rejected, unavailable};
 use crate::fragment::PolicyFragment;
 use crate::httpurl::HttpUrl;
+use crate::platform::{BoxFuture, Router, Threadsafe};
 use crate::policy::RegionPolicy;
 use crate::policyargs::PolicyArgs;
 use crate::regions::{RegionDir, folded};
@@ -16,8 +14,6 @@ use crate::tools::{ToolArgs, ToolOutput, is_tool, permitted, run_tool, tool_defs
 use crate::types::Source;
 
 const INSTRUCTIONS: &str = "This is the user's personal notes — the canonical place where they keep and organize their own notes, ideas, todos, and log entries as a nested tree of Markdown (.md) files. Whenever the user refers to 'my notes', asks to look something up, record or jot something down, or check what they've written before, use these tools instead of guessing or answering from memory. Search, read, write, edit, move, and delete notes by relative path (e.g. 'proj/ideas.md'). The tree has three regions and each has its own search tool: SearchNotes covers ordinary notes, SearchLog covers Log/, and SearchTasks covers Tasks/ — none of them reaches into another's region. Use LogNote to quickly capture an immutable, timestamped log entry (its metadata is auto-generated and it cannot be edited or deleted), then GetLog to list entries newest first or SearchLog to match their text. Track units of work with the task tools: CreateTask opens a task (optionally in a nested 'group' under Tasks/, e.g. group='dev/noted'); GetTasks reads them (by group prefix, or an exact task path with body=true); UpdateTask advances one (state=created/started/blocked/completed/rejected/invalid); MoveTask changes a task's group. A task is identified by its Tasks-relative path minus '.md' (e.g. 'dev/noted/task_0001'); tasks are managed only through these tools — WriteNote/EditNote are refused under Tasks/.";
-
-type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 #[derive(Default)]
 pub struct BackendArgs {
@@ -32,7 +28,7 @@ pub struct BackendArgs {
 #[derive(Clone)]
 pub enum Transport {
     Real,
-    Router(axum::Router),
+    Router(Router),
 }
 
 pub struct ToolCall {
@@ -168,14 +164,14 @@ Tasks you create land in its task region; log entries you write are stamped with
     }
 }
 
-trait BackendImpl: Send + Sync {
+trait BackendImpl: Threadsafe {
     fn with_authority<'a>(
         &'a self,
         authorization: Option<&Authorization>,
     ) -> Result<Box<dyn AuthorizedBackendImpl + 'a>>;
 }
 
-trait AuthorizedBackendImpl: Send + Sync {
+trait AuthorizedBackendImpl: Threadsafe {
     fn invoke<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, Result<ToolOutput>>;
 
     fn policy(&self, dir: RegionDir) -> &RegionPolicy;
@@ -315,7 +311,7 @@ impl RemoteBackend {
     ) -> std::result::Result<(u16, Vec<u8>), String> {
         match &self.transport {
             Transport::Real => send_reqwest(&self.client, target, token, body).await,
-            Transport::Router(router) => send_router(router.clone(), target, token, body).await,
+            Transport::Router(router) => crate::platform::route(router, target, token, body).await,
         }
     }
 }
@@ -345,36 +341,5 @@ async fn send_reqwest(
     let resp = req.send().await.map_err(|e| e.to_string())?;
     let status = resp.status().as_u16();
     let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    Ok((status, bytes.to_vec()))
-}
-
-async fn send_router(
-    router: axum::Router,
-    target: &HttpUrl,
-    token: Option<&str>,
-    body: Vec<u8>,
-) -> std::result::Result<(u16, Vec<u8>), String> {
-    use axum::http::Request;
-    use http_body_util::BodyExt;
-    use tower::ServiceExt;
-
-    let mut builder = Request::builder()
-        .method("POST")
-        .uri(target.path_and_query())
-        .header("content-type", "application/json");
-    if let Some(token) = token {
-        builder = builder.header("authorization", format!("Bearer {token}"));
-    }
-    let request = builder
-        .body(axum::body::Body::from(body))
-        .map_err(|e| e.to_string())?;
-    let resp = router.oneshot(request).await.map_err(|e| e.to_string())?;
-    let status = resp.status().as_u16();
-    let bytes = resp
-        .into_body()
-        .collect()
-        .await
-        .map_err(|e| e.to_string())?
-        .to_bytes();
     Ok((status, bytes.to_vec()))
 }

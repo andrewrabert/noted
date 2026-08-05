@@ -222,10 +222,10 @@ async fn search_refuses_an_unusable_pattern() {
 }
 
 // created, cwd, host, source, each on its own plain line
-#[test]
-fn a_minted_entry_writes_the_fields_in_order() {
+#[tokio::test]
+async fn a_minted_entry_writes_the_fields_in_order() {
     let dir = fixture_dir();
-    let entry = root(&dir).log_note(&"minted\n".into()).unwrap();
+    let entry = root(&dir).log_note(&"minted\n".into()).await.unwrap();
     let text = String::from_utf8(entry.to_bytes()).unwrap();
     let block = text
         .strip_prefix("---\n")

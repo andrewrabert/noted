@@ -14,16 +14,13 @@ publish = false
 name = "noted"
 
 [dependencies]
-axum = "0.8"
 base64 = "0.23"
 chrono = { workspace = true }
 clap = { workspace = true }
 fast_radix_trie = "1"
-grep = "0.4"
+grep-matcher = "0.1"
+grep-regex = "0.1"
 hex = "0.4"
-hostname = "0.4"
-http-body-util = "0.1"
-ignore = "0.4.31"
 iso8601 = { workspace = true }
 path-clean = "1"
 rand = "0.10"
@@ -34,10 +31,21 @@ serde_json = { workspace = true }
 sha2 = "0.11"
 tempfile = { workspace = true }
 thiserror = "2"
-tokio = { version = "1", features = ["rt"] }
-tower = { version = "0.5", features = ["util"] }
 tracing = { workspace = true }
 url = "2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+axum = "0.8"
+grep-searcher = "0.1"
+hostname = "0.4"
+http-body-util = "0.1"
+ignore = "0.4.31"
+tokio = { version = "1", features = ["rt", "sync"] }
+tower = { version = "0.5", features = ["util"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+chrono = { workspace = true, features = ["wasmbind"] }
+getrandom = { version = "0.4", features = ["wasm_js"] }
 
 [dev-dependencies]
 chrono = { workspace = true }

@@ -260,6 +260,7 @@ async fn a_read_only_task_region_lists_but_never_writes() {
             &"dev".parse().unwrap(),
             &"".into(),
         )
+        .await
         .unwrap();
 
     let (s, _) = post_json(&app, "/tool/GetTasks", Some(&t), &json!({})).await;

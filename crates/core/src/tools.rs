@@ -3,7 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::error::{Result, rejected, unavailable};
+use crate::error::{Result, rejected};
 use crate::note::{Condition, Edit, LogNote, LogQuery, TextNote};
 use crate::path::Path;
 use crate::policy::RegionPolicy;
@@ -674,10 +674,10 @@ fn parse<T: serde::de::DeserializeOwned>(args: &Value) -> Result<T> {
     serde_json::from_value(args.clone()).map_err(|e| rejected(e.to_string()))
 }
 
-/// One arm per tool, split only by how the arm has to run: the three searches
-/// walk the tree asynchronously, everything else is blocking file work handed
-/// to a blocking thread. `run_blocking` owns the remaining names, so an unknown
-/// name is refused in exactly one place.
+/// One arm per tool, split only by how the arm reaches the tree: the three
+/// searches render hits, everything else is a note, log or task operation.
+/// `run_local` owns the remaining names, so an unknown name is refused in
+/// exactly one place.
 pub(crate) async fn run_tool(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOutput> {
     match name {
         "SearchNotes" => {
@@ -694,22 +694,15 @@ pub(crate) async fn run_tool(name: &str, args: &Value, root: &NotedRoot) -> Resu
             let hits = root.task_search(&search).await?;
             Ok(render_hits(&search.query, &hits))
         }
-        _ => {
-            let name = name.to_string();
-            let args = args.clone();
-            let root = root.clone();
-            tokio::task::spawn_blocking(move || run_blocking(&name, &args, &root))
-                .await
-                .map_err(|e| unavailable(format!("tool task failed: {e}")))?
-        }
+        _ => run_local(name, args, root).await,
     }
 }
 
-fn run_blocking(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOutput> {
+async fn run_local(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOutput> {
     match name {
         "ReadNote" => {
             let a: ReadArgs = parse(args)?;
-            let note = root.note_read(&a.path)?;
+            let note = root.note_read(&a.path).await?;
             Ok(ToolOutput::Text(slice_lines(
                 note.body().as_str(),
                 a.offset,
@@ -719,7 +712,7 @@ fn run_blocking(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOutput
         "WriteNote" => {
             let a: WriteArgs = parse(args)?;
             let note = TextNote::new(a.path, a.content);
-            root.note_write(&note, a.when.unwrap_or_default())?;
+            root.note_write(&note, a.when.unwrap_or_default()).await?;
             Ok(ToolOutput::Written {
                 path: note.path().clone(),
             })
@@ -727,12 +720,12 @@ fn run_blocking(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOutput
         "EditNote" => {
             let a: EditArgs = parse(args)?;
             let edit = Edit::new(a.old_string, a.new_string, a.replace_all);
-            root.note_edit(&a.path, &edit)?;
+            root.note_edit(&a.path, &edit).await?;
             Ok(ToolOutput::Edited { path: a.path })
         }
         "MoveNote" => {
             let a: MoveArgs = parse(args)?;
-            root.note_move(&a.path, &a.dest, a.overwrite)?;
+            root.note_move(&a.path, &a.dest, a.overwrite).await?;
             Ok(ToolOutput::Moved {
                 from: a.path,
                 to: a.dest,
@@ -740,12 +733,12 @@ fn run_blocking(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOutput
         }
         "DeleteNote" => {
             let a: DeleteArgs = parse(args)?;
-            root.note_delete(&a.path)?;
+            root.note_delete(&a.path).await?;
             Ok(ToolOutput::Deleted { path: a.path })
         }
         "LogNote" => {
             let a: LogArgs = parse(args)?;
-            let note = root.log_note(&a.body)?;
+            let note = root.log_note(&a.body).await?;
             Ok(ToolOutput::Logged {
                 path: note.path().clone(),
             })
@@ -754,7 +747,8 @@ fn run_blocking(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOutput
             let a: GetLogArgs = parse(args)?;
             let body = a.body;
             let records: Vec<Value> = root
-                .log_get(&a.query()?)?
+                .log_get(&a.query()?)
+                .await?
                 .iter()
                 .map(|entry| entry_summary(entry, body))
                 .collect();
@@ -762,7 +756,7 @@ fn run_blocking(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOutput
         }
         "CreateTask" => {
             let a: CreateTaskArgs = parse(args)?;
-            let task = root.task_create(&a.task, &a.group, &a.notes)?;
+            let task = root.task_create(&a.task, &a.group, &a.notes).await?;
             Ok(ToolOutput::Record(summary(&task, false)))
         }
         "GetTasks" => {
@@ -772,7 +766,8 @@ fn run_blocking(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOutput
                 include_completed: a.include_completed,
             };
             let records: Vec<Value> = root
-                .task_get(&query)?
+                .task_get(&query)
+                .await?
                 .iter()
                 .map(|task| summary(task, a.body))
                 .collect();
@@ -785,17 +780,17 @@ fn run_blocking(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOutput
                 notes: a.notes,
                 task: a.task,
             };
-            let task = root.task_update(&a.path, &change)?;
+            let task = root.task_update(&a.path, &change).await?;
             Ok(ToolOutput::Record(summary(&task, false)))
         }
         "MoveTask" => {
             let a: MoveTaskArgs = parse(args)?;
-            let task = root.task_move(&a.path, &a.group)?;
+            let task = root.task_move(&a.path, &a.group).await?;
             Ok(ToolOutput::Record(summary(&task, false)))
         }
         "AttachToTask" => {
             let a: AttachToTaskArgs = parse(args)?;
-            let path = root.task_attach(&a.path, &a.name, &a.content)?;
+            let path = root.task_attach(&a.path, &a.name, &a.content).await?;
             Ok(ToolOutput::Written { path })
         }
         _ => Err(rejected(format!("Unknown tool: {name}"))),

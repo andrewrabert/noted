@@ -14,10 +14,28 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          # noted-server's build script compiles the UI to wasm; without this
+          # target nothing in the workspace builds.
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  ui-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/ui-wasm
+      - run: cargo fmt --all --manifest-path crates/ui-wasm/Cargo.toml --check
+      - run: cargo clippy --manifest-path crates/ui-wasm/Cargo.toml --target wasm32-unknown-unknown --all-targets -- -D warnings
+      - run: cargo test --manifest-path crates/ui-wasm/Cargo.toml
 
   build:
     needs: check
@@ -43,7 +61,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          # wasm32 is not a build target here: the embedded UI is compiled to it
+          # on every host, so dropping it breaks every matrix entry.
+          targets: ${{ matrix.target }}, wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}

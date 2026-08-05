@@ -15,24 +15,26 @@ fn tt(s: &str) -> TaskTitle {
     s.parse().unwrap()
 }
 
-fn create(root: &NotedRoot, task: &str, group: &str) -> noted::Result<TaskNote> {
-    root.task_create(&tt(task), &gp(group), &"".into())
+async fn create(root: &NotedRoot, task: &str, group: &str) -> noted::Result<TaskNote> {
+    root.task_create(&tt(task), &gp(group), &"".into()).await
 }
 
-fn all_tasks(root: &NotedRoot) -> Vec<String> {
+async fn all_tasks(root: &NotedRoot) -> Vec<String> {
     root.task_get(&TaskQuery::default())
+        .await
         .unwrap()
         .iter()
         .map(|t| t.path().to_string())
         .collect()
 }
 
-fn log_paths(root: &NotedRoot) -> Vec<String> {
+async fn log_paths(root: &NotedRoot) -> Vec<String> {
     root.log_get(&LogQuery {
         range: Default::default(),
         query: Default::default(),
         limit: 100,
     })
+    .await
     .unwrap()
     .iter()
     .map(|e| e.path().to_string())
@@ -52,8 +54,8 @@ fn chained(dir: &tempfile::TempDir, chain: &[&str]) -> noted::Result<NotedRoot> 
     NotedRoot::open(NotedDir::new(notes_root(dir)), None)?.with_authority(&chain)
 }
 
-#[test]
-fn a_link_only_narrows() {
+#[tokio::test]
+async fn a_link_only_narrows() {
     let dir = common::fixture_dir();
     let scoped = r#"{"scope":"projects","access":{"read":true,"write":false}}"#;
 
@@ -62,7 +64,7 @@ fn a_link_only_narrows() {
 
     // a scope chained onto a scope deepens it: 'projects/people' names nothing
     let root = chained(&dir, &[r#"{"scope":"projects"}"#, r#"{"scope":"people"}"#]).unwrap();
-    assert!(read(&root, "notes.md").is_err());
+    assert!(read(&root, "notes.md").await.is_err());
 
     assert!(
         chained(
@@ -76,39 +78,41 @@ fn a_link_only_narrows() {
     );
 }
 
-#[test]
-fn a_denied_path_refuses_both_ends_of_a_move() {
+#[tokio::test]
+async fn a_denied_path_refuses_both_ends_of_a_move() {
     let dir = common::fixture_dir();
     let root = confined(&dir, r#"{"paths":{"people":{"read":false,"write":false}}}"#);
-    assert!(read(&root, "projects/ideas.md").is_ok());
-    assert!(read(&root, "people/contacts.md").is_err());
-    assert!(write(&root, &note("people/x.md", "y")).is_err());
+    assert!(read(&root, "projects/ideas.md").await.is_ok());
+    assert!(read(&root, "people/contacts.md").await.is_err());
+    assert!(write(&root, &note("people/x.md", "y")).await.is_err());
     assert!(
         root.note_move(&rp("projects/ideas.md"), &rp("people/moved.md"), false)
+            .await
             .is_err()
     );
     assert!(
         root.note_move(&rp("projects/ideas.md"), &rp("projects/moved.md"), false)
+            .await
             .is_ok()
     );
 }
 
-#[test]
-fn write_does_not_imply_read() {
+#[tokio::test]
+async fn write_does_not_imply_read() {
     let dir = common::fixture_dir();
     let root = confined(&dir, r#"{"access":{"read":false,"write":true}}"#);
-    assert!(write(&root, &note("drop/box.md", "y")).is_ok());
-    assert!(read(&root, "drop/box.md").is_err());
+    assert!(write(&root, &note("drop/box.md", "y")).await.is_ok());
+    assert!(read(&root, "drop/box.md").await.is_err());
 }
 
-#[test]
-fn a_scope_addresses_the_notes_region_relatively() {
+#[tokio::test]
+async fn a_scope_addresses_the_notes_region_relatively() {
     let dir = common::fixture_dir();
     let root = confined(&dir, r#"{"scope":"projects"}"#);
 
-    assert!(read(&root, "ideas.md").is_ok());
-    assert!(read(&root, "projects/ideas.md").is_err());
-    write(&root, &note("fresh.md", "new")).unwrap();
+    assert!(read(&root, "ideas.md").await.is_ok());
+    assert!(read(&root, "projects/ideas.md").await.is_err());
+    write(&root, &note("fresh.md", "new")).await.unwrap();
     assert!(common::notes_root(&dir).join("projects/fresh.md").is_file());
 }
 
@@ -138,13 +142,13 @@ async fn a_search_lists_only_what_the_policy_admits() {
     assert!(paths.contains(&"projects/ideas.md".to_string()));
 }
 
-#[test]
-fn the_task_region_mirrors_the_scope() {
+#[tokio::test]
+async fn the_task_region_mirrors_the_scope() {
     let dir = common::fixture_dir();
-    create(&common::root(&dir), "seed", "dev").unwrap();
+    create(&common::root(&dir), "seed", "dev").await.unwrap();
 
     let root = confined(&dir, r#"{"scope":"dev"}"#);
-    let made = create(&root, "scoped work", "").unwrap();
+    let made = create(&root, "scoped work", "").await.unwrap();
     assert_eq!(made.path().to_string(), "task_0002");
     assert!(
         common::notes_root(&dir)
@@ -152,18 +156,22 @@ fn the_task_region_mirrors_the_scope() {
             .is_file()
     );
 
-    let mut paths = all_tasks(&root);
+    let mut paths = all_tasks(&root).await;
     paths.sort();
     assert_eq!(paths, vec!["task_0001", "task_0002"]);
-    assert!(all_tasks(&common::root(&dir)).contains(&"dev/task_0002".to_string()));
+    assert!(
+        all_tasks(&common::root(&dir))
+            .await
+            .contains(&"dev/task_0002".to_string())
+    );
 }
 
-#[test]
-fn a_single_task_can_be_granted_inside_a_denied_region() {
+#[tokio::test]
+async fn a_single_task_can_be_granted_inside_a_denied_region() {
     let dir = common::fixture_dir();
     let seed = common::root(&dir);
-    create(&seed, "one", "").unwrap();
-    create(&seed, "two", "").unwrap();
+    create(&seed, "one", "").await.unwrap();
+    create(&seed, "two", "").await.unwrap();
 
     let root = confined(
         &dir,
@@ -171,24 +179,30 @@ fn a_single_task_can_be_granted_inside_a_denied_region() {
     );
     assert!(
         root.task_update(&TaskRef::new("task_0001").unwrap(), &Default::default())
+            .await
             .is_ok()
     );
     assert!(
         root.task_update(&TaskRef::new("task_0002").unwrap(), &Default::default())
+            .await
             .is_err()
     );
-    assert_eq!(all_tasks(&root).len(), 2);
+    assert_eq!(all_tasks(&root).await.len(), 2);
 }
 
-#[test]
-fn a_scoped_holder_sees_only_its_own_log() {
+#[tokio::test]
+async fn a_scoped_holder_sees_only_its_own_log() {
     let dir = common::fixture_dir();
     let projects = confined(&dir, r#"{"scope":"projects"}"#);
     let people = confined(&dir, r#"{"scope":"people"}"#);
     let entry = projects
         .log_note(&"from projects\n-- t · s".into())
+        .await
         .unwrap();
-    people.log_note(&"from people\n-- t · s".into()).unwrap();
+    people
+        .log_note(&"from people\n-- t · s".into())
+        .await
+        .unwrap();
 
     assert!(
         common::notes_root(&dir)
@@ -197,18 +211,18 @@ fn a_scoped_holder_sees_only_its_own_log() {
             .is_file(),
         "a scoped entry lands in its own log directory"
     );
-    assert_eq!(log_paths(&projects), vec![entry.path().to_string()]);
-    assert_eq!(log_paths(&people).len(), 1);
-    assert_eq!(log_paths(&common::root(&dir)).len(), 4);
+    assert_eq!(log_paths(&projects).await, vec![entry.path().to_string()]);
+    assert_eq!(log_paths(&people).await.len(), 1);
+    assert_eq!(log_paths(&common::root(&dir)).await.len(), 4);
 }
 
-#[test]
-fn a_scope_is_cumulative_across_the_three_regions() {
+#[tokio::test]
+async fn a_scope_is_cumulative_across_the_three_regions() {
     let dir = common::fixture_dir();
     let root = confined(&dir, r#"{"scope":"a/b"}"#);
-    write(&root, &note("kept.md", "x")).unwrap();
-    let entry = root.log_note(&"scoped\n-- t · s".into()).unwrap();
-    create(&root, "scoped work", "").unwrap();
+    write(&root, &note("kept.md", "x")).await.unwrap();
+    let entry = root.log_note(&"scoped\n-- t · s".into()).await.unwrap();
+    create(&root, "scoped work", "").await.unwrap();
 
     let notes = common::notes_root(&dir);
     assert!(notes.join("a/b/kept.md").is_file());
@@ -221,36 +235,36 @@ fn a_scope_is_cumulative_across_the_three_regions() {
     assert!(notes.join("Tasks/a/b/task_0001.md").is_file());
 }
 
-#[test]
-fn a_scoped_policy_names_the_reserved_regions_by_their_own_keys() {
+#[tokio::test]
+async fn a_scoped_policy_names_the_reserved_regions_by_their_own_keys() {
     let dir = common::fixture_dir();
     let root = confined(
         &dir,
         r#"{"scope":"dev","paths":{"Tasks":{"read":true,"write":false},"Log":{"read":false,"write":false}}}"#,
     );
-    assert!(create(&root, "refused", "").is_err());
-    assert!(root.log_note(&"refused\n-- t · s".into()).is_err());
-    assert!(write(&root, &note("kept.md", "x")).is_ok());
+    assert!(create(&root, "refused", "").await.is_err());
+    assert!(root.log_note(&"refused\n-- t · s".into()).await.is_err());
+    assert!(write(&root, &note("kept.md", "x")).await.is_ok());
 }
 
-#[test]
-fn a_scope_cannot_widen_a_denied_log() {
+#[tokio::test]
+async fn a_scope_cannot_widen_a_denied_log() {
     let dir = common::fixture_dir();
     let chain = &[
         r#"{"paths":{"Log":{"read":false,"write":false}}}"#,
         r#"{"scope":"dev"}"#,
     ];
     let root = chained(&dir, chain).unwrap();
-    assert!(root.log_note(&"nope\n-- t · s".into()).is_err());
-    assert!(log_paths(&root).is_empty());
+    assert!(root.log_note(&"nope\n-- t · s".into()).await.is_err());
+    assert!(log_paths(&root).await.is_empty());
 
     let names = tool_names(&dir, chain.iter().map(|text| held(text)).collect());
     assert!(!names.contains(&"LogNote") && !names.contains(&"SearchLog"));
     assert!(names.contains(&"CreateTask"));
 }
 
-#[test]
-fn a_scope_cannot_widen_a_denied_task_group() {
+#[tokio::test]
+async fn a_scope_cannot_widen_a_denied_task_group() {
     let dir = common::fixture_dir();
     let root = chained(
         &dir,
@@ -260,8 +274,8 @@ fn a_scope_cannot_widen_a_denied_task_group() {
         ],
     )
     .unwrap();
-    assert!(create(&root, "refused", "x").is_err());
-    assert!(create(&root, "kept", "y").is_ok());
+    assert!(create(&root, "refused", "x").await.is_err());
+    assert!(create(&root, "kept", "y").await.is_ok());
 }
 
 #[test]
@@ -272,26 +286,26 @@ fn a_scope_cannot_name_a_reserved_region() {
     }
 }
 
-#[test]
-fn the_reserved_regions_are_reserved_at_every_scope() {
+#[tokio::test]
+async fn the_reserved_regions_are_reserved_at_every_scope() {
     let dir = common::fixture_dir();
     for root in [
         common::root(&dir),
         confined(&dir, r#"{"scope":"projects"}"#),
     ] {
-        assert!(write(&root, &note("Log/x.md", "x")).is_err());
-        assert!(write(&root, &note("Tasks/x.md", "x")).is_err());
+        assert!(write(&root, &note("Log/x.md", "x")).await.is_err());
+        assert!(write(&root, &note("Tasks/x.md", "x")).await.is_err());
     }
     assert!(!common::notes_root(&dir).join("projects/Log").exists());
 }
 
-#[test]
-fn a_denied_log_region_still_leaves_the_notes_region_open() {
+#[tokio::test]
+async fn a_denied_log_region_still_leaves_the_notes_region_open() {
     let dir = common::fixture_dir();
     let root = confined(&dir, r#"{"paths":{"Log":{"read":false,"write":false}}}"#);
-    assert!(root.log_note(&"nope\n-- t · s".into()).is_err());
-    assert!(log_paths(&root).is_empty());
-    assert!(read(&root, "Inbox.md").is_ok());
+    assert!(root.log_note(&"nope\n-- t · s".into()).await.is_err());
+    assert!(log_paths(&root).await.is_empty());
+    assert!(read(&root, "Inbox.md").await.is_ok());
 }
 
 fn tool_names(dir: &tempfile::TempDir, grants: Vec<PolicyFragment>) -> Vec<&'static str> {
@@ -371,13 +385,13 @@ fn access_survives_all_four_combinations() {
     );
 }
 
-#[test]
-fn a_fragment_is_read_against_the_policy_it_lands_on() {
+#[tokio::test]
+async fn a_fragment_is_read_against_the_policy_it_lands_on() {
     let dir = common::fixture_dir();
     let root = confined(&dir, r#"{"scope":"projects","access":{"write":false}}"#);
 
-    assert!(read(&root, "a.md").is_ok());
-    assert!(write(&root, &note("a.md", "x")).is_err());
+    assert!(read(&root, "a.md").await.is_ok());
+    assert!(write(&root, &note("a.md", "x")).await.is_err());
     assert!(
         root.with_authority(&[held(r#"{"access":{"write":true}}"#)])
             .is_err()
@@ -386,32 +400,32 @@ fn a_fragment_is_read_against_the_policy_it_lands_on() {
     let deeper = root
         .with_authority(&[held(r#"{"scope":"alpha"}"#)])
         .unwrap();
-    assert!(read(&deeper, "a.md").is_err());
-    assert!(read(&deeper, "notes.md").is_ok());
-    assert!(read(&root, "alpha/notes.md").is_ok());
+    assert!(read(&deeper, "a.md").await.is_err());
+    assert!(read(&deeper, "notes.md").await.is_ok());
+    assert!(read(&root, "alpha/notes.md").await.is_ok());
 }
 
-#[test]
-fn an_absent_flag_keeps_what_the_policy_already_says() {
+#[tokio::test]
+async fn an_absent_flag_keeps_what_the_policy_already_says() {
     let dir = common::fixture_dir();
     let root = confined(
         &dir,
         r#"{"access":{"write":false},"paths":{"vendor":{"read":false}}}"#,
     );
 
-    assert!(read(&root, "Inbox.md").is_ok());
-    assert!(write(&root, &note("Inbox.md", "x")).is_err());
-    assert!(read(&root, "vendor/x.md").is_err());
-    assert!(write(&root, &note("vendor/x.md", "x")).is_err());
+    assert!(read(&root, "Inbox.md").await.is_ok());
+    assert!(write(&root, &note("Inbox.md", "x")).await.is_err());
+    assert!(read(&root, "vendor/x.md").await.is_err());
+    assert!(write(&root, &note("vendor/x.md", "x")).await.is_err());
 }
 
-#[test]
-fn a_name_never_matches_across_a_name_boundary() {
+#[tokio::test]
+async fn a_name_never_matches_across_a_name_boundary() {
     let dir = common::fixture_dir();
     let root = confined(&dir, r#"{"paths":{"work":{"read":false}}}"#);
 
-    assert!(read(&root, "work/a.md").is_err());
-    assert!(read(&root, "workshop/a.md").is_ok());
+    assert!(read(&root, "work/a.md").await.is_err());
+    assert!(read(&root, "workshop/a.md").await.is_ok());
 }
 
 #[test]

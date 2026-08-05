@@ -48,17 +48,16 @@ impl TaskTools {
     }
 
     // reads the markdown of either form and lists what sits beside it
-    fn read(&self, entry: &Path) -> Result<TaskNote> {
+    async fn read(&self, entry: &Path) -> Result<TaskNote> {
         let reference = TaskRef::of_entry(entry).ok_or_else(|| rejected("not a task"))?;
-        let bytes = self
-            .region
-            .read(&self.region.body_of(entry, Reserved::TaskBody)?)?;
+        let body = self.region.body_of(entry, Reserved::TaskBody).await?;
+        let bytes = self.region.read(&body).await?;
         let task = TaskNote::from_bytes(reference, &bytes).map_err(|_| rejected("not a task"))?;
-        Ok(task.with_attachments(self.attachments(entry)))
+        Ok(task.with_attachments(self.attachments(entry).await))
     }
 
-    fn attachments(&self, entry: &Path) -> Vec<AttachmentName> {
-        let mut beside = self.region.files(entry);
+    async fn attachments(&self, entry: &Path) -> Vec<AttachmentName> {
+        let mut beside = self.region.files(entry).await;
         beside.sort();
         beside
             .iter()
@@ -66,9 +65,10 @@ impl TaskTools {
             .collect()
     }
 
-    fn next_number(&self, dir: Option<&Path>) -> u64 {
+    async fn next_number(&self, dir: Option<&Path>) -> u64 {
         self.region
             .children(dir)
+            .await
             .iter()
             .filter_map(|p| {
                 let name = p.file_name();
@@ -79,19 +79,19 @@ impl TaskTools {
             + 1
     }
 
-    fn place(&self, at: &Path, what: Placement<'_>) -> Result<()> {
+    async fn place(&self, at: &Path, what: Placement<'_>) -> Result<()> {
         match what {
-            Placement::Fresh(data) => self.region.write(at, data, Condition::Missing),
-            Placement::Existing(from) => self.region.rename(from, at, Condition::Missing),
+            Placement::Fresh(data) => self.region.write(at, data, Condition::Missing).await,
+            Placement::Existing(from) => self.region.rename(from, at, Condition::Missing).await,
         }
     }
 
-    fn claim(&self, dir: Option<&Path>, what: Placement<'_>) -> Result<Path> {
+    async fn claim(&self, dir: Option<&Path>, what: Placement<'_>) -> Result<Path> {
         for _ in 0..100 {
-            let base = self.next_number(dir);
+            let base = self.next_number(dir).await;
             for number in base..base + 1000 {
                 let path = TaskTools::within(dir, &format!("task_{number:04}.md"))?;
-                match self.place(&path, what) {
+                match self.place(&path, what).await {
                     Ok(()) => return Ok(path),
                     Err(NotedError::Conflict) => continue,
                     Err(e) => return Err(e),
@@ -104,17 +104,19 @@ impl TaskTools {
         )))
     }
 
-    pub(super) fn create(
+    pub(super) async fn create(
         &self,
         title: &TaskTitle,
         group: &GroupPath,
         body: &TaskBody,
     ) -> Result<TaskNote> {
         let draft = TaskNote::new(title.clone(), body.clone());
-        let path = self.claim(
-            group.to_path().as_ref(),
-            Placement::Fresh(&draft.to_bytes()),
-        )?;
+        let path = self
+            .claim(
+                group.to_path().as_ref(),
+                Placement::Fresh(&draft.to_bytes()),
+            )
+            .await?;
         Ok(draft.with_path(TaskTools::named_by(&path)?))
     }
 
@@ -122,22 +124,22 @@ impl TaskTools {
         TaskRef::of_entry(entry).ok_or_else(|| rejected("not a task"))
     }
 
-    pub(super) fn get(&self, query: &TaskQuery) -> Result<Vec<TaskNote>> {
-        let exact = query
-            .prefix
-            .to_path()
-            .and_then(|path| self.read(&path).ok());
+    pub(super) async fn get(&self, query: &TaskQuery) -> Result<Vec<TaskNote>> {
+        let exact = match query.prefix.to_path() {
+            Some(path) => self.read(&path).await.ok(),
+            None => None,
+        };
         let (paths, hide_closed) = match exact {
             Some(task) => return Ok(vec![task]),
             None => (
-                self.region.walk(query.prefix.to_dir().as_ref()),
+                self.region.walk(query.prefix.to_dir().as_ref()).await,
                 !query.include_completed,
             ),
         };
 
         let mut found = Vec::new();
         for path in paths {
-            let Ok(task) = self.read(&path) else {
+            let Ok(task) = self.read(&path).await else {
                 continue;
             };
             if hide_closed && task.front().state.is_closed() {
@@ -167,7 +169,11 @@ impl TaskTools {
 
         let mut ordered = Vec::new();
         for hit in assemble(&search.query, hits)? {
-            let Some(task) = hit.path.to_path().and_then(|p| self.read(&p).ok()) else {
+            let task = match hit.path.to_path() {
+                Some(p) => self.read(&p).await.ok(),
+                None => None,
+            };
+            let Some(task) = task else {
                 continue;
             };
             if !search.include_completed && task.front().state.is_closed() {
@@ -179,27 +185,30 @@ impl TaskTools {
         Ok(ordered.into_iter().map(|(_, _, hit)| hit).collect())
     }
 
-    pub(super) fn update(&self, reference: &TaskRef, change: &TaskChange) -> Result<TaskNote> {
+    pub(super) async fn update(
+        &self,
+        reference: &TaskRef,
+        change: &TaskChange,
+    ) -> Result<TaskNote> {
         let entry = self.entry_of(reference)?;
-        let updated = self.existing(&entry)?.changed(change)?;
-        self.region.write(
-            &self.region.body_of(&entry, Reserved::TaskBody)?,
-            &updated.to_bytes(),
-            Condition::Always,
-        )?;
+        let updated = self.existing(&entry).await?.changed(change)?;
+        let body = self.region.body_of(&entry, Reserved::TaskBody).await?;
+        self.region
+            .write(&body, &updated.to_bytes(), Condition::Always)
+            .await?;
         Ok(updated)
     }
 
-    fn existing(&self, entry: &Path) -> Result<TaskNote> {
-        self.read(entry).map_err(|e| match e {
+    async fn existing(&self, entry: &Path) -> Result<TaskNote> {
+        self.read(entry).await.map_err(|e| match e {
             NotedError::Io { .. } => NotedError::NotFound,
             other => other,
         })
     }
 
-    pub(super) fn move_(&self, reference: &TaskRef, group: &GroupPath) -> Result<TaskNote> {
+    pub(super) async fn move_(&self, reference: &TaskRef, group: &GroupPath) -> Result<TaskNote> {
         let entry = self.entry_of(reference)?;
-        let relocated = self.existing(&entry)?.restamped();
+        let relocated = self.existing(&entry).await?.restamped();
         let dir = group.to_path();
         if dir == entry.parent() {
             return Err(rejected("task already in that group"));
@@ -207,33 +216,36 @@ impl TaskTools {
 
         let stem = reference.stem();
         let dest = match numbered(stem).is_some() {
-            true => self.claim(dir.as_ref(), Placement::Existing(&entry))?,
+            true => {
+                self.claim(dir.as_ref(), Placement::Existing(&entry))
+                    .await?
+            }
             false => {
                 let dest = TaskTools::within(dir.as_ref(), &format!("{stem}.md"))?;
-                self.place(&dest, Placement::Existing(&entry))?;
+                self.place(&dest, Placement::Existing(&entry)).await?;
                 dest
             }
         };
-        self.region.write(
-            &self.region.body_of(&dest, Reserved::TaskBody)?,
-            &relocated.to_bytes(),
-            Condition::Always,
-        )?;
+        let body = self.region.body_of(&dest, Reserved::TaskBody).await?;
+        self.region
+            .write(&body, &relocated.to_bytes(), Condition::Always)
+            .await?;
         Ok(relocated.with_path(TaskTools::named_by(&dest)?))
     }
 
     // the attachment's Tasks-relative path
-    pub(super) fn attach(
+    pub(super) async fn attach(
         &self,
         reference: &TaskRef,
         name: &AttachmentName,
         content: &Base64Bytes,
     ) -> Result<Path> {
         let entry = self.entry_of(reference)?;
-        self.existing(&entry)?;
+        self.existing(&entry).await?;
         let file = entry.joined(name.as_str())?;
         self.region
-            .attach(&entry, Reserved::TaskBody, &file, content.as_bytes())?;
+            .attach(&entry, Reserved::TaskBody, &file, content.as_bytes())
+            .await?;
         Ok(file)
     }
 }

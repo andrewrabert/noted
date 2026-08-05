@@ -27,27 +27,29 @@ impl LogTools {
         LogTools { region, source }
     }
 
-    pub(super) fn note(&self, body: &LogBody) -> Result<LogNote> {
+    pub(super) async fn note(&self, body: &LogBody) -> Result<LogNote> {
         let now = Local::now();
         let front = LogFront {
             created: Timestamp::at(now.fixed_offset()),
             cwd: std::env::current_dir()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default(),
-            host: hostname::get()
-                .map(|h| h.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            host: crate::platform::host(),
             source: self.source.clone(),
         };
 
         let stamp = now.format(STAMP).to_string();
         for name in LogTools::spare_stamps(&stamp) {
             let entry = LogNote::new(Path::new(&name)?, front.clone(), body.as_str());
-            match self.region.write(
-                entry.path(),
-                &entry.to_bytes(),
-                crate::note::Condition::Missing,
-            ) {
+            match self
+                .region
+                .write(
+                    entry.path(),
+                    &entry.to_bytes(),
+                    crate::note::Condition::Missing,
+                )
+                .await
+            {
                 Ok(()) => return Ok(entry),
                 Err(NotedError::Conflict) => continue,
                 Err(e) => return Err(e),
@@ -64,10 +66,10 @@ impl LogTools {
         })
     }
 
-    pub(super) fn get(&self, query: &LogQuery) -> Result<Vec<LogNote>> {
+    pub(super) async fn get(&self, query: &LogQuery) -> Result<Vec<LogNote>> {
         let mut found = Vec::new();
-        for path in self.within(query) {
-            let Ok(bytes) = self.region.read(&path) else {
+        for path in self.within(query).await {
+            let Ok(bytes) = self.region.read(&path).await else {
                 continue;
             };
             let Ok(entry) = LogNote::from_bytes(path, &bytes) else {
@@ -87,7 +89,7 @@ impl LogTools {
             if stamp_of(hit.path.file_name()).is_none_or(|at| !query.range.contains(&at)) {
                 continue;
             }
-            let Ok(bytes) = self.region.read(&hit.path) else {
+            let Ok(bytes) = self.region.read(&hit.path).await else {
                 continue;
             };
             let Ok(entry) = LogNote::from_bytes(hit.path.clone(), &bytes) else {
@@ -103,8 +105,8 @@ impl LogTools {
             .collect())
     }
 
-    fn within(&self, query: &LogQuery) -> Vec<Path> {
-        let names = self.region.walk(None);
+    async fn within(&self, query: &LogQuery) -> Vec<Path> {
+        let names = self.region.walk(None).await;
         names
             .into_iter()
             .filter(|path| stamp_of(path.file_name()).is_some_and(|at| query.range.contains(&at)))

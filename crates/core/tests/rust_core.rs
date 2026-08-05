@@ -8,32 +8,35 @@ use noted::search::{CaseMode, SearchMode, SearchQuery};
 use noted::util::{atomic_write, slice_lines};
 use serde_json::json;
 
-#[test]
-fn read_edge_cases() {
+#[tokio::test]
+async fn read_edge_cases() {
     let dir = fixture_dir();
     let root = root(&dir);
     assert!(matches!(
-        read(&root, "nope.md").unwrap_err(),
+        read(&root, "nope.md").await.unwrap_err(),
         noted::NotedError::NotFound
     ));
 
     std::fs::write(notes_root(&dir).join("bad.md"), [0xff, 0xfe, 0x00]).unwrap();
     assert!(
         read(&root, "bad.md")
+            .await
             .unwrap_err()
             .to_string()
             .contains("utf-8")
     );
 }
 
-#[test]
-fn write_creates_parents_and_leaves_no_temp() {
+#[tokio::test]
+async fn write_creates_parents_and_leaves_no_temp() {
     let dir = fixture_dir();
     let root = root(&dir);
-    write(&root, &note("deep/nested/new.md", "hello\n")).unwrap();
-    assert_eq!(read(&root, "deep/nested/new.md").unwrap(), "hello\n");
+    write(&root, &note("deep/nested/new.md", "hello\n"))
+        .await
+        .unwrap();
+    assert_eq!(read(&root, "deep/nested/new.md").await.unwrap(), "hello\n");
 
-    write(&root, &note("a.md", "x")).unwrap();
+    write(&root, &note("a.md", "x")).await.unwrap();
     let leftovers: Vec<_> = std::fs::read_dir(notes_root(&dir))
         .unwrap()
         .filter_map(|e| e.ok())
@@ -42,15 +45,16 @@ fn write_creates_parents_and_leaves_no_temp() {
     assert!(leftovers.is_empty(), "atomic_write left a temp file");
 }
 
-#[test]
-fn the_log_region_is_unreachable_through_the_note_tools() {
+#[tokio::test]
+async fn the_log_region_is_unreachable_through_the_note_tools() {
     let dir = fixture_dir();
     let root = root(&dir);
     let entry = "Log/2026-07-01T09-00-00.000000-0700.md";
     for err in [
-        write(&root, &note(entry, "nope")).unwrap_err(),
-        root.note_delete(&rp(entry)).unwrap_err(),
+        write(&root, &note(entry, "nope")).await.unwrap_err(),
+        root.note_delete(&rp(entry)).await.unwrap_err(),
         root.note_move(&rp(entry), &rp("moved.md"), false)
+            .await
             .unwrap_err(),
     ] {
         assert!(
@@ -60,11 +64,14 @@ fn the_log_region_is_unreachable_through_the_note_tools() {
     }
 }
 
-#[test]
-fn log_note_writes_one_file_with_front_matter() {
+#[tokio::test]
+async fn log_note_writes_one_file_with_front_matter() {
     let dir = fixture_dir();
     let root = root(&dir);
-    let logged = root.log_note(&"did a thing\n-- t · s".into()).unwrap();
+    let logged = root
+        .log_note(&"did a thing\n-- t · s".into())
+        .await
+        .unwrap();
     let rel = logged.path().to_string();
     assert!(rel.starts_with("20"), "{rel}");
     let on_disk = std::fs::read_to_string(notes_root(&dir).join("Log").join(&rel)).unwrap();
@@ -97,24 +104,24 @@ fn log_note_writes_one_file_with_front_matter() {
     );
 }
 
-#[test]
-fn log_note_records_no_source_when_the_caller_has_none() {
+#[tokio::test]
+async fn log_note_records_no_source_when_the_caller_has_none() {
     let dir = fixture_dir();
     let root = noted::NotedRoot::open(noted::store::NotedDir::new(notes_root(&dir)), None).unwrap();
-    let logged = root.log_note(&"anonymous\n".into()).unwrap();
+    let logged = root.log_note(&"anonymous\n".into()).await.unwrap();
     let text = String::from_utf8(logged.to_bytes()).unwrap();
     assert!(!text.contains("source:"), "{text}");
 }
 
-#[test]
-fn delete_moves_to_trash_and_uniquifies() {
+#[tokio::test]
+async fn delete_moves_to_trash_and_uniquifies() {
     let dir = fixture_dir();
     let root = root(&dir);
 
-    let original = read(&root, "Inbox.md").unwrap();
-    let trashed = root.note_delete(&rp("Inbox.md")).unwrap();
+    let original = read(&root, "Inbox.md").await.unwrap();
+    let trashed = root.note_delete(&rp("Inbox.md")).await.unwrap();
     assert_eq!(trashed.path().to_string(), "Inbox.md");
-    assert!(read(&root, "Inbox.md").is_err());
+    assert!(read(&root, "Inbox.md").await.is_err());
     assert_eq!(
         std::fs::read_to_string(notes_root(&dir).join(".trash").join("Inbox.md")).unwrap(),
         original
@@ -122,8 +129,10 @@ fn delete_moves_to_trash_and_uniquifies() {
 
     // .trash/old-idea.md already exists in the fixture → a same-named delete
     // must uniquify rather than clobber it.
-    write(&root, &note("old-idea.md", "different\n")).unwrap();
-    let uniq = root.note_delete(&rp("old-idea.md")).unwrap();
+    write(&root, &note("old-idea.md", "different\n"))
+        .await
+        .unwrap();
+    let uniq = root.note_delete(&rp("old-idea.md")).await.unwrap();
     assert_eq!(uniq.path().to_string(), "old-idea.md");
     assert_eq!(
         std::fs::read_to_string(notes_root(&dir).join(".trash").join("old-idea 1.md")).unwrap(),
@@ -131,57 +140,64 @@ fn delete_moves_to_trash_and_uniquifies() {
     );
 
     assert!(matches!(
-        root.note_delete(&rp("ghost.md")).unwrap_err(),
+        root.note_delete(&rp("ghost.md")).await.unwrap_err(),
         noted::NotedError::NotFound
     ));
 }
 
-#[test]
-fn move_semantics() {
+#[tokio::test]
+async fn move_semantics() {
     let dir = fixture_dir();
     let root = root(&dir);
 
-    let body = read(&root, "Inbox.md").unwrap();
+    let body = read(&root, "Inbox.md").await.unwrap();
     root.note_move(&rp("Inbox.md"), &rp("Inbox2.md"), false)
+        .await
         .unwrap();
-    assert_eq!(read(&root, "Inbox2.md").unwrap(), body);
+    assert_eq!(read(&root, "Inbox2.md").await.unwrap(), body);
 
     assert!(matches!(
         root.note_move(&rp("Inbox2.md"), &rp("projects/ideas.md"), false)
+            .await
             .unwrap_err(),
         noted::NotedError::Conflict
     ));
     root.note_move(&rp("Inbox2.md"), &rp("projects/ideas.md"), true)
+        .await
         .unwrap();
-    assert_eq!(read(&root, "projects/ideas.md").unwrap(), body);
+    assert_eq!(read(&root, "projects/ideas.md").await.unwrap(), body);
 
     assert!(matches!(
         root.note_move(&rp("ghost.md"), &rp("d.md"), false)
+            .await
             .unwrap_err(),
         noted::NotedError::NotFound
     ));
     assert!(
         root.note_move(&rp("daily"), &rp("daily"), false)
+            .await
             .unwrap_err()
             .to_string()
             .contains("same")
     );
     assert!(
         root.note_move(&rp("projects"), &rp("projects/sub"), false)
+            .await
             .unwrap_err()
             .to_string()
             .contains("into itself")
     );
 }
 
-#[test]
-fn move_onto_nonempty_folder_is_rejected() {
+#[tokio::test]
+async fn move_onto_nonempty_folder_is_rejected() {
     let dir = fixture_dir();
     let root = root(&dir);
-    write(&root, &note("srcd/a.md", "a")).unwrap();
-    write(&root, &note("dstd/b.md", "b")).unwrap();
+    write(&root, &note("srcd/a.md", "a")).await.unwrap();
+    write(&root, &note("dstd/b.md", "b")).await.unwrap();
     assert!(
         root.note_move(&rp("srcd"), &rp("dstd"), true)
+            .await
             .unwrap_err()
             .to_string()
             .contains("non-empty folder")
@@ -205,6 +221,7 @@ async fn note_search_walks_the_open_region_only() {
         &Default::default(),
         &"UNIQUETASKBODY\n".into(),
     )
+    .await
     .unwrap();
     assert!(grep(&root, "UNIQUETASKBODY").await.unwrap().is_empty());
     assert!(found(&root, "Tasks").await.unwrap().is_empty());
@@ -352,90 +369,101 @@ fn atomic_write_replaces_in_place() {
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "second");
 }
 
-#[test]
-fn matching_condition_is_a_compare_and_swap() {
+#[tokio::test]
+async fn matching_condition_is_a_compare_and_swap() {
     let dir = fixture_dir();
     let root = root(&dir);
     let original = note("cw.md", "one");
-    write(&root, &original).unwrap();
+    write(&root, &original).await.unwrap();
 
     let updated = original.clone().with_body("two");
     root.note_write(&updated, Condition::Matching(original.etag()))
+        .await
         .unwrap();
-    assert_eq!(read(&root, "cw.md").unwrap(), "two");
+    assert_eq!(read(&root, "cw.md").await.unwrap(), "two");
 
     let stale = original.clone().with_body("three");
     let err = root
         .note_write(&stale, Condition::Matching(original.etag()))
+        .await
         .unwrap_err();
     assert!(matches!(err, noted::error::NotedError::Conflict));
-    assert_eq!(read(&root, "cw.md").unwrap(), "two");
+    assert_eq!(read(&root, "cw.md").await.unwrap(), "two");
 
     root.note_write(
         &note("cw.md", "four"),
         Condition::Matching(note("cw.md", "two").etag()),
     )
+    .await
     .unwrap();
-    assert_eq!(read(&root, "cw.md").unwrap(), "four");
+    assert_eq!(read(&root, "cw.md").await.unwrap(), "four");
 }
 
-#[test]
-fn create_and_replace_conditions() {
+#[tokio::test]
+async fn create_and_replace_conditions() {
     let dir = fixture_dir();
     let root = root(&dir);
 
     root.note_write(&note("m.md", "hi"), Condition::Missing)
+        .await
         .unwrap();
     assert!(matches!(
         root.note_write(&note("m.md", "again"), Condition::Missing)
+            .await
             .unwrap_err(),
         noted::error::NotedError::Conflict
     ));
 
     root.note_write(&note("m.md", "edited"), Condition::Exists)
+        .await
         .unwrap();
     assert!(matches!(
         root.note_write(&note("absent.md", "x"), Condition::Exists)
+            .await
             .unwrap_err(),
         noted::error::NotedError::NotFound
     ));
 }
 
-#[test]
-fn conflict_message_never_mentions_sha256() {
+#[tokio::test]
+async fn conflict_message_never_mentions_sha256() {
     let dir = fixture_dir();
     let root = root(&dir);
-    write(&root, &note("c.md", "v1")).unwrap();
+    write(&root, &note("c.md", "v1")).await.unwrap();
     let err = root
         .note_write(
             &note("c.md", "v2"),
             Condition::Matching(note("c.md", "other").etag()),
         )
+        .await
         .unwrap_err();
     assert!(!err.to_string().to_lowercase().contains("sha256"));
 }
 
-#[test]
-fn edit_replaces_and_refuses_ambiguity() {
+#[tokio::test]
+async fn edit_replaces_and_refuses_ambiguity() {
     let dir = fixture_dir();
     let root = root(&dir);
-    write(&root, &note("e.md", "one two one\n")).unwrap();
+    write(&root, &note("e.md", "one two one\n")).await.unwrap();
 
     assert!(
         root.note_edit(&rp("e.md"), &noted::note::Edit::new("one", "1", false))
+            .await
             .unwrap_err()
             .to_string()
             .contains("not unique")
     );
     assert!(
         root.note_edit(&rp("e.md"), &noted::note::Edit::new("zzz", "1", false))
+            .await
             .unwrap_err()
             .to_string()
             .contains("not found")
     );
     root.note_edit(&rp("e.md"), &noted::note::Edit::new("one", "1", true))
+        .await
         .unwrap();
-    assert_eq!(read(&root, "e.md").unwrap(), "1 two 1\n");
+    assert_eq!(read(&root, "e.md").await.unwrap(), "1 two 1\n");
 }
 
 #[test]

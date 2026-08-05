@@ -1,5 +1,6 @@
 mod backend;
 mod fragment;
+mod platform;
 mod policy;
 mod policyargs;
 mod regions;

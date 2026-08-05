@@ -52,15 +52,15 @@ fn etag_wire_roundtrip() {
     assert!("zz".parse::<Etag>().is_err());
 }
 
-#[test]
-fn read_returns_a_note_matching_the_file() {
+#[tokio::test]
+async fn read_returns_a_note_matching_the_file() {
     let dir = fixture_dir();
     let root = root(&dir);
-    write(&root, &note("g.md", "hello world\n")).unwrap();
-    let got = root.note_read(&rp("g.md")).unwrap();
+    write(&root, &note("g.md", "hello world\n")).await.unwrap();
+    let got = root.note_read(&rp("g.md")).await.unwrap();
     assert_eq!(got.path(), &rp("g.md"));
     assert_eq!(got.body(), "hello world\n");
-    assert_eq!(read(&root, "g.md").unwrap(), "hello world\n");
+    assert_eq!(read(&root, "g.md").await.unwrap(), "hello world\n");
     assert_eq!(
         got.etag(),
         TextNote::new(rp("g.md"), "hello world\n").etag()

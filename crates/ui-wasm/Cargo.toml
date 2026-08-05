@@ -1,0 +1,65 @@
+[package]
+name = "noted-ui-wasm"
+version = "0.1.0"
+authors = ["Andrew Rabert <ar@nullsum.net>"]
+description = "The noted web UI, compiled to WebAssembly and served by noted-server."
+edition = "2024"
+license = "MIT"
+homepage = "https://github.com/andrewrabert/noted"
+repository = "https://github.com/andrewrabert/noted"
+rust-version = "1.92"
+publish = false
+
+[lib]
+name = "noted_ui_wasm"
+
+[[bin]]
+name = "noted-ui-wasm"
+path = "src/main.rs"
+
+[dependencies]
+iced = { git = "https://github.com/iced-rs/iced", rev = "3c81aac2e1b48125efdf0c996fbbb9c72c06ae50", features = [
+    "markdown",
+    "highlighter",
+    "advanced",
+] }
+noted-core = { path = "../core" }
+noted-picker = { path = "../picker" }
+base64 = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+iced = { git = "https://github.com/iced-rs/iced", rev = "3c81aac2e1b48125efdf0c996fbbb9c72c06ae50", features = [
+    "webgl",
+    "fira-sans",
+] }
+console_error_panic_hook = "0.1"
+console_log = "1"
+js-sys = "0.3"
+log = "0.4"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Clipboard",
+    "ClipboardEvent",
+    "DataTransfer",
+    "Document",
+    "Event",
+    "EventTarget",
+    "Location",
+    "Navigator",
+    "Window",
+] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["rt"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

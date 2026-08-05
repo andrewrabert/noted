@@ -21,3 +21,17 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
+      - id: cargo-fmt-ui-wasm
+        name: cargo fmt (ui-wasm)
+        entry: cargo fmt --all --manifest-path crates/ui-wasm/Cargo.toml --check
+        language: system
+        files: ^crates/ui-wasm/
+        types: [rust]
+        pass_filenames: false
+      - id: cargo-clippy-ui-wasm
+        name: cargo clippy (ui-wasm)
+        entry: cargo clippy --manifest-path crates/ui-wasm/Cargo.toml --target wasm32-unknown-unknown --all-targets -- -D warnings
+        language: system
+        files: ^crates/ui-wasm/
+        types: [rust]
+        pass_filenames: false

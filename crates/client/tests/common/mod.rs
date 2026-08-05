@@ -24,13 +24,14 @@ pub fn note(rel: &str, content: &str) -> TextNote {
     TextNote::new(rp(rel), content)
 }
 
-pub fn read(root: &NotedRoot, rel: &str) -> noted::Result<String> {
+pub async fn read(root: &NotedRoot, rel: &str) -> noted::Result<String> {
     root.note_read(&rp(rel))
+        .await
         .map(|n| n.body().as_str().to_string())
 }
 
-pub fn write(root: &NotedRoot, note: &TextNote) -> noted::Result<()> {
-    root.note_write(note, Condition::Always)
+pub async fn write(root: &NotedRoot, note: &TextNote) -> noted::Result<()> {
+    root.note_write(note, Condition::Always).await
 }
 
 pub fn held(text: &str) -> PolicyFragment {

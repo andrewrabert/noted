@@ -28,9 +28,9 @@ async fn a_whitelist_resolves_the_same_everywhere() {
 
     assert_eq!(found(&root, "wip").await.unwrap(), vec!["wip-keep.md"]);
 
-    assert!(read(&root, "wip-keep.md").is_ok());
-    assert!(read(&root, "visible.md").is_ok());
-    assert!(read(&root, "wip-x.md").is_err());
+    assert!(read(&root, "wip-keep.md").await.is_ok());
+    assert!(read(&root, "visible.md").await.is_ok());
+    assert!(read(&root, "wip-x.md").await.is_err());
 }
 
 // '.ignore' in a directory outranks '.gitignore' in that same directory
@@ -51,7 +51,7 @@ async fn a_dot_ignore_rule_outranks_a_gitignore_rule() {
         .map(|h| h.path.to_string())
         .collect();
     assert!(hits.contains(&"contested.md".to_string()));
-    assert!(read(&root, "contested.md").is_ok());
+    assert!(read(&root, "contested.md").await.is_ok());
 }
 
 // '.ignore' at the notes root outranks a '!' rule in a nested '.gitignore'
@@ -75,7 +75,7 @@ async fn a_higher_dot_ignore_outranks_a_deeper_gitignore_whitelist() {
         .collect();
     assert!(hits.contains(&"area/ok.md".to_string()));
     assert!(!hits.contains(&"area/keep.log".to_string()));
-    assert!(read(&root, "area/keep.log").is_err());
+    assert!(read(&root, "area/keep.log").await.is_err());
 }
 
 // a rule at the notes root hides a task from both task_search and task_get,
@@ -92,6 +92,7 @@ async fn an_ancestor_rule_reaches_a_region_search() {
             &"".parse().unwrap(),
             &"NEEDLE".into(),
         )
+        .await
         .unwrap();
     let rel = task.path().to_string();
     std::fs::write(
@@ -115,13 +116,14 @@ async fn an_ancestor_rule_reaches_a_region_search() {
             prefix: "".parse().unwrap(),
             include_completed: true,
         })
+        .await
         .unwrap();
     assert!(listed.is_empty(), "{listed:?}");
 }
 
 // an ignored path is refused for read, write, move and delete
-#[test]
-fn an_ignored_path_is_unaddressable() {
+#[tokio::test]
+async fn an_ignored_path_is_unaddressable() {
     let dir = fixture_dir();
     let root = root(&dir);
     let notes = notes_root(&dir);
@@ -131,25 +133,27 @@ fn an_ignored_path_is_unaddressable() {
     std::fs::create_dir(notes.join("drafts")).unwrap();
     std::fs::write(notes.join("drafts/note.md"), "x").unwrap();
 
-    let err = read(&root, "hidden-note.md").unwrap_err().to_string();
+    let err = read(&root, "hidden-note.md").await.unwrap_err().to_string();
     assert!(err.contains("invalid path"), "{err}");
 
     for rel in ["hidden-note.md", "drafts/note.md"] {
-        assert!(read(&root, rel).is_err(), "read {rel} should reject");
+        assert!(read(&root, rel).await.is_err(), "read {rel} should reject");
         assert!(
-            write(&root, &note(rel, "x")).is_err(),
+            write(&root, &note(rel, "x")).await.is_err(),
             "write {rel} should reject"
         );
         assert!(
-            root.note_delete(&rp(rel)).is_err(),
+            root.note_delete(&rp(rel)).await.is_err(),
             "delete {rel} should reject"
         );
         assert!(
-            root.note_move(&rp(rel), &rp("moved.md"), false).is_err(),
+            root.note_move(&rp(rel), &rp("moved.md"), false)
+                .await
+                .is_err(),
             "move {rel} should reject"
         );
     }
-    assert!(write(&root, &note("drafts/new.md", "x")).is_err());
+    assert!(write(&root, &note("drafts/new.md", "x")).await.is_err());
 }
 
 // a rule written after the root was opened takes effect on the next operation
@@ -160,7 +164,7 @@ async fn a_new_rule_needs_no_reopen() {
     let notes = notes_root(&dir);
 
     std::fs::write(notes.join("later.md"), "NEEDLE").unwrap();
-    assert!(read(&root, "later.md").is_ok());
+    assert!(read(&root, "later.md").await.is_ok());
     assert!(
         grep(&root, "NEEDLE")
             .await
@@ -171,7 +175,7 @@ async fn a_new_rule_needs_no_reopen() {
 
     std::fs::write(notes.join(".ignore"), "later.md\n").unwrap();
 
-    assert!(read(&root, "later.md").is_err());
+    assert!(read(&root, "later.md").await.is_err());
     assert!(
         !grep(&root, "NEEDLE")
             .await
@@ -202,5 +206,5 @@ async fn gitignore_rules_do_not_need_a_repository() {
         .collect();
     assert!(hits.contains(&"visible.md".to_string()));
     assert!(!hits.contains(&"drafts/note.md".to_string()));
-    assert!(read(&root, "drafts/note.md").is_err());
+    assert!(read(&root, "drafts/note.md").await.is_err());
 }

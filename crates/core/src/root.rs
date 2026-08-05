@@ -81,62 +81,62 @@ impl NotedRoot {
         self.0.task.search(search).await
     }
 
-    pub fn note_read(&self, path: &Path) -> Result<TextNote> {
-        self.0.note.read(path)
+    pub async fn note_read(&self, path: &Path) -> Result<TextNote> {
+        self.0.note.read(path).await
     }
 
-    pub fn note_write(&self, note: &TextNote, condition: Condition) -> Result<()> {
-        self.0.note.write(note, condition)
+    pub async fn note_write(&self, note: &TextNote, condition: Condition) -> Result<()> {
+        self.0.note.write(note, condition).await
     }
 
-    pub fn note_edit(&self, path: &Path, edit: &Edit) -> Result<TextNote> {
-        self.0.note.edit(path, edit)
+    pub async fn note_edit(&self, path: &Path, edit: &Edit) -> Result<TextNote> {
+        self.0.note.edit(path, edit).await
     }
 
-    pub fn note_move(&self, path: &Path, dest: &Path, overwrite: bool) -> Result<()> {
-        self.0.note.move_(path, dest, overwrite)
+    pub async fn note_move(&self, path: &Path, dest: &Path, overwrite: bool) -> Result<()> {
+        self.0.note.move_(path, dest, overwrite).await
     }
 
-    pub fn note_delete(&self, path: &Path) -> Result<Trashed> {
-        self.0.note.delete(path)
+    pub async fn note_delete(&self, path: &Path) -> Result<Trashed> {
+        self.0.note.delete(path).await
     }
 
-    pub fn log_note(&self, body: &LogBody) -> Result<LogNote> {
-        self.0.log.note(body)
+    pub async fn log_note(&self, body: &LogBody) -> Result<LogNote> {
+        self.0.log.note(body).await
     }
 
-    pub fn log_get(&self, query: &LogQuery) -> Result<Vec<LogNote>> {
-        self.0.log.get(query)
+    pub async fn log_get(&self, query: &LogQuery) -> Result<Vec<LogNote>> {
+        self.0.log.get(query).await
     }
 
-    pub fn task_create(
+    pub async fn task_create(
         &self,
         title: &TaskTitle,
         group: &GroupPath,
         body: &TaskBody,
     ) -> Result<TaskNote> {
-        self.0.task.create(title, group, body)
+        self.0.task.create(title, group, body).await
     }
 
-    pub fn task_get(&self, query: &TaskQuery) -> Result<Vec<TaskNote>> {
-        self.0.task.get(query)
+    pub async fn task_get(&self, query: &TaskQuery) -> Result<Vec<TaskNote>> {
+        self.0.task.get(query).await
     }
 
-    pub fn task_update(&self, task: &TaskRef, change: &TaskChange) -> Result<TaskNote> {
-        self.0.task.update(task, change)
+    pub async fn task_update(&self, task: &TaskRef, change: &TaskChange) -> Result<TaskNote> {
+        self.0.task.update(task, change).await
     }
 
-    pub fn task_move(&self, task: &TaskRef, group: &GroupPath) -> Result<TaskNote> {
-        self.0.task.move_(task, group)
+    pub async fn task_move(&self, task: &TaskRef, group: &GroupPath) -> Result<TaskNote> {
+        self.0.task.move_(task, group).await
     }
 
     // the attachment's Tasks-relative path
-    pub fn task_attach(
+    pub async fn task_attach(
         &self,
         task: &TaskRef,
         name: &AttachmentName,
         content: &Base64Bytes,
     ) -> Result<Path> {
-        self.0.task.attach(task, name, content)
+        self.0.task.attach(task, name, content).await
     }
 }

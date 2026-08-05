@@ -50,19 +50,20 @@ fn ts(s: &str) -> TaskState {
     s.parse().unwrap()
 }
 
-fn create(root: &NotedRoot, task: &str, group: &str) -> noted::Result<TaskNote> {
-    root.task_create(&tt(task), &gp(group), &"".into())
+async fn create(root: &NotedRoot, task: &str, group: &str) -> noted::Result<TaskNote> {
+    root.task_create(&tt(task), &gp(group), &"".into()).await
 }
 
-fn get(root: &NotedRoot, prefix: &str, include_completed: bool) -> Vec<TaskNote> {
+async fn get(root: &NotedRoot, prefix: &str, include_completed: bool) -> Vec<TaskNote> {
     root.task_get(&TaskQuery {
         prefix: tr(prefix),
         include_completed,
     })
+    .await
     .unwrap()
 }
 
-fn advance(
+async fn advance(
     root: &NotedRoot,
     reference: &str,
     state: &str,
@@ -76,48 +77,51 @@ fn advance(
             task: None,
         },
     )
+    .await
 }
 
-#[test]
-fn read_existing_and_missing() {
+#[tokio::test]
+async fn read_existing_and_missing() {
     let dir = fixture_dir();
     let root = cores(&dir);
-    assert!(read(&root, "Inbox.md").unwrap().contains("# Inbox"));
-    assert!(read(&root, "nope.md").is_err());
+    assert!(read(&root, "Inbox.md").await.unwrap().contains("# Inbox"));
+    assert!(read(&root, "nope.md").await.is_err());
 }
 
-#[test]
-fn write_roundtrip_and_path_escape() {
+#[tokio::test]
+async fn write_roundtrip_and_path_escape() {
     let dir = fixture_dir();
     let root = cores(&dir);
-    write(&root, &note("sub/new.md", "hello")).unwrap();
-    assert_eq!(read(&root, "sub/new.md").unwrap(), "hello");
+    write(&root, &note("sub/new.md", "hello")).await.unwrap();
+    assert_eq!(read(&root, "sub/new.md").await.unwrap(), "hello");
     assert!("../escape.md".parse::<noted::path::Path>().is_err());
     assert!("../../etc/passwd".parse::<noted::path::Path>().is_err());
 }
 
-#[test]
-fn log_is_immutable_and_recoverable_delete() {
+#[tokio::test]
+async fn log_is_immutable_and_recoverable_delete() {
     let dir = fixture_dir();
     let root = cores(&dir);
     let rel = root
         .log_note(&"entry\n-- t · s".into())
+        .await
         .unwrap()
         .path()
         .to_string();
     assert!(rel.starts_with("20"), "{rel}");
     let spelled = format!("Log/{rel}");
-    let err = write(&root, &note(&spelled, "x")).unwrap_err();
+    let err = write(&root, &note(&spelled, "x")).await.unwrap_err();
     assert!(matches!(err, noted::NotedError::Forbidden), "{err}");
-    assert!(root.note_delete(&rp(&spelled)).is_err());
+    assert!(root.note_delete(&rp(&spelled)).await.is_err());
     assert!(
         root.note_move(&rp(&spelled), &rp("moved.md"), false)
+            .await
             .is_err()
     );
 
-    let trashed = root.note_delete(&rp("Inbox.md")).unwrap();
+    let trashed = root.note_delete(&rp("Inbox.md")).await.unwrap();
     assert_eq!(trashed.path().to_string(), "Inbox.md");
-    assert!(read(&root, "Inbox.md").is_err());
+    assert!(read(&root, "Inbox.md").await.is_err());
 }
 
 #[tokio::test]
@@ -134,58 +138,72 @@ async fn search_content_and_path_exclude_trash() {
     assert!(grep(&root, "FROBNICATE").await.unwrap().is_empty());
 }
 
-#[test]
-fn task_lifecycle_numbering_and_states() {
+#[tokio::test]
+async fn task_lifecycle_numbering_and_states() {
     let dir = fixture_dir();
     let root = cores(&dir);
 
-    let a = create(&root, "first", "dev/noted").unwrap();
-    let b = create(&root, "second", "dev/noted").unwrap();
+    let a = create(&root, "first", "dev/noted").await.unwrap();
+    let b = create(&root, "second", "dev/noted").await.unwrap();
     assert_eq!(a.path(), "dev/noted/task_0001");
     assert_eq!(b.path(), "dev/noted/task_0002");
     assert_eq!(a.front().state, TaskState::Created);
 
-    assert!(advance(&root, "dev/noted/task_0001", "completed", None).is_err());
+    assert!(
+        advance(&root, "dev/noted/task_0001", "completed", None)
+            .await
+            .is_err()
+    );
     let done = advance(
         &root,
         "dev/noted/task_0001",
         "completed",
         Some("shipped it"),
     )
+    .await
     .unwrap();
     assert_eq!(done.front().state, TaskState::Completed);
 
-    assert_eq!(get(&root, "dev/noted", false).len(), 1);
-    assert_eq!(get(&root, "dev/noted", true).len(), 2);
+    assert_eq!(get(&root, "dev/noted", false).await.len(), 1);
+    assert_eq!(get(&root, "dev/noted", true).await.len(), 2);
 
-    let exact = get(&root, "dev/noted/task_0001", false);
+    let exact = get(&root, "dev/noted/task_0001", false).await;
     assert_eq!(exact.len(), 1);
     assert!(exact[0].body().as_str().contains("shipped it"));
 
     let moved = root
         .task_move(&tr("dev/noted/task_0002"), &gp("dev/other"))
+        .await
         .unwrap();
     assert_eq!(moved.path(), "dev/other/task_0001");
-    assert!(get(&root, "dev/noted/task_0002", false).is_empty());
+    assert!(get(&root, "dev/noted/task_0002", false).await.is_empty());
 }
 
-#[test]
-fn task_name_validation_and_escape() {
+#[tokio::test]
+async fn task_name_validation_and_escape() {
     let dir = fixture_dir();
     let root = cores(&dir);
     assert!("bad name".parse::<GroupPath>().is_err());
     assert!("1leading".parse::<GroupPath>().is_err());
     assert!("../escape".parse::<GroupPath>().is_err());
-    assert!(create(&root, "x", "ok-group_2").is_ok());
+    assert!(create(&root, "x", "ok-group_2").await.is_ok());
 }
 
-#[test]
-fn write_and_edit_refused_under_tasks() {
+#[tokio::test]
+async fn write_and_edit_refused_under_tasks() {
     let dir = fixture_dir();
     let root = cores(&dir);
-    create(&root, "t", "grp").unwrap();
-    assert!(write(&root, &note("Tasks/grp/task_0001.md", "x")).is_err());
-    assert!(root.note_delete(&rp("Tasks/grp/task_0001.md")).is_err());
+    create(&root, "t", "grp").await.unwrap();
+    assert!(
+        write(&root, &note("Tasks/grp/task_0001.md", "x"))
+            .await
+            .is_err()
+    );
+    assert!(
+        root.note_delete(&rp("Tasks/grp/task_0001.md"))
+            .await
+            .is_err()
+    );
 }
 
 async fn mcp_raw(app: &axum::Router, body: &Value) -> axum::response::Response {

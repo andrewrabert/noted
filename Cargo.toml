@@ -1,5 +1,8 @@
 [workspace]
 members = ["crates/*"]
+# `crates/*` would otherwise take this in: its `webgl`/`fira-sans` features are
+# wasm-only and break every host `--workspace --all-targets` build.
+exclude = ["crates/ui-wasm"]
 default-members = ["crates/cli"]
 resolver = "3"
 
