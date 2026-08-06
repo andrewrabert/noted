@@ -4,19 +4,15 @@ use anstyle::{AnsiColor, Style};
 use clap::{Args, Subcommand};
 use serde_json::Value;
 
-use noted::authorization::Bearer;
+use noted::ToolCall;
 use noted::error::Result;
 use noted::tasks::TaskState;
 use noted::tools::{
     AttachToTaskArgs, CreateTaskArgs, GetLogArgs, GetTasksArgs, LogArgs, MoveTaskArgs,
     SearchLogArgs, SearchTasksArgs, ToolArgs, ToolOutput, UpdateTaskArgs,
 };
-use noted::{Backend, Endpoint, ToolCall};
-use noted_client::authclient::Session;
-use noted_client::credentials::CredentialStore;
 
-use crate::GlobalArgs;
-use crate::config::{block_on, credential_store_config};
+use crate::config::Config;
 
 #[derive(Args)]
 pub(crate) struct TaskCmd {
@@ -119,12 +115,12 @@ pub(crate) fn build_log(cmd: LogCmd) -> Result<Dispatch> {
     })
 }
 
-pub(crate) fn run_dispatch(globals: &GlobalArgs, dispatch: Dispatch) -> Result<ExitCode> {
+pub(crate) async fn run_dispatch(config: &Config, dispatch: Dispatch) -> Result<ExitCode> {
     use std::io::IsTerminal;
-    let backend = build_backend(globals)?;
+    let backend = config.connect().await?;
     let backend = backend.with_authority(None)?;
     tracing::debug!(tool = %dispatch.call.name(), "dispatching");
-    let result = block_on(backend.invoke(&dispatch.call))?;
+    let result = backend.invoke(&dispatch.call).await?;
     let color = std::io::stdout().is_terminal();
     let out = render(&dispatch.render, &result, color);
     if out.is_empty() && dispatch.empty_is_failure {
@@ -132,24 +128,6 @@ pub(crate) fn run_dispatch(globals: &GlobalArgs, dispatch: Dispatch) -> Result<E
     }
     println!("{out}");
     Ok(ExitCode::SUCCESS)
-}
-
-pub(crate) fn build_backend(globals: &GlobalArgs) -> Result<Backend> {
-    let mut args = globals.backend_args(&crate::EntryFlags::default())?;
-    let token = match args.endpoint.as_ref().and_then(Endpoint::tcp) {
-        Some(url) => {
-            let store = CredentialStore::open(credential_store_config()?);
-            let session = Session::open(url, globals.token.as_deref(), store);
-            block_on(session.bearer())?.map(Bearer::new)
-        }
-        None => globals
-            .token
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .map(Bearer::new),
-    };
-    args.token = token;
-    Backend::new(args)
 }
 
 fn render(render: &Render, result: &ToolOutput, color: bool) -> String {

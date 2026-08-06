@@ -34,7 +34,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 shell-words = "1"
 tempfile = { workspace = true }
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["process", "rt-multi-thread"] }
 tracing = { workspace = true }
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

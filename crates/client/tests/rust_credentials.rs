@@ -18,7 +18,7 @@ fn url(s: &str) -> HttpUrl {
     s.parse().unwrap()
 }
 
-fn real_root_macaroon(dir: &tempfile::TempDir) -> Macaroon {
+async fn real_root_macaroon(dir: &tempfile::TempDir) -> Macaroon {
     let db = Arc::new(Db::open(&dir.path().join("auth.redb")).unwrap());
     let svc = Arc::new(AuthService::new(db, noted::types::Ttl::from_secs(3600)));
     let minted = svc
@@ -31,40 +31,38 @@ fn real_root_macaroon(dir: &tempfile::TempDir) -> Macaroon {
     svc.key_finalize(&minted.credential_id).unwrap();
     let router = noted_auth::routes(AuthState::new(svc, None));
 
-    tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let resp = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/macaroon/root")
-                    .header("authorization", format!("Bearer {}", minted.token.expose()))
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        serde_json::from_value(body["macaroon"].clone()).unwrap()
-    })
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/macaroon/root")
+                .header("authorization", format!("Bearer {}", minted.token.expose()))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    serde_json::from_value(body["macaroon"].clone()).unwrap()
 }
 
-fn cred(dir: &tempfile::TempDir) -> Credential {
+async fn cred(dir: &tempfile::TempDir) -> Credential {
     Credential {
         user: Some("ann".into()),
         client_id: "cid-123".into(),
         access_token: "acc-secret".into(),
         refresh_token: Some("ref-secret".into()),
         expires_at: Some(noted::types::UnixEpochSeconds::from_secs(9_999_999_999)),
-        root_macaroon: Some(real_root_macaroon(dir)),
+        root_macaroon: Some(real_root_macaroon(dir).await),
     }
 }
 
-#[test]
-fn round_trips_a_credential() {
+#[tokio::test]
+async fn round_trips_a_credential() {
     let dir = tempfile::tempdir().unwrap();
     let s = store(&dir);
-    let c = cred(&dir);
+    let c = cred(&dir).await;
     s.set(&url("https://notes.example/"), &c).unwrap();
 
     // set uses a trailing slash, get doesn't: exercises URL normalization
@@ -82,10 +80,10 @@ fn round_trips_a_credential() {
     );
 }
 
-#[test]
-fn pointer_file_holds_no_secret() {
+#[tokio::test]
+async fn pointer_file_holds_no_secret() {
     let dir = tempfile::tempdir().unwrap();
-    let c = cred(&dir);
+    let c = cred(&dir).await;
     let root_macaroon = c.root_macaroon.as_ref().unwrap().expose().to_string();
     store(&dir).set(&url("https://notes.example"), &c).unwrap();
     let hosts = std::fs::read_to_string(dir.path().join("hosts.json")).unwrap();
@@ -95,11 +93,11 @@ fn pointer_file_holds_no_secret() {
     assert!(!hosts.contains(&root_macaroon));
 }
 
-#[test]
-fn list_and_remove() {
+#[tokio::test]
+async fn list_and_remove() {
     let dir = tempfile::tempdir().unwrap();
     let s = store(&dir);
-    let c = cred(&dir);
+    let c = cred(&dir).await;
     s.set(&url("https://a.example"), &c).unwrap();
     s.set(&url("https://b.example"), &c).unwrap();
     assert_eq!(s.list().unwrap().len(), 2);

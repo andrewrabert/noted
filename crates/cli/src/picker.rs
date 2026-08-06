@@ -6,14 +6,21 @@ use crossterm::terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternate
 use crossterm::{cursor, event, execute, queue, terminal};
 use picker::{Action, Key, PickerState};
 
-use noted::error::{Result, io_error};
+use noted::error::{Result, io_error, unavailable};
 
 pub enum Pick {
     Chosen(String),
     Aborted,
 }
 
-pub fn pick(items: Vec<String>) -> Result<Pick> {
+/// Runs the picker on the terminal, off the runtime's blocking pool.
+pub(crate) async fn pick(items: Vec<String>) -> Result<Pick> {
+    tokio::task::spawn_blocking(move || pick_blocking(items))
+        .await
+        .map_err(|e| unavailable(format!("picker failed: {e}")))?
+}
+
+fn pick_blocking(items: Vec<String>) -> Result<Pick> {
     let mut state = PickerState::new(items);
     let mut screen = RawScreen::enter()?;
     loop {

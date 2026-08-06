@@ -1,23 +1,27 @@
-use std::path::{Path, PathBuf};
+use std::ffi::OsString;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
-use noted::error::{Result, rejected, unavailable};
+use noted::error::{Result, io_error, rejected, unavailable};
 use noted::tools::{DeleteArgs, EditArgs, MoveArgs, ReadArgs, SearchNotesArgs, WriteArgs};
 use noted::types::Ttl;
-use noted::{BackendArgs, Endpoint, PolicyArgs};
 use noted_auth::oauth::service::DEFAULT_CREDENTIAL_TTL_HUMAN;
 use noted_server::serve::{Bind, HttpConfig, StdioConfig};
 
-use crate::config::{parse_ttl, setup_logging};
+use crate::args::{AuthPaths, EntryFlags, EnvFileArg, GlobalArgs, parse_ttl};
+use crate::config::{Config, EnvFile, Environment};
 
 mod admin;
+pub mod args;
 mod auth;
-mod config;
+pub mod config;
 mod dispatch;
+pub mod logging;
 mod open;
 mod picker;
+mod prompt;
 mod text_editor;
 
 use admin::{KeyCmd, UserCmd};
@@ -25,25 +29,42 @@ use auth::AuthCmd;
 use dispatch::{LogCmd, TaskCmd};
 
 pub fn main() -> ExitCode {
-    config::load_env_file();
-    let cli = Cli::parse();
-    let _log_guard = match setup_logging(
-        &cli.globals.log_level,
-        cli.globals.log_file.as_deref().map(std::path::Path::new),
-    ) {
-        Ok(guard) => guard,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    match run(cli) {
+    match start() {
         Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// The env file argv names, learned before the real parse. Help, version and
+/// every parse error are left to that parse: this one neither prints nor
+/// exits.
+pub fn env_file_arg<I, T>(argv: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let matches = Cli::command()
+        .ignore_errors(true)
+        .disable_help_flag(true)
+        .disable_version_flag(true)
+        .disable_help_subcommand(true)
+        .try_get_matches_from(argv)
+        .ok()?;
+    EnvFileArg::from_arg_matches(&matches).ok()?.env_file
+}
+
+fn start() -> Result<ExitCode> {
+    if let Some(env_file) = EnvFile::locate(env_file_arg(std::env::args_os()).as_deref()) {
+        env_file.load()?;
+    }
+    let cli = Cli::parse();
+    let config = Config::new(cli.globals, Environment::capture());
+    let _log = logging::init(config.log_filter(), config.log_file())?;
+    let runtime = tokio::runtime::Runtime::new().map_err(|e| io_error("runtime", e))?;
+    runtime.block_on(run(cli.command, &config))
 }
 
 #[derive(Parser)]
@@ -59,79 +80,6 @@ struct Cli {
     command: Option<Command>,
 }
 
-#[derive(Args)]
-struct GlobalArgs {
-    #[arg(long, env = "NOTED_DIR", global = true)]
-    dir: Option<String>,
-    #[arg(long, env = "NOTED_URL", global = true)]
-    url: Option<String>,
-    #[arg(long, env = "NOTED_TOKEN", global = true)]
-    token: Option<String>,
-    /// Provenance recorded on log entries
-    #[arg(short = 's', long, env = "NOTED_SOURCE", global = true)]
-    source: Option<String>,
-    #[arg(
-        long = "log-level",
-        env = "NOTED_LOG_LEVEL",
-        global = true,
-        default_value = "INFO"
-    )]
-    log_level: String,
-    #[arg(long = "log-file", env = "NOTED_LOG_FILE", global = true)]
-    log_file: Option<String>,
-    #[arg(long, env = "NOTED_POLICY", global = true)]
-    policy: Option<String>,
-    #[arg(long, env = "NOTED_SCOPE", global = true)]
-    scope: Option<String>,
-}
-
-impl GlobalArgs {
-    pub(crate) fn policy_args(&self, entries: &EntryFlags) -> PolicyArgs {
-        PolicyArgs {
-            policy: self
-                .policy
-                .as_deref()
-                .map(|raw| match raw.strip_prefix('@') {
-                    Some(path) => {
-                        format!("@{}", config::expand_home(Path::new(path)).display())
-                    }
-                    None => raw.to_string(),
-                }),
-            scope: self.scope.clone(),
-            inside: entries.in_.clone(),
-        }
-    }
-
-    /// `--url`/`NOTED_URL` parsed once: an http(s) server or a unix socket.
-    pub(crate) fn endpoint(&self) -> Result<Option<Endpoint>> {
-        match self.url.as_deref().filter(|s| !s.is_empty()) {
-            None => Ok(None),
-            Some(raw) => Ok(Some(raw.parse()?)),
-        }
-    }
-
-    pub(crate) fn backend_args(&self, entries: &EntryFlags) -> Result<BackendArgs> {
-        Ok(BackendArgs {
-            dir: self.dir.as_deref().filter(|s| !s.is_empty()).map(|dir| {
-                config::expand_home(Path::new(dir))
-                    .to_string_lossy()
-                    .into_owned()
-            }),
-            endpoint: self.endpoint()?,
-            token: None,
-            source: self.source.clone(),
-            policy: self.policy_args(entries),
-            transport: None,
-        })
-    }
-}
-
-#[derive(Args, Default)]
-pub(crate) struct EntryFlags {
-    #[arg(long = "in", value_name = "PATH[=MODES]")]
-    in_: Vec<String>,
-}
-
 #[derive(Subcommand)]
 enum Command {
     /// Find notes by regex
@@ -142,7 +90,7 @@ enum Command {
     Write(WriteArgs),
     /// Revise a note in place via string-replace
     Edit(EditArgs),
-    /// Open a note in $EDITOR
+    /// Open a note in your editor
     Open(open::OpenArgs),
     /// Move or rename a note or folder
     #[command(name = "move")]
@@ -178,11 +126,8 @@ enum ServerSub {
 /// What every served backend takes, whatever it binds
 #[derive(Args)]
 struct ServerArgs {
-    #[arg(long = "auth-db", env = "NOTED_AUTH_DB")]
-    auth_db: Option<PathBuf>,
-    #[cfg(unix)]
-    #[arg(long = "admin-socket", env = "NOTED_ADMIN_SOCKET")]
-    admin_socket: Option<PathBuf>,
+    #[command(flatten)]
+    auth: AuthPaths,
     #[arg(
         long = "default-ttl",
         env = "NOTED_DEFAULT_TTL",
@@ -199,21 +144,21 @@ impl ServerArgs {
     /// messages name CLI flags belong here, not in core.
     fn into_config(
         self,
-        globals: &GlobalArgs,
+        config: &Config,
         bind: Bind,
         public_url: Option<String>,
     ) -> Result<HttpConfig> {
         #[cfg(unix)]
-        if self.admin_socket.is_some() && self.auth_db.is_none() {
+        if self.auth.admin_socket.is_some() && self.auth.auth_db.is_none() {
             return Err(rejected("--admin-socket requires --auth-db"));
         }
         Ok(HttpConfig {
-            backend: globals.backend_args(&self.entries)?,
+            backend: config.backend_args(&self.entries)?,
             bind,
             public_url,
-            auth_db: self.auth_db.as_deref().map(config::expand_home),
+            auth_db: self.auth.auth_db,
             #[cfg(unix)]
-            admin_socket: self.admin_socket,
+            admin_socket: self.auth.admin_socket,
             default_ttl: self.default_ttl,
         })
     }
@@ -232,15 +177,15 @@ struct ServeCmd {
 }
 
 impl ServeCmd {
-    fn into_config(self, globals: &GlobalArgs) -> Result<HttpConfig> {
-        if self.public_url.is_some() && self.server.auth_db.is_none() {
+    fn into_config(self, config: &Config) -> Result<HttpConfig> {
+        if self.public_url.is_some() && self.server.auth.auth_db.is_none() {
             return Err(rejected("--public-url requires --auth-db"));
         }
         let bind = Bind::Tcp {
             host: self.host,
             port: self.port,
         };
-        self.server.into_config(globals, bind, self.public_url)
+        self.server.into_config(config, bind, self.public_url)
     }
 }
 
@@ -256,9 +201,9 @@ struct SocketCmd {
 
 #[cfg(unix)]
 impl SocketCmd {
-    fn into_config(self, globals: &GlobalArgs) -> Result<HttpConfig> {
+    fn into_config(self, config: &Config) -> Result<HttpConfig> {
         let bind = Bind::Socket(noted::endpoint::socket_path(&self.path)?);
-        self.server.into_config(globals, bind, None)
+        self.server.into_config(config, bind, None)
     }
 }
 
@@ -269,17 +214,16 @@ struct McpCmd {
 }
 
 impl McpCmd {
-    fn into_config(self, globals: &GlobalArgs) -> Result<StdioConfig> {
+    fn into_config(self, config: &Config) -> Result<StdioConfig> {
         Ok(StdioConfig {
-            backend: globals.backend_args(&self.entries)?,
+            backend: config.backend_args(&self.entries)?,
         })
     }
 }
 
-fn run(cli: Cli) -> Result<ExitCode> {
-    let globals = cli.globals;
-    let Some(command) = cli.command else {
-        // No subcommand: emit the exact `--help` output (clap's own rendering,
+async fn run(command: Option<Command>, config: &Config) -> Result<ExitCode> {
+    let Some(command) = command else {
+        // No subcommand: emit the exact help output (clap's own rendering,
         // to stdout, exit 0) rather than crafting a second help path.
         Cli::command()
             .print_help()
@@ -287,33 +231,33 @@ fn run(cli: Cli) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     };
     match command {
-        Command::Search(c) => dispatch::run_dispatch(&globals, dispatch::search(c)?),
-        Command::Read(c) => dispatch::run_dispatch(&globals, dispatch::passthrough_of(c)?),
-        Command::Write(c) => dispatch::run_dispatch(&globals, dispatch::passthrough_of(c)?),
-        Command::Edit(c) => dispatch::run_dispatch(&globals, dispatch::passthrough_of(c)?),
-        Command::Open(c) => open::run_open(&globals, c),
-        Command::Move(c) => dispatch::run_dispatch(&globals, dispatch::passthrough_of(c)?),
-        Command::Delete(c) => dispatch::run_dispatch(&globals, dispatch::passthrough_of(c)?),
-        Command::Log(c) => dispatch::run_dispatch(&globals, dispatch::build_log(c)?),
-        Command::Task(c) => dispatch::run_dispatch(&globals, dispatch::build_task(c)?),
-        Command::Auth(c) => auth::run_auth(c, &globals),
-        Command::Server(c) => run_server(c, &globals),
+        Command::Search(c) => dispatch::run_dispatch(config, dispatch::search(c)?).await,
+        Command::Read(c) => dispatch::run_dispatch(config, dispatch::passthrough_of(c)?).await,
+        Command::Write(c) => dispatch::run_dispatch(config, dispatch::passthrough_of(c)?).await,
+        Command::Edit(c) => dispatch::run_dispatch(config, dispatch::passthrough_of(c)?).await,
+        Command::Open(c) => open::run_open(config, c).await,
+        Command::Move(c) => dispatch::run_dispatch(config, dispatch::passthrough_of(c)?).await,
+        Command::Delete(c) => dispatch::run_dispatch(config, dispatch::passthrough_of(c)?).await,
+        Command::Log(c) => dispatch::run_dispatch(config, dispatch::build_log(c)?).await,
+        Command::Task(c) => dispatch::run_dispatch(config, dispatch::build_task(c)?).await,
+        Command::Auth(c) => auth::run_auth(c, config).await,
+        Command::Server(c) => run_server(c, config).await,
     }
 }
 
-fn run_server(cmd: ServerCmd, globals: &GlobalArgs) -> Result<ExitCode> {
+async fn run_server(cmd: ServerCmd, config: &Config) -> Result<ExitCode> {
     match cmd.sub {
-        ServerSub::Http(c) => {
-            noted_server::serve::serve_http(c.into_config(globals)?).map(|()| ExitCode::SUCCESS)
-        }
+        ServerSub::Http(c) => noted_server::serve::serve_http(c.into_config(config)?)
+            .await
+            .map(|()| ExitCode::SUCCESS),
         #[cfg(unix)]
-        ServerSub::Socket(c) => {
-            noted_server::serve::serve_http(c.into_config(globals)?).map(|()| ExitCode::SUCCESS)
-        }
-        ServerSub::Mcp(c) => {
-            noted_server::serve::serve_stdio(c.into_config(globals)?).map(|()| ExitCode::SUCCESS)
-        }
-        ServerSub::User(c) => admin::run_user(c, globals).map(|()| ExitCode::SUCCESS),
-        ServerSub::Key(c) => admin::run_key(c, globals).map(|()| ExitCode::SUCCESS),
+        ServerSub::Socket(c) => noted_server::serve::serve_http(c.into_config(config)?)
+            .await
+            .map(|()| ExitCode::SUCCESS),
+        ServerSub::Mcp(c) => noted_server::serve::serve_stdio(c.into_config(config)?)
+            .await
+            .map(|()| ExitCode::SUCCESS),
+        ServerSub::User(c) => admin::run_user(c, config).await.map(|()| ExitCode::SUCCESS),
+        ServerSub::Key(c) => admin::run_key(c, config).await.map(|()| ExitCode::SUCCESS),
     }
 }

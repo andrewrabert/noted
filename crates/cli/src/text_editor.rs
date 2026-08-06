@@ -1,26 +1,14 @@
-//! Vendored from <https://github.com/twilligon/edit/blob/master/src/lib.rs>.
-//! The upstream source is dedicated to the public domain under CC0-1.0.
-//!
-//! `edit` lets you open and edit something in a text editor, regardless of platform.
-//! (Think `git commit`.)
-//!
-//! It works on Windows, Mac, and Linux, and knows about lots of different text editors to fall
-//! back upon in case standard environment variables such as `VISUAL` and `EDITOR` aren't set.
-//!
-//! Pruned to the single entry point noted uses, [`edit_file`].
+//! Editor resolution and launch. The hardcoded fallback list is vendored from
+//! <https://github.com/twilligon/edit/blob/master/src/lib.rs>, dedicated to the
+//! public domain under CC0-1.0.
 
-use std::{
-    env,
-    ffi::OsStr,
-    io::{Error, ErrorKind, Result},
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
-};
-use which::which;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
-static ENV_VARS: &[&str] = &["VISUAL", "EDITOR"];
+use noted::error::{Result, io_error, rejected, unavailable};
 
-// TODO: should we hardcode full paths as well in case $PATH is borked?
+use crate::config::EditorPreference;
+
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 #[rustfmt::skip]
 static HARDCODED_NAMES: &[&str] = &[
@@ -63,98 +51,79 @@ static HARDCODED_NAMES: &[&str] = &[
     "cmd.exe /C start",
 ];
 
-fn get_full_editor_path<T: AsRef<OsStr>>(binary_name: T) -> which::Result<PathBuf> {
-    which(binary_name)
+/// A resolved editor: the program and the arguments that precede the file.
+pub(crate) struct TextEditor {
+    program: PathBuf,
+    args: Vec<String>,
 }
 
-fn string_to_cmd(s: String) -> (PathBuf, Vec<String>) {
+impl TextEditor {
+    /// The first command of `preference` that resolves against `PATH`, else
+    /// the first of the platform's known editors. Path lookup runs off the
+    /// blocking pool. Rejects with "no editor found" when nothing resolves.
+    pub(crate) async fn resolve(preference: &EditorPreference) -> Result<TextEditor> {
+        let candidates: Vec<String> = preference
+            .commands()
+            .iter()
+            .cloned()
+            .chain(HARDCODED_NAMES.iter().map(|s| s.to_string()))
+            .collect();
+        tokio::task::spawn_blocking(move || {
+            candidates
+                .into_iter()
+                .find_map(|s| TextEditor::lookup(s).ok())
+                .ok_or_else(|| rejected("no editor found"))
+        })
+        .await
+        .map_err(|e| unavailable(format!("editor lookup failed: {e}")))?
+    }
+
+    fn lookup(command: String) -> std::result::Result<TextEditor, ()> {
+        let (program, args) = split_command(command);
+        match which::which(&program) {
+            Ok(resolved) => Ok(TextEditor {
+                program: resolved,
+                args,
+            }),
+            Err(_) if program.exists() => Ok(TextEditor { program, args }),
+            Err(_) => Err(()),
+        }
+    }
+
+    /// Runs the editor on `file`, inheriting the terminal, and waits for it to
+    /// exit. A non-zero exit is rejected, naming the command.
+    pub(crate) async fn edit(&self, file: &Path) -> Result<()> {
+        let status = tokio::process::Command::new(&self.program)
+            .args(&self.args)
+            .arg(file)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .await
+            .map_err(|e| io_error("cannot launch editor", e))?;
+        if status.success() {
+            return Ok(());
+        }
+        let mut command = vec![self.program.to_string_lossy().into_owned()];
+        command.extend(self.args.iter().cloned());
+        command.push(file.to_string_lossy().into_owned());
+        Err(rejected(format!(
+            "editor '{}' exited with error: {status}",
+            command.join(" ")
+        )))
+    }
+}
+
+fn split_command(s: String) -> (PathBuf, Vec<String>) {
     match shell_words::split(&s) {
         Ok(mut v) if !v.is_empty() => (v.remove(0).into(), v),
         _ => {
             let mut args = s.split_ascii_whitespace();
             (
-                args.next().unwrap().into(),
+                args.next().unwrap_or_default().into(),
                 args.map(String::from).collect(),
             )
         }
-    }
-}
-
-fn get_full_editor_cmd(s: String) -> Result<(PathBuf, Vec<String>)> {
-    let (path, args) = string_to_cmd(s);
-    match get_full_editor_path(&path) {
-        Ok(result) => Ok((result, args)),
-        Err(_) if path.exists() => Ok((path, args)),
-        Err(_) => Err(Error::from(ErrorKind::NotFound)),
-    }
-}
-
-fn get_editor_args() -> Result<(PathBuf, Vec<String>)> {
-    ENV_VARS
-        .iter()
-        .filter_map(env::var_os)
-        .filter(|v| !v.is_empty())
-        .filter_map(|v| v.into_string().ok())
-        .filter_map(|s| get_full_editor_cmd(s).ok())
-        .next()
-        .or_else(|| {
-            HARDCODED_NAMES
-                .iter()
-                .map(|s| s.to_string())
-                .filter_map(|s| get_full_editor_cmd(s).ok())
-                .next()
-        })
-        .ok_or_else(|| Error::from(ErrorKind::NotFound))
-}
-
-/// Open an existing file (or create a new one, depending on the editor's behavior) in the
-/// [default editor] and wait for the editor to exit.
-///
-/// # Arguments
-///
-/// A [`Path`] to a file, new or existing, to open in the default editor.
-///
-/// # Returns
-///
-/// A Result is returned in case of errors finding or spawning the editor, but the contents of the
-/// file are not read and returned as in [`edit`] and [`edit_bytes`].
-///
-/// [default editor]: fn.get_editor.html
-/// [`Path`]: https://doc.rust-lang.org/std/path/struct.Path.html
-/// [`edit`]: fn.edit.html
-/// [`edit_bytes`]: fn.edit_bytes.html
-pub fn edit_file<P: AsRef<Path>>(file: P) -> Result<()> {
-    let (editor, args) = get_editor_args()?;
-    let status = Command::new(&editor)
-        .args(&args)
-        .arg(file.as_ref())
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .output()?
-        .status;
-
-    if status.success() {
-        Ok(())
-    } else {
-        let full_command = if args.is_empty() {
-            format!(
-                "{} {}",
-                editor.to_string_lossy(),
-                file.as_ref().to_string_lossy()
-            )
-        } else {
-            format!(
-                "{} {} {}",
-                editor.to_string_lossy(),
-                args.join(" "),
-                file.as_ref().to_string_lossy()
-            )
-        };
-
-        Err(Error::other(format!(
-            "editor '{}' exited with error: {}",
-            full_command, status
-        )))
     }
 }

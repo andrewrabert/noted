@@ -4,13 +4,12 @@ use clap::{Args, Subcommand};
 
 use noted::error::{Result, rejected};
 use noted::types::Ttl;
-use noted::{Endpoint, HttpUrl};
 use noted_auth::oauth::types::SessionId;
 use noted_client::authclient::{self, RevokeSelector, Session};
 use noted_client::credentials::CredentialStore;
 
-use crate::config::{block_on, credential_store_config, parse_ttl};
-use crate::{EntryFlags, GlobalArgs};
+use crate::args::{EntryFlags, parse_ttl};
+use crate::config::Config;
 
 #[derive(Args)]
 pub(crate) struct AuthCmd {
@@ -58,20 +57,12 @@ struct RevokeCmd {
     all: bool,
 }
 
-fn resolve_url(explicit: Option<&str>, globals: &GlobalArgs) -> Result<HttpUrl> {
-    let raw = explicit
-        .filter(|s| !s.is_empty())
-        .or_else(|| globals.url.as_deref().filter(|s| !s.is_empty()))
-        .ok_or_else(|| rejected("a server URL is required (--url or NOTED_URL)"))?;
-    raw.parse::<Endpoint>()?.login_url()
-}
-
-pub(crate) fn run_auth(cmd: AuthCmd, globals: &GlobalArgs) -> Result<ExitCode> {
-    let store = CredentialStore::open(credential_store_config()?);
+pub(crate) async fn run_auth(cmd: AuthCmd, config: &Config) -> Result<ExitCode> {
+    let store = config.credential_store()?;
     match cmd.sub {
         AuthSub::Login(a) => {
-            let url = resolve_url(a.url.as_deref(), globals)?;
-            let cred = block_on(authclient::login(&url))?;
+            let url = config.login_url(a.url.as_deref())?;
+            let cred = authclient::login(&url).await?;
             store.set(&url, &cred)?;
             match &cred.user {
                 Some(u) => println!("Logged in to {url} as {u}"),
@@ -80,7 +71,7 @@ pub(crate) fn run_auth(cmd: AuthCmd, globals: &GlobalArgs) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         AuthSub::Logout(a) => {
-            let url = resolve_url(a.url.as_deref(), globals)?;
+            let url = config.login_url(a.url.as_deref())?;
             store.remove(&url)?;
             println!("Logged out of {url}");
             Ok(ExitCode::SUCCESS)
@@ -96,13 +87,13 @@ pub(crate) fn run_auth(cmd: AuthCmd, globals: &GlobalArgs) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        AuthSub::Mint(m) => run_mint(&store, m, globals),
-        AuthSub::Revoke(r) => run_revoke(&store, r, globals),
+        AuthSub::Mint(m) => run_mint(&store, m, config).await,
+        AuthSub::Revoke(r) => run_revoke(&store, r, config).await,
     }
 }
 
-fn run_mint(store: &CredentialStore, m: MintCmd, globals: &GlobalArgs) -> Result<ExitCode> {
-    let url = resolve_url(m.url.as_deref(), globals)?;
+async fn run_mint(store: &CredentialStore, m: MintCmd, config: &Config) -> Result<ExitCode> {
+    let url = config.login_url(m.url.as_deref())?;
     let cred = store
         .get(&url)?
         .ok_or_else(|| rejected(format!("not logged in to {url}; run `noted auth login`")))?;
@@ -111,20 +102,15 @@ fn run_mint(store: &CredentialStore, m: MintCmd, globals: &GlobalArgs) -> Result
         .as_ref()
         .ok_or_else(|| rejected("no root macaroon stored; run `noted auth login` again"))?;
 
-    let held = globals
-        .policy_args(&m.entries)
-        .fragments()?
-        .into_iter()
-        .next()
-        .unwrap_or_default();
+    let held = config.policy_fragment(&m.entries)?;
 
     let session = m.session.as_deref().map(SessionId::new);
     let _child = root.to_descendant(Some(&held), m.ttl, session.as_ref())?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_revoke(store: &CredentialStore, r: RevokeCmd, globals: &GlobalArgs) -> Result<ExitCode> {
-    let url = resolve_url(r.url.as_deref(), globals)?;
+async fn run_revoke(store: &CredentialStore, r: RevokeCmd, config: &Config) -> Result<ExitCode> {
+    let url = config.login_url(r.url.as_deref())?;
     let cred = store
         .get(&url)?
         .ok_or_else(|| rejected(format!("not logged in to {url}; run `noted auth login`")))?;
@@ -140,9 +126,9 @@ fn run_revoke(store: &CredentialStore, r: RevokeCmd, globals: &GlobalArgs) -> Re
     let session = Session::open(
         &url,
         Some(cred.access_token.expose()),
-        CredentialStore::open(credential_store_config()?),
+        config.credential_store()?,
     );
-    block_on(session.revoke(selector))?;
+    session.revoke(selector).await?;
     println!("revoked");
     Ok(ExitCode::SUCCESS)
 }

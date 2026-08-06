@@ -68,13 +68,16 @@ bearer token.
 
 ## Configuration
 
-Every `NOTED_*` var can also live in a dotenv file at `NOTED_ENV_FILE`; the process
-environment wins. CLI flags override both.
+Every `NOTED_*` var can also live in a dotenv file at `--env-file`/`NOTED_ENV_FILE`;
+the process environment wins. CLI flags override both. A missing file is fine; one
+that cannot be read or parsed stops the process at startup. The file cannot name
+itself: `NOTED_ENV_FILE` is read from the command line and the process environment
+only.
 
 | Variable             | Flag             | Default               | Description                                          |
 | ---                  | ---              | ---                   | ---                                                  |
-| `NOTED_DIR`          | -                | *(required locally)*  | Notes root directory.                                |
-| `NOTED_ENV_FILE`     | -                | `~/.config/noted.env` | Dotenv file to load settings from.                   |
+| `NOTED_DIR`          | `--dir`          | *(required locally)*  | Notes root directory.                                |
+| `NOTED_ENV_FILE`     | `--env-file`     | `~/.config/noted.env` | Dotenv file to load settings from.                   |
 | `NOTED_SOURCE`       | `-s`/`--source`  | -                     | `source` metadata recorded on log entries.           |
 | `NOTED_POLICY`       | `--policy`       | *(everything)*        | A policy fragment as JSON, or `@<path>` to a file holding one. |
 | `NOTED_SCOPE`        | `--scope`        | *(whole tree)*        | The scope the process is anchored at.                |
@@ -82,15 +85,15 @@ environment wins. CLI flags override both.
 | `NOTED_TOKEN`        | `--token`        | *(stored login)*      | Bearer for the remote server.                        |
 | `NOTED_HOST`         | `--host`         | `127.0.0.1`           | `server http` bind address.                          |
 | `NOTED_PORT`         | `--port`         | `8000`                | `server http` port.                                  |
-| `NOTED_WEB_HOST`     | `--host`         | `127.0.0.1`           | `web` bind address.                                  |
-| `NOTED_WEB_PORT`     | `--port`         | `8001`                | `web` port.                                          |
 | `NOTED_AUTH_DB`      | `--auth-db`      | -                     | Auth database; setting it enables auth.              |
 | `NOTED_ADMIN_SOCKET` | `--admin-socket` | -                     | Unix socket for live user/key admin (mode 0600).     |
 | `NOTED_PUBLIC_URL`   | `--public-url`   | -                     | External `https` base URL; enables the OAuth server. |
 | `NOTED_DEFAULT_TTL`  | `--default-ttl`  | `30d`                 | Default lifetime for issued credentials.             |
-| `NOTED_LOG_LEVEL`    | `--log-level`    | `INFO`                | Tracing log level.                                   |
+| `NOTED_LOG_LEVEL`    | `--log-level`    | `INFO`                | Tracing filter: a level, or `EnvFilter` directives.  |
 | `NOTED_LOG_FILE`     | `--log-file`     | *(stderr)*            | Write logs to this file instead of stderr.           |
-| `NOTED_HOSTS_FILE`   | -                | `~/.config/noted/hosts.json` | Credential metadata path; setting it forces plaintext secret storage. |
+| `NOTED_HOSTS_FILE`   | `--hosts-file`   | `~/.config/noted/hosts.json` | Credential metadata path; setting it forces plaintext secret storage. |
+| `VISUAL`             | -                | -                     | Editor `noted open` launches.                        |
+| `EDITOR`             | -                | *(first known editor)* | Editor `noted open` launches when `VISUAL` is unset. |
 
 ## Auth
 

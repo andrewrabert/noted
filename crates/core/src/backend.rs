@@ -116,7 +116,7 @@ impl Backend {
             None => {
                 let dir = dir
                     .filter(|s| !s.is_empty())
-                    .ok_or_else(|| rejected("no notes dir set (set NOTED_DIR)"))?;
+                    .ok_or_else(|| rejected("no notes dir set"))?;
                 let root = NotedRoot::open(NotedDir::new(dir), Source::from_opt(source))?
                     .with_authority(&policy.fragments()?)?;
                 Ok(Backend {

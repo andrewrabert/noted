@@ -1,11 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rmcp::serve_server;
 use rmcp::transport::stdio;
 
 use crate::mcp::context;
-use noted::error::{Result, io_error, rejected};
+use noted::error::{Result, rejected, unavailable};
 use noted::types::Ttl;
 use noted::{Backend, BackendArgs};
 use noted_auth::{AuthService, OAuthProvider};
@@ -37,15 +37,20 @@ pub struct StdioConfig {
     pub backend: BackendArgs,
 }
 
-fn block_on<F, T>(fut: F) -> Result<T>
-where
-    F: Future<Output = Result<T>>,
-{
-    let runtime = tokio::runtime::Runtime::new().map_err(|e| io_error("runtime", e))?;
-    runtime.block_on(fut)
+/// Opens the auth database off the blocking pool and sweeps it.
+async fn open_auth(path: &Path, default_ttl: Ttl) -> Result<Arc<AuthService>> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let db = Arc::new(noted_auth::oauth::Db::open(&path)?);
+        let svc = Arc::new(AuthService::new(db, default_ttl));
+        svc.sweep()?;
+        Ok(svc)
+    })
+    .await
+    .map_err(|e| unavailable(format!("cannot open auth database: {e}")))?
 }
 
-pub fn serve_http(cfg: HttpConfig) -> Result<()> {
+pub async fn serve_http(cfg: HttpConfig) -> Result<()> {
     let proxying = cfg.backend.endpoint.is_some();
     if proxying && cfg.auth_db.is_some() {
         return Err(rejected(
@@ -53,12 +58,7 @@ pub fn serve_http(cfg: HttpConfig) -> Result<()> {
         ));
     }
     let auth = match (&cfg.auth_db, proxying) {
-        (Some(path), _) => {
-            let db = Arc::new(noted_auth::oauth::Db::open(path)?);
-            let svc = Arc::new(AuthService::new(db, cfg.default_ttl));
-            svc.sweep()?;
-            Some(svc)
-        }
+        (Some(path), _) => Some(open_auth(path, cfg.default_ttl).await?),
         (None, true) => match cfg.backend.token.as_ref() {
             Some(token) => Some(Arc::new(AuthService::upstream(
                 token.expose(),
@@ -84,7 +84,7 @@ pub fn serve_http(cfg: HttpConfig) -> Result<()> {
     let app = crate::http::build_app(backend, auth, oauth.clone());
     let bind = cfg.bind;
 
-    block_on(async move {
+    {
         #[cfg(not(unix))]
         let admin_handle: Option<tokio::task::JoinHandle<()>> = None;
         #[cfg(unix)]
@@ -125,7 +125,7 @@ pub fn serve_http(cfg: HttpConfig) -> Result<()> {
                 serve_listener(listener, app, admin_handle).await
             }
         }
-    })
+    }
 }
 
 /// Resolves when the process is told to stop: SIGINT or SIGTERM. The serve
@@ -169,7 +169,6 @@ where
     );
     tokio::pin!(server);
     if let Some(mut handle) = admin {
-        use noted::error::unavailable;
         return tokio::select! {
             r = &mut server => {
                 handle.abort();
@@ -186,17 +185,14 @@ where
     server.await.map_err(|e| rejected(format!("serve: {e}")))
 }
 
-pub fn serve_stdio(cfg: StdioConfig) -> Result<()> {
+pub async fn serve_stdio(cfg: StdioConfig) -> Result<()> {
     let ctx = context(Arc::new(Backend::new(cfg.backend)?));
-
-    block_on(async move {
-        let running = serve_server(ctx, stdio())
-            .await
-            .map_err(|e| rejected(format!("mcp stdio: {e}")))?;
-        running
-            .waiting()
-            .await
-            .map_err(|e| rejected(format!("mcp stdio: {e}")))?;
-        Ok(())
-    })
+    let running = serve_server(ctx, stdio())
+        .await
+        .map_err(|e| rejected(format!("mcp stdio: {e}")))?;
+    running
+        .waiting()
+        .await
+        .map_err(|e| rejected(format!("mcp stdio: {e}")))?;
+    Ok(())
 }
