@@ -8,28 +8,55 @@ use noted_client::credentials::{CredentialStore, CredentialStoreConfig, SecretSt
 
 use crate::args::{EntryFlags, GlobalArgs};
 
-/// The dotenv file loaded before clap reads the environment.
+/// The dotenv file loaded before clap reads the environment: the one `arg`
+/// names, else a `.notedenv` discovered at or above the working directory,
+/// else `<config_dir>/noted.env`. Exactly one file ever loads.
 pub struct EnvFile {
     path: PathBuf,
 }
 
 impl EnvFile {
-    /// The file `arg` names, else `<config_dir>/noted.env`.
+    /// The file `arg` names, else the discovered `.notedenv`, else
+    /// `<config_dir>/noted.env`.
     pub fn locate(arg: Option<&Path>) -> Option<EnvFile> {
-        EnvFile::resolve(arg, dirs::config_dir().as_deref())
+        EnvFile::resolve(
+            arg,
+            std::env::current_dir().ok().as_deref(),
+            dirs::config_dir().as_deref(),
+        )
     }
 
-    /// `arg` when given and non-empty, else `<config_dir>/noted.env`. No
-    /// argument and no config dir means no env file.
-    pub fn resolve(arg: Option<&Path>, config_dir: Option<&Path>) -> Option<EnvFile> {
+    /// `arg` when given and non-empty, else the nearest `.notedenv` at or
+    /// above `cwd`, else `<config_dir>/noted.env`. Nothing resolved means no
+    /// env file.
+    pub fn resolve(
+        arg: Option<&Path>,
+        cwd: Option<&Path>,
+        config_dir: Option<&Path>,
+    ) -> Option<EnvFile> {
         match arg.filter(|p| !p.as_os_str().is_empty()) {
             Some(path) => Some(EnvFile {
                 path: path.to_path_buf(),
             }),
-            None => config_dir.map(|dir| EnvFile {
-                path: dir.join("noted.env"),
-            }),
+            None => cwd
+                .and_then(EnvFile::discover)
+                .or_else(|| config_dir.map(|dir| dir.join("noted.env")))
+                .map(|path| EnvFile { path }),
         }
+    }
+
+    /// The nearest `.notedenv` at or above `start`. An ancestor that cannot
+    /// be inspected ends the walk with nothing found.
+    fn discover(start: &Path) -> Option<PathBuf> {
+        for dir in start.ancestors() {
+            let candidate = dir.join(".notedenv");
+            match candidate.symlink_metadata() {
+                Ok(_) => return Some(candidate),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return None,
+            }
+        }
+        None
     }
 
     pub fn path(&self) -> &Path {
