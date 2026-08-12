@@ -169,39 +169,6 @@ pub fn apply(svc: &AuthService, req: AdminRequest) -> AdminResponse {
 }
 
 #[cfg(unix)]
-pub async fn bind_socket(path: &StdPath) -> Result<UnixListener> {
-    let path = path.to_path_buf();
-    let listener =
-        tokio::task::spawn_blocking(move || -> Result<std::os::unix::net::UnixListener> {
-            if path.exists() {
-                std::fs::remove_file(&path)
-                    .map_err(|e| rejected(format!("admin socket: cannot replace {e}")))?;
-            }
-            if let Some(parent) = path.parent()
-                && !parent.as_os_str().is_empty()
-            {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| rejected(format!("admin socket: {e}")))?;
-            }
-            let listener = std::os::unix::net::UnixListener::bind(&path)
-                .map_err(|e| rejected(format!("admin socket: bind: {e}")))?;
-            let mode = {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::Permissions::from_mode(0o600)
-            };
-            std::fs::set_permissions(&path, mode)
-                .map_err(|e| unavailable(format!("admin socket: chmod: {e}")))?;
-            listener
-                .set_nonblocking(true)
-                .map_err(|e| unavailable(format!("admin socket: nonblocking: {e}")))?;
-            Ok(listener)
-        })
-        .await
-        .map_err(|e| unavailable(format!("admin socket: bind task failed: {e}")))??;
-    UnixListener::from_std(listener).map_err(|e| unavailable(format!("admin socket: {e}")))
-}
-
-#[cfg(unix)]
 pub async fn serve_socket(listener: UnixListener, svc: Arc<AuthService>) {
     loop {
         let Ok((stream, _)) = listener.accept().await else {

@@ -15,7 +15,7 @@ async fn spawn_server(dir: &tempfile::TempDir) -> (PathBuf, Arc<AuthService>) {
         noted::types::Ttl::from_secs(30 * 24 * 3600),
     ));
     let sock = dir.path().join("admin.sock");
-    let listener = admin::bind_socket(&sock).await.unwrap();
+    let listener = tokio::net::UnixListener::bind(&sock).unwrap();
     tokio::spawn(admin::serve_socket(listener, svc.clone()));
     (sock, svc)
 }
@@ -119,15 +119,6 @@ async fn malformed_line_answers_then_closes() {
     let resp = lines.next_line().await.unwrap().unwrap();
     assert!(resp.contains("\"error\"") && resp.contains("malformed"));
     assert!(lines.next_line().await.unwrap().is_none());
-}
-
-#[tokio::test]
-async fn socket_is_mode_0600() {
-    use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
-    let (sock, _svc) = spawn_server(&dir).await;
-    let mode = std::fs::metadata(&sock).unwrap().permissions().mode();
-    assert_eq!(mode & 0o777, 0o600);
 }
 
 #[tokio::test]

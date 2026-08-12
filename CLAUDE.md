@@ -32,7 +32,7 @@
 - A new test helper goes in that crate's `tests/common/mod.rs`.
 
 ## Core code guidelines
-- Constraint: All I/O must be non-blocking. One exception: a one-shot listener bind at server startup, and its guard's unlink at shutdown.
+- Constraint: All I/O must be non-blocking. One exception: binding the listener at server startup and its cleanup at shutdown.
 - Constraint: All files are atomically written
 
 - Non-negotiable:
@@ -43,6 +43,7 @@
   - A path reached from anywhere but `NotedRoot` → a method on `NotedRoot`.
   - A `String` or `&str` holding a path → `RelPath`, `TaskRef`, or `GroupPath`.
   - No `TokenScope` or scope check inside a `run_tool` arm.
+  - A Unix socket bound outside `crates/server/src/socket.rs` → `bind_unix_socket`.
 
 - Avoid, unless absolutely necessary:
   - `std::fs::write` → `util::atomic_write()`.

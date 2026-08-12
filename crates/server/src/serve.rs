@@ -88,16 +88,17 @@ pub async fn serve_http(cfg: HttpConfig) -> Result<()> {
         #[cfg(not(unix))]
         let admin_handle: Option<tokio::task::JoinHandle<()>> = None;
         #[cfg(unix)]
-        let admin_handle = match (&admin_socket, &auth_for_socket) {
+        let (admin_handle, _admin_guard) = match (&admin_socket, &auth_for_socket) {
             (Some(path), Some(svc)) => {
-                let listener = noted_auth::oauth::admin::bind_socket(path).await?;
+                let (listener, guard) = crate::socket::bind_unix_socket(path, Some(0o600))?;
                 tracing::info!(socket = %path.display(), "admin socket listening");
-                Some(tokio::spawn(noted_auth::oauth::admin::serve_socket(
+                let task = tokio::spawn(noted_auth::oauth::admin::serve_socket(
                     listener,
                     svc.clone(),
-                )))
+                ));
+                (Some(task), Some(guard))
             }
-            _ => None,
+            _ => (None, None),
         };
         match bind {
             Bind::Tcp { host, port } => {
@@ -115,7 +116,7 @@ pub async fn serve_http(cfg: HttpConfig) -> Result<()> {
             }
             #[cfg(unix)]
             Bind::Socket(path) => {
-                let (listener, _guard) = crate::socket::bind_unix_socket(&path)?;
+                let (listener, _guard) = crate::socket::bind_unix_socket(&path, None)?;
                 tracing::info!(
                     socket = %path.display(),
                     auth = auth_for_socket.is_some(),
