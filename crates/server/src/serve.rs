@@ -17,7 +17,7 @@ pub enum Bind {
         port: u16,
     },
     #[cfg(unix)]
-    Socket(PathBuf),
+    Socket(crate::socket::SocketBind),
 }
 
 /// Everything the HTTP server needs, already resolved: no clap type, flag
@@ -115,10 +115,16 @@ pub async fn serve_http(cfg: HttpConfig) -> Result<()> {
                 serve_listener(listener, app, admin_handle).await
             }
             #[cfg(unix)]
-            Bind::Socket(path) => {
-                let (listener, _guard) = crate::socket::bind_unix_socket(&path, None)?;
+            Bind::Socket(spec) => {
+                let (listener, guard) = spec.bind()?;
+                let socket = guard.path().to_path_buf();
+                tokio::task::spawn_blocking(move || {
+                    crate::socket::write_endpoint_line(&mut std::io::stdout().lock(), &socket)
+                })
+                .await
+                .map_err(|e| unavailable(format!("endpoint line: {e}")))??;
                 tracing::info!(
-                    socket = %path.display(),
+                    socket = %guard.path().display(),
                     auth = auth_for_socket.is_some(),
                     oauth = oauth.is_some(),
                     "serving http"

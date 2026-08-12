@@ -9,6 +9,8 @@ use noted::tools::{DeleteArgs, EditArgs, MoveArgs, ReadArgs, SearchNotesArgs, Wr
 use noted::types::Ttl;
 use noted_auth::oauth::service::DEFAULT_CREDENTIAL_TTL_HUMAN;
 use noted_server::serve::{Bind, HttpConfig, StdioConfig};
+#[cfg(unix)]
+use noted_server::socket::{SocketBind, SocketEnv};
 
 use crate::args::{AuthPaths, EntryFlags, EnvFileArg, GlobalArgs, parse_ttl};
 use crate::config::{Config, EnvFile, Environment};
@@ -193,8 +195,8 @@ impl ServeCmd {
 #[cfg(unix)]
 #[derive(Args)]
 struct SocketCmd {
-    /// Socket to bind
-    path: PathBuf,
+    /// Socket to bind; one is picked under $XDG_RUNTIME_DIR when omitted
+    path: Option<PathBuf>,
     #[command(flatten)]
     server: ServerArgs,
 }
@@ -202,10 +204,14 @@ struct SocketCmd {
 #[cfg(unix)]
 impl SocketCmd {
     fn into_config(self, config: &Config) -> Result<HttpConfig> {
-        let path = std::path::absolute(&self.path)
-            .map_err(|e| rejected(format!("socket path {}: {e}", self.path.display())))?;
-        let bind = Bind::Socket(path);
-        self.server.into_config(config, bind, None)
+        let spec = match &self.path {
+            Some(path) => SocketBind::Explicit(
+                std::path::absolute(path)
+                    .map_err(|e| rejected(format!("socket path {}: {e}", path.display())))?,
+            ),
+            None => SocketBind::Picked(SocketEnv::capture()),
+        };
+        self.server.into_config(config, Bind::Socket(spec), None)
     }
 }
 

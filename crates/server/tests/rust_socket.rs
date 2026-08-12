@@ -8,7 +8,17 @@ use noted::authorization::Bearer;
 use noted::tools::ReadArgs;
 use noted::{Backend, BackendArgs, PolicyFragment, ToolCall};
 use noted_server::http::build_app;
-use noted_server::socket::{bind_unix_socket, lock_path, staging_dir, staging_socket};
+use noted_server::socket::{
+    SocketBind, SocketEnv, bind_unix_socket, lock_path, socket_base_dir, socket_root, staging_dir,
+    staging_socket, write_endpoint_line,
+};
+
+fn env_at(runtime_dir: Option<&Path>, tmpdir: Option<&Path>) -> SocketEnv {
+    SocketEnv {
+        runtime_dir: runtime_dir.map(Path::to_path_buf),
+        tmpdir: tmpdir.map(Path::to_path_buf),
+    }
+}
 
 async fn serve(dir: &tempfile::TempDir) -> (PathBuf, String) {
     let svc = common::auth_service(dir);
@@ -241,4 +251,165 @@ async fn no_mode_leaves_the_socket_at_umask_mode() {
     let _bound = bind_unix_socket(&sock, None).unwrap();
     let mode = std::fs::metadata(&sock).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, expected & 0o777);
+}
+
+#[tokio::test]
+async fn a_picked_socket_lands_under_the_runtime_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let spec = SocketBind::Picked(env_at(Some(dir.path()), None));
+    let (_listener, guard) = spec.bind().unwrap();
+    assert_eq!(guard.path().parent().unwrap(), dir.path().join("noted"));
+    assert!(guard.path().exists());
+}
+
+#[tokio::test]
+async fn a_picked_name_is_eight_lowercase_alphanumerics_and_dot_sock() {
+    let dir = tempfile::tempdir().unwrap();
+    let spec = SocketBind::Picked(env_at(Some(dir.path()), None));
+    let (_listener, guard) = spec.bind().unwrap();
+    let name = guard.path().file_name().unwrap().to_str().unwrap();
+    let stem = name.strip_suffix(".sock").unwrap();
+    assert_eq!(stem.len(), 8, "{name}");
+    assert!(
+        stem.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+        "{name}"
+    );
+}
+
+#[tokio::test]
+async fn a_picked_socket_is_bound_at_0600_and_unlinked_with_its_lock() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let spec = SocketBind::Picked(env_at(Some(dir.path()), None));
+    let (listener, guard) = spec.bind().unwrap();
+    let path = guard.path().to_path_buf();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+    let lock = guard.lock_path().to_path_buf();
+    drop(guard);
+    drop(listener);
+    assert!(!path.exists());
+    assert!(!lock.exists());
+    assert!(dir.path().join("noted").is_dir());
+}
+
+#[tokio::test]
+async fn a_second_pick_under_one_base_directory_lands_elsewhere() {
+    let dir = tempfile::tempdir().unwrap();
+    let spec = SocketBind::Picked(env_at(Some(dir.path()), None));
+    let (_a, first) = spec.bind().unwrap();
+    let (_b, second) = spec.bind().unwrap();
+    assert_ne!(first.path(), second.path());
+}
+
+#[tokio::test]
+async fn an_unusable_runtime_dir_falls_back_to_the_tmpdir() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("gone");
+    let tmp = dir.path().join("tmp");
+    std::fs::create_dir(&tmp).unwrap();
+    assert_eq!(
+        socket_root(&env_at(Some(&missing), Some(&tmp))).unwrap(),
+        tmp
+    );
+    assert_eq!(
+        socket_root(&env_at(Some(Path::new("")), Some(&tmp))).unwrap(),
+        tmp
+    );
+    assert_eq!(
+        socket_root(&env_at(Some(Path::new("relative")), Some(&tmp))).unwrap(),
+        tmp
+    );
+}
+
+#[tokio::test]
+async fn an_empty_environment_falls_back_to_slash_tmp() {
+    assert_eq!(
+        socket_root(&SocketEnv::default()).unwrap(),
+        Path::new("/tmp")
+    );
+}
+
+#[tokio::test]
+async fn a_root_holding_a_newline_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("a\nb");
+    std::fs::create_dir(&root).unwrap();
+    let err = socket_root(&env_at(Some(&root), None)).unwrap_err();
+    assert!(err.is_rejection(), "{err}");
+    assert!(err.message().contains("newline"), "{err}");
+}
+
+#[tokio::test]
+async fn a_created_base_directory_is_exactly_0700_and_reusable() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let env = env_at(Some(dir.path()), None);
+
+    let base = socket_base_dir(&env).unwrap();
+    let mode = std::fs::metadata(&base).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o700);
+    assert_eq!(socket_base_dir(&env).unwrap(), base);
+}
+
+#[tokio::test]
+async fn a_base_directory_at_the_wrong_mode_is_refused_and_kept() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("noted");
+    std::fs::create_dir(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o770)).unwrap();
+
+    let err = socket_base_dir(&env_at(Some(dir.path()), None)).unwrap_err();
+    assert!(err.is_rejection(), "{err}");
+    assert!(err.message().contains(&base.display().to_string()), "{err}");
+    let mode = std::fs::metadata(&base).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o770);
+}
+
+#[tokio::test]
+async fn a_base_directory_that_is_not_a_directory_is_refused_and_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("noted");
+    std::fs::write(&base, b"payload").unwrap();
+
+    let err = socket_base_dir(&env_at(Some(dir.path()), None)).unwrap_err();
+    assert!(err.is_rejection(), "{err}");
+    assert_eq!(std::fs::read(&base).unwrap(), b"payload");
+}
+
+#[tokio::test]
+async fn a_base_directory_under_a_root_that_denies_mkdir_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+    let err = socket_base_dir(&env_at(Some(&root), None)).unwrap_err();
+    assert!(
+        err.message()
+            .contains(&root.join("noted").display().to_string()),
+        "{err}"
+    );
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(!root.join("noted").exists());
+}
+
+#[tokio::test]
+async fn an_endpoint_line_is_the_scheme_the_path_and_a_newline() {
+    let mut out = Vec::new();
+    write_endpoint_line(&mut out, Path::new("/run/noted/x.sock")).unwrap();
+    assert_eq!(out, b"unix:///run/noted/x.sock\n");
+}
+
+#[tokio::test]
+async fn an_endpoint_line_carries_a_non_utf8_path_verbatim() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let path = PathBuf::from(OsStr::from_bytes(b"/tmp/\xff.sock"));
+    let mut out = Vec::new();
+    write_endpoint_line(&mut out, &path).unwrap();
+    assert_eq!(out, b"unix:///tmp/\xff.sock\n");
 }

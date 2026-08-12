@@ -32,7 +32,9 @@ noted <command>
 ```
 
 ```sh
-noted server socket /run/noted/noted.sock                # serve the HTTP app on a socket
+noted server socket                                      # pick a path, print its endpoint line
+unix:///run/user/1000/noted/k3f9q2xd.sock                # the endpoint line, on stdout
+noted server socket /run/noted/noted.sock                # or name the socket
 noted --url unix:///run/noted/noted.sock read Inbox.md   # dial it
 ```
 

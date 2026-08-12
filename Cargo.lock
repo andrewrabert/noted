@@ -2217,6 +2217,7 @@ dependencies = [
  "http-body-util",
  "noted-auth",
  "noted-core",
+ "rand 0.10.2",
  "rmcp",
  "rustix",
  "serde_json",
