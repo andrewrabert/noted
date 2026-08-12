@@ -202,7 +202,9 @@ struct SocketCmd {
 #[cfg(unix)]
 impl SocketCmd {
     fn into_config(self, config: &Config) -> Result<HttpConfig> {
-        let bind = Bind::Socket(noted::endpoint::socket_path(&self.path)?);
+        let path = std::path::absolute(&self.path)
+            .map_err(|e| rejected(format!("socket path {}: {e}", self.path.display())))?;
+        let bind = Bind::Socket(path);
         self.server.into_config(config, bind, None)
     }
 }

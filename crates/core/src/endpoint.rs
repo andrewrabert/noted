@@ -48,10 +48,11 @@ impl Endpoint {
     }
 }
 
-/// The filesystem path a socket is bound at and dialed on. The path is taken
-/// exactly as written, byte for byte, and must be absolute.
+/// The filesystem path a unix:// endpoint dials. The path is taken exactly
+/// as written, byte for byte, and must be absolute: a dialed URL has no
+/// working directory to resolve against.
 #[cfg(unix)]
-pub fn socket_path(raw: &std::path::Path) -> Result<PathBuf> {
+fn socket_path(raw: &std::path::Path) -> Result<PathBuf> {
     if !raw.is_absolute() {
         return Err(rejected(format!(
             "a unix socket is named by an absolute path: {}",
