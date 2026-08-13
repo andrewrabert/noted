@@ -3,11 +3,12 @@ use std::path::Path as StdPath;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
-use crate::credential::{KeyRecord, MacaroonId};
+use crate::credential::{Caveat, KeyRecord, MacaroonId};
 use crate::types::{
-    ClientId, Fingerprint, Label, Owner, PasswordHash, SecretHash, ServerId, SessionId, Username,
+    ClientId, Fingerprint, Label, Owner, PasswordHash, RevocationEpoch, SecretHash, ServerId,
+    SessionId, Username,
 };
-use noted::error::{NotedError, Result, db_error, io_error, json_error};
+use noted::error::{NotedError, Result, db_error, io_error, json_error, rejected};
 use noted::types::UnixEpochSeconds;
 
 const USERS: TableDefinition<&str, &[u8]> = TableDefinition::new("users");
@@ -54,6 +55,7 @@ pub struct RefreshRecord {
 pub struct MintRecord {
     pub owner: Owner,
     pub label: Option<Label>,
+    pub session: Option<SessionId>,
     pub policy: noted::PolicyFragment,
     pub fingerprint: Fingerprint,
     pub created_at: UnixEpochSeconds,
@@ -102,16 +104,6 @@ impl Db {
         {
             let mut t = w.open_table(table).map_err(db_err)?;
             t.insert(key, bytes).map_err(db_err)?;
-        }
-        w.commit().map_err(db_err)?;
-        Ok(())
-    }
-
-    fn delete(&self, table: TableDefinition<&str, &[u8]>, key: &str) -> Result<()> {
-        let w = self.inner.begin_write().map_err(db_err)?;
-        {
-            let mut t = w.open_table(table).map_err(db_err)?;
-            t.remove(key).map_err(db_err)?;
         }
         w.commit().map_err(db_err)?;
         Ok(())
@@ -181,20 +173,20 @@ impl Db {
         self.put(ROOTS, &owner.to_string(), &encode(rec)?)
     }
 
-    pub fn bump_root_epoch(&self, owner: &Owner) -> Result<()> {
+    /// The epoch the owner's root moved to.
+    pub fn bump_root_epoch(&self, owner: &Owner) -> Result<RevocationEpoch> {
+        let no_root = || rejected(format!("no root key to revoke under: '{owner}'"));
         if let Owner::Server(_) = owner {
-            if let Some(bytes) = self.get(ROOTS, SERVER_ROW)? {
-                let mut rec: ServerRecord = decode(&bytes)?;
-                rec.key.min_epoch = rec.key.min_epoch.next()?;
-                self.put(ROOTS, SERVER_ROW, &encode(&rec)?)?;
-            }
-            return Ok(());
+            let bytes = self.get(ROOTS, SERVER_ROW)?.ok_or_else(no_root)?;
+            let mut rec: ServerRecord = decode(&bytes)?;
+            rec.key.min_epoch = rec.key.min_epoch.next()?;
+            self.put(ROOTS, SERVER_ROW, &encode(&rec)?)?;
+            return Ok(rec.key.min_epoch);
         }
-        if let Some(mut rec) = self.root(owner)? {
-            rec.min_epoch = rec.min_epoch.next()?;
-            self.put_root(owner, &rec)?;
-        }
-        Ok(())
+        let mut rec = self.root(owner)?.ok_or_else(no_root)?;
+        rec.min_epoch = rec.min_epoch.next()?;
+        self.put_root(owner, &rec)?;
+        Ok(rec.min_epoch)
     }
 
     pub fn put_refresh(&self, hash: &SecretHash, rec: &RefreshRecord) -> Result<()> {
@@ -225,7 +217,7 @@ impl Db {
         Ok(())
     }
 
-    pub fn remove_refresh_of(&self, owner: &Owner) -> Result<usize> {
+    pub fn remove_refresh_of(&self, owner: &Owner) -> Result<()> {
         let dead: Vec<String> = self
             .rows::<RefreshRecord>(REFRESH)?
             .into_iter()
@@ -233,7 +225,7 @@ impl Db {
             .map(|(k, _)| k)
             .collect();
         if dead.is_empty() {
-            return Ok(0);
+            return Ok(());
         }
         let w = self.inner.begin_write().map_err(db_err)?;
         {
@@ -243,7 +235,7 @@ impl Db {
             }
         }
         w.commit().map_err(db_err)?;
-        Ok(dead.len())
+        Ok(())
     }
 
     pub fn put_minted(&self, id: &MacaroonId, rec: &MintRecord) -> Result<()> {
@@ -263,10 +255,6 @@ impl Db {
             .into_iter()
             .map(|(k, rec)| (MacaroonId::new(k), rec))
             .collect())
-    }
-
-    pub fn remove_minted(&self, id: &MacaroonId) -> Result<()> {
-        self.delete(MINTED, id.as_str())
     }
 
     pub fn put_user(&self, name: &Username, rec: &UserRecord) -> Result<()> {
@@ -325,20 +313,38 @@ impl Db {
         Ok(())
     }
 
-    pub fn revoke_id(&self, id: &str, until: UnixEpochSeconds) -> Result<()> {
+    /// Tombstones every caveat until `until` and drops every named ledger row,
+    /// in one write.
+    pub fn withdraw(
+        &self,
+        dead: &[Caveat],
+        rows: &[MacaroonId],
+        until: UnixEpochSeconds,
+    ) -> Result<()> {
         let w = self.inner.begin_write().map_err(db_err)?;
         {
-            let mut t = w.open_table(REVOKED).map_err(db_err)?;
-            t.insert(id, until.as_secs()).map_err(db_err)?;
+            let mut revoked = w.open_table(REVOKED).map_err(db_err)?;
+            for caveat in dead {
+                revoked
+                    .insert(caveat.to_string().as_str(), until.as_secs())
+                    .map_err(db_err)?;
+            }
+            drop(revoked);
+            let mut minted = w.open_table(MINTED).map_err(db_err)?;
+            for id in rows {
+                minted.remove(id.as_str()).map_err(db_err)?;
+            }
         }
         w.commit().map_err(db_err)?;
         Ok(())
     }
 
-    pub fn is_revoked(&self, id: &str) -> Result<bool> {
+    pub fn is_revoked(&self, caveat: &Caveat) -> Result<bool> {
         let r = self.inner.begin_read().map_err(db_err)?;
         let t = r.open_table(REVOKED).map_err(db_err)?;
-        Ok(t.get(id).map_err(db_err)?.is_some())
+        Ok(t.get(caveat.to_string().as_str())
+            .map_err(db_err)?
+            .is_some())
     }
 
     /// Drops every expired refresh record, ledger row and revocation.

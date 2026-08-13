@@ -523,9 +523,10 @@ async fn mint(
     json_body(&b)["macaroon"].as_str().unwrap().to_string()
 }
 
-async fn revoke(app: &Router, token: &str, body: serde_json::Value) {
+async fn revoke(app: &Router, token: &str, body: serde_json::Value) -> serde_json::Value {
     let (s, b) = common::post_json(app, "/macaroon/revoke", Some(token), &body).await;
     assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&b));
+    json_body(&b)
 }
 
 #[tokio::test]
@@ -658,7 +659,20 @@ async fn macaroon_revoke_by_session() {
         StatusCode::OK
     );
 
-    revoke(&app, &access, json!({"session": "run-1"})).await;
+    let answer = revoke(&app, &access, json!({"session": "run-1"})).await;
+    assert_eq!(
+        answer["revoked"].as_array().unwrap().len(),
+        2,
+        "{answer}" // the credential of that run, then the session itself
+    );
+    assert_eq!(answer["revoked"][1], "session_id=run-1");
+    assert!(
+        answer["revoked"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("token_id=")
+    );
+    assert!(answer["epoch"].is_null());
     assert_eq!(
         tool(&app, &doomed, "SearchNotes", search.clone()).await,
         StatusCode::UNAUTHORIZED
@@ -676,6 +690,17 @@ async fn macaroon_revoke_by_session() {
 }
 
 #[tokio::test]
+async fn macaroon_revoke_of_an_id_the_server_never_minted_is_refused() {
+    let dir = common::fixture_dir();
+    let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]);
+    let (access, _r, _c) = authenticate(&app, "ann", "pw").await;
+    for body in [json!({"id": "never-minted"}), json!({"session": "no-run"})] {
+        let (s, _b) = common::post_json(&app, "/macaroon/revoke", Some(&access), &body).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+    }
+}
+
+#[tokio::test]
 async fn macaroon_revoke_all_bumps_epoch() {
     let dir = common::fixture_dir();
     let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]);
@@ -686,7 +711,11 @@ async fn macaroon_revoke_all_bumps_epoch() {
         tool(&app, &child, "SearchNotes", search.clone()).await,
         StatusCode::OK
     );
-    revoke(&app, &access, json!({"all": true})).await;
+    let answer = revoke(&app, &access, json!({"all": true})).await;
+    let revoked = answer["revoked"].as_array().unwrap();
+    assert_eq!(revoked.len(), 1, "{answer}");
+    assert!(revoked[0].as_str().unwrap().starts_with("token_id="));
+    assert!(answer["epoch"].as_u64().is_some(), "{answer}");
     assert_eq!(
         tool(&app, &child, "SearchNotes", search).await,
         StatusCode::UNAUTHORIZED

@@ -78,7 +78,10 @@ async fn verbs_round_trip_and_a_key_is_minted_live() {
         })
         .await
         .unwrap();
-    assert_eq!(revoked["revoked"], 1);
+    assert_eq!(
+        revoked["revoked"],
+        serde_json::json!([format!("token_id={}", minted["token_id"].as_str().unwrap())])
+    );
     assert!(authority.verify(Some(&token)).is_err());
 }
 

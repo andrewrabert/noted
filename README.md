@@ -180,7 +180,7 @@ noted server user add myname                             # prompts for a passwor
 noted server key create claude --scope /dev/myproject    # scoped to one project
 noted server key create logger --in /= --in /Log=write --ttl 90d
 noted server key list claude                             # policy, fingerprint, expiry
-noted server key revoke --label claude                   # sweep every live match
+noted server key revoke --label claude                   # withdraws every live key of that label
 noted server user policy ar --scope /dev --in /secrets=  # set the whole fragment
 noted server key policy claude --in /=read               # set a key's fragment
 ```
@@ -191,11 +191,14 @@ Hand an agent limited access by minting a short-lived credential from your store
 It can only narrow the login's scope, never widen it, and it tracks the parent: narrow or
 revoke the login and every child narrows or dies with it.
 
+A revocation reaches only what the server records having minted, and answers with the
+names it withdrew — one that names nothing the server minted is an error.
+
 ```sh
 noted auth login --url https://notes.example.com         # browser OAuth; stores tokens + root macaroon
 noted auth mint --ttl 1h --session claude:session123 --scope /dev/myproject --in /=read --in /Tasks=read,write
-noted auth revoke --session claude:session123            # kill that whole run
-noted auth revoke --all                                  # kill every outstanding child
+noted auth revoke --session claude:session123            # withdraws every credential of that run
+noted auth revoke --all                                  # withdraws every child and moves the epoch
 ```
 
 ## Remote MCP for claude.ai

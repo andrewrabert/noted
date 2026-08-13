@@ -5,7 +5,7 @@ use serde_json::json;
 
 use noted::error::{Result, rejected};
 use noted::types::Ttl;
-use noted_auth::authority::Revoke;
+use noted_auth::authority::{Revoke, Withdrawn};
 use noted_auth::types::SessionId;
 use noted_client::authclient::{self, Ask, Granted, Session};
 
@@ -166,7 +166,17 @@ async fn run_revoke(r: RevokeCmd, config: &Config) -> Result<ExitCode> {
         config.setting(Variable::Token),
         config.credential_store()?,
     );
-    let revoked = session.revoke(selector).await?;
-    println!("revoked {revoked}");
+    print_withdrawn(&session.revoke(selector).await?);
     Ok(ExitCode::SUCCESS)
+}
+
+/// Prints what the server withdrew: one dead caveat per line on stdout, the
+/// epoch it moved on stderr.
+pub(crate) fn print_withdrawn(withdrawn: &Withdrawn) {
+    for caveat in &withdrawn.revoked {
+        println!("{caveat}");
+    }
+    if let Some(epoch) = withdrawn.epoch {
+        eprintln!("epoch {epoch}: every credential minted before it is dead");
+    }
 }

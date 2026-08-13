@@ -13,7 +13,7 @@ pub mod service;
 pub mod types;
 
 pub use authority::{
-    Denial, Minter, OpenAuthority, OriginAuthority, RelayCredential, Verified, Verifier,
+    Denial, Minter, OpenAuthority, OriginAuthority, RelayCredential, Verified, Verifier, Withdrawn,
 };
 pub use credential::Macaroon;
 pub use db::Db;
