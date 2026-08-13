@@ -1,29 +1,30 @@
-use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 
 use noted::error::{Result, io_error, rejected, unavailable};
 use noted::tools::{DeleteArgs, EditArgs, MoveArgs, ReadArgs, SearchNotesArgs, WriteArgs};
-use noted::types::Ttl;
-use noted_auth::oauth::service::DEFAULT_CREDENTIAL_TTL_HUMAN;
+use noted_auth::service::DEFAULT_CREDENTIAL_TTL;
 use noted_server::serve::{Bind, HttpConfig, StdioConfig};
 #[cfg(unix)]
 use noted_server::socket::{SocketBind, SocketEnv};
 
-use crate::args::{AuthPaths, EntryFlags, EnvFileArg, GlobalArgs, parse_ttl};
-use crate::config::{Config, EnvFile, Environment};
+use crate::args::{AuthPaths, EntryFlags, GlobalArgs};
+use crate::config::{Config, EnvFile};
+use crate::settings::{Flags, Layer, Settings, Variable};
 
 mod admin;
 pub mod args;
 mod auth;
 pub mod config;
+mod credential;
 mod dispatch;
 pub mod logging;
 mod open;
 mod picker;
 mod prompt;
+pub mod settings;
 mod text_editor;
 
 use admin::{KeyCmd, UserCmd};
@@ -40,30 +41,15 @@ pub fn main() -> ExitCode {
     }
 }
 
-/// The env file argv names, learned before the real parse. Help, version and
-/// every parse error are left to that parse: this one neither prints nor
-/// exits.
-pub fn env_file_arg<I, T>(argv: I) -> Option<PathBuf>
-where
-    I: IntoIterator<Item = T>,
-    T: Into<OsString> + Clone,
-{
-    let matches = Cli::command()
-        .ignore_errors(true)
-        .disable_help_flag(true)
-        .disable_version_flag(true)
-        .disable_help_subcommand(true)
-        .try_get_matches_from(argv)
-        .ok()?;
-    EnvFileArg::from_arg_matches(&matches).ok()?.env_file
-}
-
 fn start() -> Result<ExitCode> {
-    if let Some(env_file) = EnvFile::locate(env_file_arg(std::env::args_os()).as_deref()) {
-        env_file.load()?;
-    }
     let cli = Cli::parse();
-    let config = Config::new(cli.globals, Environment::capture());
+    let flags = cli.flags();
+    let near = Settings::resolve(vec![flags.clone(), Layer::environment()])?;
+    let settings = match EnvFile::locate(near.get(Variable::EnvFile).map(Path::new)) {
+        Some(file) => Settings::resolve(vec![flags, Layer::environment(), file.layer()?])?,
+        None => near,
+    };
+    let config = Config::new(settings, dirs::config_dir());
     let _log = logging::init(config.log_filter(), config.log_file())?;
     let runtime = tokio::runtime::Runtime::new().map_err(|e| io_error("runtime", e))?;
     runtime.block_on(run(cli.command, &config))
@@ -80,6 +66,28 @@ struct Cli {
     globals: GlobalArgs,
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+impl Cli {
+    /// Everything the command line binds, whatever spells it: the global
+    /// flags and every flag a subcommand carries for itself.
+    fn flags(&self) -> Layer {
+        let mut layer = Layer::flags();
+        self.globals.write(&mut layer);
+        match &self.command {
+            Some(Command::Auth(c)) => c.write(&mut layer),
+            Some(Command::Server(c)) => match &c.sub {
+                ServerSub::Http(c) => c.write(&mut layer),
+                #[cfg(unix)]
+                ServerSub::Socket(c) => c.write(&mut layer),
+                ServerSub::Mcp(c) => c.write(&mut layer),
+                ServerSub::User(c) => c.write(&mut layer),
+                ServerSub::Key(c) => c.write(&mut layer),
+            },
+            _ => {}
+        }
+        layer
+    }
 }
 
 #[derive(Subcommand)]
@@ -130,64 +138,87 @@ enum ServerSub {
 struct ServerArgs {
     #[command(flatten)]
     auth: AuthPaths,
-    #[arg(
-        long = "default-ttl",
-        env = "NOTED_DEFAULT_TTL",
-        default_value = DEFAULT_CREDENTIAL_TTL_HUMAN,
-        value_parser = parse_ttl
-    )]
-    default_ttl: Ttl,
+    #[arg(long = "default-ttl")]
+    default_ttl: Option<String>,
     #[command(flatten)]
     entries: EntryFlags,
 }
 
+impl Flags for ServerArgs {
+    fn write(&self, layer: &mut Layer) {
+        self.auth.write(layer);
+        layer.set(Variable::DefaultTtl, self.default_ttl.as_deref());
+    }
+}
+
 impl ServerArgs {
-    /// The sole adapter from flags to core's server config. Validations whose
-    /// messages name CLI flags belong here, not in core.
-    fn into_config(
+    /// The sole adapter from settings to the server's own config.
+    /// Validations whose messages name CLI flags belong here.
+    async fn into_config(
         self,
         config: &Config,
         bind: Bind,
         public_url: Option<String>,
     ) -> Result<HttpConfig> {
+        let auth_db = config.setting(Variable::AuthDb).map(PathBuf::from);
         #[cfg(unix)]
-        if self.auth.admin_socket.is_some() && self.auth.auth_db.is_none() {
+        let admin_socket = config.setting(Variable::AdminSocket).map(PathBuf::from);
+        #[cfg(unix)]
+        if admin_socket.is_some() && auth_db.is_none() {
             return Err(rejected("--admin-socket requires --auth-db"));
         }
         Ok(HttpConfig {
-            backend: config.backend_args(&self.entries)?,
+            served: config.served(&self.entries).await?,
             bind,
             public_url,
-            auth_db: self.auth.auth_db,
+            auth_db,
             #[cfg(unix)]
-            admin_socket: self.auth.admin_socket,
-            default_ttl: self.default_ttl,
+            admin_socket,
+            default_ttl: config.ttl(Variable::DefaultTtl, DEFAULT_CREDENTIAL_TTL)?,
         })
     }
 }
 
 #[derive(Args)]
 struct ServeCmd {
-    #[arg(long, env = "NOTED_HOST", default_value = "127.0.0.1")]
-    host: String,
-    #[arg(long, env = "NOTED_PORT", default_value_t = 8000)]
-    port: u16,
-    #[arg(long = "public-url", env = "NOTED_PUBLIC_URL")]
+    #[arg(long)]
+    host: Option<String>,
+    #[arg(long)]
+    port: Option<String>,
+    #[arg(long = "public-url")]
     public_url: Option<String>,
     #[command(flatten)]
     server: ServerArgs,
 }
 
+impl Flags for ServeCmd {
+    fn write(&self, layer: &mut Layer) {
+        layer.set(Variable::Host, self.host.as_deref());
+        layer.set(Variable::Port, self.port.as_deref());
+        layer.set(Variable::PublicUrl, self.public_url.as_deref());
+        self.server.write(layer);
+    }
+}
+
 impl ServeCmd {
-    fn into_config(self, config: &Config) -> Result<HttpConfig> {
-        if self.public_url.is_some() && self.server.auth.auth_db.is_none() {
+    async fn into_config(self, config: &Config) -> Result<HttpConfig> {
+        let public_url = config.setting(Variable::PublicUrl).map(str::to_string);
+        if public_url.is_some() && config.setting(Variable::AuthDb).is_none() {
             return Err(rejected("--public-url requires --auth-db"));
         }
         let bind = Bind::Tcp {
-            host: self.host,
-            port: self.port,
+            host: config
+                .setting(Variable::Host)
+                .unwrap_or("127.0.0.1")
+                .to_string(),
+            port: match config.setting(Variable::Port) {
+                None => 8000,
+                Some(raw) => raw
+                    .parse()
+                    .map_err(|e| rejected(format!("{}: {e}", Variable::Port.name())))?,
+            },
         };
-        self.server.into_config(config, bind, self.public_url)
+        self.server.into_config(config, bind, public_url).await
     }
 }
 
@@ -202,8 +233,15 @@ struct SocketCmd {
 }
 
 #[cfg(unix)]
+impl Flags for SocketCmd {
+    fn write(&self, layer: &mut Layer) {
+        self.server.write(layer);
+    }
+}
+
+#[cfg(unix)]
 impl SocketCmd {
-    fn into_config(self, config: &Config) -> Result<HttpConfig> {
+    async fn into_config(self, config: &Config) -> Result<HttpConfig> {
         let spec = match &self.path {
             Some(path) => SocketBind::Explicit(
                 std::path::absolute(path)
@@ -211,7 +249,9 @@ impl SocketCmd {
             ),
             None => SocketBind::Picked(SocketEnv::capture()),
         };
-        self.server.into_config(config, Bind::Socket(spec), None)
+        self.server
+            .into_config(config, Bind::Socket(spec), None)
+            .await
     }
 }
 
@@ -221,10 +261,14 @@ struct McpCmd {
     entries: EntryFlags,
 }
 
+impl Flags for McpCmd {
+    fn write(&self, _layer: &mut Layer) {}
+}
+
 impl McpCmd {
-    fn into_config(self, config: &Config) -> Result<StdioConfig> {
+    async fn into_config(self, config: &Config) -> Result<StdioConfig> {
         Ok(StdioConfig {
-            backend: config.backend_args(&self.entries)?,
+            served: config.served(&self.entries).await?,
         })
     }
 }
@@ -255,14 +299,14 @@ async fn run(command: Option<Command>, config: &Config) -> Result<ExitCode> {
 
 async fn run_server(cmd: ServerCmd, config: &Config) -> Result<ExitCode> {
     match cmd.sub {
-        ServerSub::Http(c) => noted_server::serve::serve_http(c.into_config(config)?)
+        ServerSub::Http(c) => noted_server::serve::serve_http(c.into_config(config).await?)
             .await
             .map(|()| ExitCode::SUCCESS),
         #[cfg(unix)]
-        ServerSub::Socket(c) => noted_server::serve::serve_http(c.into_config(config)?)
+        ServerSub::Socket(c) => noted_server::serve::serve_http(c.into_config(config).await?)
             .await
             .map(|()| ExitCode::SUCCESS),
-        ServerSub::Mcp(c) => noted_server::serve::serve_stdio(c.into_config(config)?)
+        ServerSub::Mcp(c) => noted_server::serve::serve_stdio(c.into_config(config).await?)
             .await
             .map(|()| ExitCode::SUCCESS),
         ServerSub::User(c) => admin::run_user(c, config).await.map(|()| ExitCode::SUCCESS),

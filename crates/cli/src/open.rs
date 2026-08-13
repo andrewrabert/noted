@@ -9,7 +9,7 @@ use noted::error::{NotedError, Result, io_error, rejected, unavailable};
 use noted::note::{Condition, TextNote};
 use noted::path::Path;
 use noted::tools::{ReadArgs, SearchNotesArgs, ToolOutput, WriteArgs};
-use noted::{AuthorizedBackend, ToolCall};
+use noted::{Backend, ToolCall};
 
 use crate::config::Config;
 use crate::picker::Pick;
@@ -88,7 +88,6 @@ where
 
 pub(crate) async fn run_open(config: &Config, args: OpenArgs) -> Result<ExitCode> {
     let backend = config.connect().await?;
-    let backend = backend.with_authority(None)?;
     let editor = TextEditor::resolve(&config.editor()).await?;
     let path = match args.path {
         Some(path) => path,
@@ -100,7 +99,7 @@ pub(crate) async fn run_open(config: &Config, args: OpenArgs) -> Result<ExitCode
     edit_note(&backend, &editor, path, args.force).await
 }
 
-async fn pick_path(backend: &AuthorizedBackend<'_>) -> Result<Pick> {
+async fn pick_path(backend: &Backend) -> Result<Pick> {
     if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
         return Err(rejected("open with no path requires a terminal"));
     }
@@ -111,7 +110,7 @@ async fn pick_path(backend: &AuthorizedBackend<'_>) -> Result<Pick> {
     crate::picker::pick(paths).await
 }
 
-async fn list_paths(backend: &AuthorizedBackend<'_>) -> Result<Vec<String>> {
+async fn list_paths(backend: &Backend) -> Result<Vec<String>> {
     let call = ToolCall::new(SearchNotesArgs::recent())?;
     match backend.invoke(&call).await? {
         ToolOutput::Text(s) => Ok(parse_paths(&s)),
@@ -131,7 +130,7 @@ fn parse_paths(text: &str) -> Vec<String> {
 }
 
 async fn edit_note(
-    backend: &AuthorizedBackend<'_>,
+    backend: &Backend,
     editor: &TextEditor,
     path: Path,
     force: bool,
@@ -199,7 +198,7 @@ async fn edit_note(
     }
 }
 
-async fn read_note(backend: &AuthorizedBackend<'_>, path: &Path) -> Result<TextNote> {
+async fn read_note(backend: &Backend, path: &Path) -> Result<TextNote> {
     let call = ToolCall::new(ReadArgs::new(path.clone()))?;
     match backend.invoke(&call).await? {
         ToolOutput::Text(s) => Ok(TextNote::new(path.clone(), s)),
@@ -211,7 +210,7 @@ async fn read_note(backend: &AuthorizedBackend<'_>, path: &Path) -> Result<TextN
 }
 
 async fn write_note(
-    backend: &AuthorizedBackend<'_>,
+    backend: &Backend,
     note: &TextNote,
     when: Option<Condition>,
 ) -> Result<ToolOutput> {
