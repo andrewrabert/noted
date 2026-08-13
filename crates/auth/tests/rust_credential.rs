@@ -4,7 +4,7 @@ use noted::PolicyFragment;
 use noted::types::{Ttl, UnixEpochSeconds};
 use noted_auth::Db;
 use noted_auth::authority::{
-    Mint, Minter, OpenAuthority, OriginAuthority, RelayCredential, Verified, Verifier,
+    Mint, Minter, OpenAuthority, OriginAuthority, RelayCredential, Revoke, Verified, Verifier,
 };
 use noted_auth::credential::{Caveat, KeyRecord, Macaroon, MacaroonId};
 use noted_auth::service::AuthService;
@@ -203,7 +203,13 @@ fn an_origin_authority_refuses_a_forged_signature_and_a_bumped_epoch() {
     let forged = Macaroon::mint(&owner(), &KeyRecord::fresh(), &[]).unwrap();
     assert!(authority.verify(Some(forged.expose())).is_err());
 
-    service.user_revoke(&"alice".parse().unwrap()).unwrap();
+    let withdrawn = authority
+        .revoke(
+            &Verified::as_owner(Owner::user("alice").unwrap()),
+            &Revoke::All,
+        )
+        .unwrap();
+    assert!(withdrawn.epoch.is_some());
     let authority = OriginAuthority::new(service.clone());
     assert!(authority.verify(Some(login.access.expose())).is_err());
 }

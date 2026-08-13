@@ -122,7 +122,7 @@ async fn revoke(State(state): State<AuthState>, headers: HeaderMap, body: Bytes)
         return detail(StatusCode::BAD_REQUEST, "provide id, session, or all");
     };
     match minter.revoke(&caller, &ask) {
-        Ok(n) => Json(json!({ "revoked": n })).into_response(),
+        Ok(withdrawn) => Json(withdrawn).into_response(),
         Err(e) => detail(StatusCode::BAD_REQUEST, &e.message()),
     }
 }
