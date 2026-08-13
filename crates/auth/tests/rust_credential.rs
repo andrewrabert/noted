@@ -4,7 +4,7 @@ use noted::PolicyFragment;
 use noted::types::{Ttl, UnixEpochSeconds};
 use noted_auth::Db;
 use noted_auth::authority::{
-    Minter, OpenAuthority, OriginAuthority, RelayCredential, Verified, Verifier,
+    Mint, Minter, OpenAuthority, OriginAuthority, RelayCredential, Verified, Verifier,
 };
 use noted_auth::credential::{Caveat, KeyRecord, Macaroon, MacaroonId};
 use noted_auth::service::AuthService;
@@ -99,10 +99,8 @@ fn a_re_mint_puts_the_relay_policy_ahead_of_the_callers_caveats() {
     assert_eq!(caller.caveats(), held.as_slice());
 
     let minted = relay.remint(&caller).unwrap();
-    let root = relay.own().macaroon().unwrap();
-    let carried = minted.macaroon.beyond(root).unwrap();
     assert_eq!(
-        carried,
+        minted.macaroon.caveats().unwrap(),
         vec![
             Caveat::Policy(fragment(r#"{"scope":"relay"}"#)),
             held[0].clone(),
@@ -111,6 +109,38 @@ fn a_re_mint_puts_the_relay_policy_ahead_of_the_callers_caveats() {
             Caveat::Before(minted.expires_at),
         ]
     );
+}
+
+#[test]
+fn a_relay_minted_credential_presented_back_is_confined_once() {
+    let relay = relay(r#"{"scope":"relay"}"#);
+    let ask = Mint {
+        policy: fragment(r#"{"scope":"agent"}"#),
+        ttl: Ttl::from_secs(3600),
+        session: None,
+        label: None,
+    };
+    let minted = Minter::mint(&relay, &Verified::anonymous(), &ask).unwrap();
+
+    let back = relay.verify(Some(minted.macaroon.expose())).unwrap();
+    assert_eq!(
+        back.fragments(),
+        [
+            fragment(r#"{"scope":"relay"}"#),
+            fragment(r#"{"scope":"agent"}"#),
+        ]
+    );
+
+    let forwarded = relay.remint(&back).unwrap();
+    let carried = forwarded.macaroon.caveats().unwrap();
+    assert_eq!(
+        carried
+            .iter()
+            .filter(|caveat| **caveat == Caveat::Policy(fragment(r#"{"scope":"relay"}"#)))
+            .count(),
+        1
+    );
+    assert_eq!(carried[0], Caveat::Policy(fragment(r#"{"scope":"relay"}"#)));
 }
 
 #[test]

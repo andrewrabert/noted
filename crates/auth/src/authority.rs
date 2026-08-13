@@ -125,11 +125,17 @@ pub trait Minter: Send + Sync + 'static {
     fn minted(&self, owner: &Owner) -> Result<Vec<MintSummary>>;
 }
 
-fn mint_caveats(ask: &Mint, expires_at: UnixEpochSeconds, token_id: &MacaroonId) -> Vec<Caveat> {
+/// What an ask puts ahead of the `token_id=` and `before=` of the mint it asks for.
+fn ask_caveats(ask: &Mint) -> Vec<Caveat> {
     let mut caveats = vec![Caveat::Policy(ask.policy.clone())];
     if let Some(session) = &ask.session {
         caveats.push(Caveat::Session(session.clone()));
     }
+    caveats
+}
+
+fn mint_caveats(ask: &Mint, expires_at: UnixEpochSeconds, token_id: &MacaroonId) -> Vec<Caveat> {
+    let mut caveats = ask_caveats(ask);
     caveats.push(Caveat::Token(token_id.clone()));
     caveats.push(Caveat::Before(expires_at));
     caveats
@@ -385,8 +391,7 @@ impl Verifier for OpenAuthority {
 /// The credential a relay holds and every credential it hands its upstream.
 pub struct RelayCredential {
     own: Verified,
-    root: Macaroon,
-    policy: PolicyFragment,
+    confined: Macaroon,
     ledger: Option<Arc<AuthService>>,
     at: String,
 }
@@ -400,7 +405,7 @@ impl RelayCredential {
         ledger: Option<Arc<AuthService>>,
         at: String,
     ) -> Result<RelayCredential> {
-        let root = match bearer {
+        let held = match bearer {
             Some(bearer) => Macaroon::from_encoded(bearer.expose().to_string())
                 .map_err(|e| rejected(format!("{at}: {e}")))?,
             None => match &ledger {
@@ -411,32 +416,37 @@ impl RelayCredential {
                 None => Macaroon::ephemeral()?,
             },
         };
+        let confined = held.extended(&[Caveat::Policy(policy.clone())])?;
         let own = Verified {
-            owner: Some(root.owner()?),
-            fragments: vec![policy.clone()],
+            owner: Some(confined.owner()?),
+            fragments: vec![policy],
             caveats: Vec::new(),
-            macaroon: Some(root.clone()),
+            macaroon: Some(confined.clone()),
         };
         Ok(RelayCredential {
             own,
-            root,
-            policy,
+            confined,
             ledger,
             at,
         })
     }
 
-    /// The relay's own credential extended by, in order: the relay's policy
-    /// fragment, `caller`'s caveats in their original order, a fresh
+    /// The confined credential extended by `caller`'s caveats, a fresh
     /// `token_id=`, then `before=` sixty seconds ahead.
     pub fn remint(&self, caller: &Verified) -> Result<Minted> {
-        let expires_at = UnixEpochSeconds::now()? + RELAY_TTL;
+        self.descend(caller, &[], RELAY_TTL)
+    }
+
+    /// The confined credential extended by `caller`'s caveats in their original
+    /// order, then `tail`, then a fresh `token_id=` and `before=` at `ttl`.
+    fn descend(&self, caller: &Verified, tail: &[Caveat], ttl: Ttl) -> Result<Minted> {
+        let expires_at = UnixEpochSeconds::now()? + ttl;
         let token_id = MacaroonId::fresh();
-        let mut caveats = vec![Caveat::Policy(self.policy.clone())];
-        caveats.extend(caller.caveats().iter().cloned());
+        let mut caveats = caller.caveats().to_vec();
+        caveats.extend(tail.iter().cloned());
         caveats.push(Caveat::Token(token_id.clone()));
         caveats.push(Caveat::Before(expires_at));
-        let macaroon = self.root.extended(&caveats)?;
+        let macaroon = self.confined.extended(&caveats)?;
         Ok(Minted {
             fingerprint: macaroon.fingerprint(),
             macaroon,
@@ -463,16 +473,16 @@ impl Verifier for RelayCredential {
             return Ok(self.own.clone());
         };
         Macaroon::from_encoded(bearer.to_string()).map_err(|e| Denial::Malformed(e.to_string()))?;
-        let macaroon = self.root.from_descendant(bearer).map_err(|_| {
+        let macaroon = self.confined.from_descendant(bearer).map_err(|_| {
             Denial::Forbidden("that credential is no descendant of this relay's".into())
         })?;
         let caveats = macaroon
-            .beyond(&self.root)
+            .beyond(&self.confined)
             .map_err(|e| Denial::Malformed(e.to_string()))?;
         let Ok(now) = UnixEpochSeconds::now() else {
             return unauthorized("unauthorized");
         };
-        let mut fragments = vec![self.policy.clone()];
+        let mut fragments = self.own.fragments().to_vec();
         for caveat in &caveats {
             match caveat {
                 Caveat::Before(deadline) if now >= *deadline => {
@@ -504,18 +514,7 @@ impl Minter for RelayCredential {
 
     fn mint(&self, caller: &Verified, ask: &Mint) -> Result<Minted> {
         let now = UnixEpochSeconds::now()?;
-        let expires_at = now + ask.ttl;
-        let token_id = MacaroonId::fresh();
-        let mut caveats = vec![Caveat::Policy(self.policy.clone())];
-        caveats.extend(caller.caveats().iter().cloned());
-        caveats.extend(mint_caveats(ask, expires_at, &token_id));
-        let macaroon = self.root.extended(&caveats)?;
-        let minted = Minted {
-            fingerprint: macaroon.fingerprint(),
-            macaroon,
-            token_id: token_id.clone(),
-            expires_at,
-        };
+        let minted = self.descend(caller, &ask_caveats(ask), ask.ttl)?;
         if let Some(service) = &self.ledger {
             let owner = caller
                 .owner()
@@ -524,7 +523,7 @@ impl Minter for RelayCredential {
                 .clone();
             service
                 .db()
-                .put_minted(&token_id, &ledger_record(ask, &owner, &minted, now))?;
+                .put_minted(&minted.token_id, &ledger_record(ask, &owner, &minted, now))?;
         }
         Ok(minted)
     }
