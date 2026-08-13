@@ -1,0 +1,408 @@
+[
+  {
+    "input_schema": {
+      "properties": {
+        "context": {
+          "default": 1,
+          "format": "int64",
+          "type": "integer"
+        },
+        "fixed": {
+          "default": false,
+          "type": "boolean"
+        },
+        "glob": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "default": "any",
+          "enum": [
+            "any",
+            "line",
+            "file",
+            "path"
+          ],
+          "type": "string"
+        },
+        "pattern": {
+          "default": ".",
+          "type": "string"
+        },
+        "sort": {
+          "default": "path",
+          "enum": [
+            "path",
+            "modified"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "SearchNotes"
+  },
+  {
+    "input_schema": {
+      "properties": {
+        "context": {
+          "default": 1,
+          "format": "int64",
+          "type": "integer"
+        },
+        "fixed": {
+          "default": false,
+          "type": "boolean"
+        },
+        "limit": {
+          "default": 20,
+          "format": "int64",
+          "type": "integer"
+        },
+        "mode": {
+          "default": "line",
+          "enum": [
+            "any",
+            "line",
+            "file",
+            "path"
+          ],
+          "type": "string"
+        },
+        "pattern": {
+          "default": ".",
+          "type": "string"
+        },
+        "since": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "until": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "SearchLog"
+  },
+  {
+    "input_schema": {
+      "properties": {
+        "context": {
+          "default": 1,
+          "format": "int64",
+          "type": "integer"
+        },
+        "fixed": {
+          "default": false,
+          "type": "boolean"
+        },
+        "include_completed": {
+          "default": false,
+          "type": "boolean"
+        },
+        "mode": {
+          "default": "any",
+          "enum": [
+            "any",
+            "line",
+            "file",
+            "path"
+          ],
+          "type": "string"
+        },
+        "pattern": {
+          "default": ".",
+          "type": "string"
+        },
+        "prefix": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "SearchTasks"
+  },
+  {
+    "input_schema": {
+      "properties": {
+        "limit": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "ReadNote"
+  },
+  {
+    "input_schema": {
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "type": "object"
+    },
+    "name": "WriteNote"
+  },
+  {
+    "input_schema": {
+      "properties": {
+        "new_string": {
+          "type": "string"
+        },
+        "old_string": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "replace_all": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "old_string",
+        "new_string"
+      ],
+      "type": "object"
+    },
+    "name": "EditNote"
+  },
+  {
+    "input_schema": {
+      "properties": {
+        "dest": {
+          "type": "string"
+        },
+        "overwrite": {
+          "default": false,
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "dest"
+      ],
+      "type": "object"
+    },
+    "name": "MoveNote"
+  },
+  {
+    "input_schema": {
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "DeleteNote"
+  },
+  {
+    "input_schema": {
+      "properties": {
+        "body": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "body"
+      ],
+      "type": "object"
+    },
+    "name": "LogNote"
+  },
+  {
+    "input_schema": {
+      "properties": {
+        "body": {
+          "default": false,
+          "type": "boolean"
+        },
+        "limit": {
+          "default": 20,
+          "format": "int64",
+          "type": "integer"
+        },
+        "since": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "until": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "GetLog"
+  },
+  {
+    "input_schema": {
+      "properties": {
+        "group": {
+          "default": "",
+          "type": "string"
+        },
+        "notes": {
+          "default": "",
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "task"
+      ],
+      "type": "object"
+    },
+    "name": "CreateTask"
+  },
+  {
+    "input_schema": {
+      "properties": {
+        "body": {
+          "default": false,
+          "type": "boolean"
+        },
+        "include_completed": {
+          "default": false,
+          "type": "boolean"
+        },
+        "prefix": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "GetTasks"
+  },
+  {
+    "input_schema": {
+      "properties": {
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "created",
+            "started",
+            "blocked",
+            "completed",
+            "rejected",
+            "invalid",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "UpdateTask"
+  },
+  {
+    "input_schema": {
+      "properties": {
+        "group": {
+          "default": "",
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "MoveTask"
+  },
+  {
+    "input_schema": {
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "name",
+        "content"
+      ],
+      "type": "object"
+    },
+    "name": "AttachToTask"
+  }
+]
