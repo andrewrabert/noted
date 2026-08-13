@@ -295,6 +295,7 @@ impl Regions {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn folded(dir: RegionDir, fragments: &[PolicyFragment]) -> Result<RegionPolicy> {
     fragments
         .iter()

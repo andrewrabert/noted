@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{NotedError, Result, rejected, unavailable};
-use crate::newtype::str_newtype;
+use crate::newtype::{secret_newtype, str_newtype};
 use crate::timerange::{INSTANT, zoned};
 
 #[derive(
@@ -158,6 +158,12 @@ impl std::fmt::Display for Timestamp {
         f.write_str(&zoned(self.0, INSTANT))
     }
 }
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Bearer(String);
+
+secret_newtype!(Bearer);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]

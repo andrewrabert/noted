@@ -4,24 +4,23 @@
 use std::collections::BTreeSet;
 
 use noted::search::{SearchMode, SearchOrder};
+use noted::store::NotedDir;
 use noted::tools::ToolOutput;
-use noted::{Backend, BackendArgs, Path, ToolCall, ToolListing};
+use noted::types::Source;
+use noted::{NotedRoot, Path, ToolCall, ToolListing};
 use noted_ui_wasm::api;
 use serde_json::Value;
 
 fn listings(dir: &tempfile::TempDir) -> Vec<ToolListing> {
-    let backend = backend(dir);
-    let authorized = backend.with_authority(None).expect("authorize");
-    authorized.tools()
+    root(dir).tools()
 }
 
-fn backend(dir: &tempfile::TempDir) -> Backend {
-    Backend::new(BackendArgs {
-        dir: Some(dir.path().display().to_string()),
-        source: Some("test".to_string()),
-        ..Default::default()
-    })
-    .expect("backend")
+fn root(dir: &tempfile::TempDir) -> NotedRoot {
+    NotedRoot::open(
+        NotedDir::new(dir.path().to_path_buf()),
+        Some(Source::new("test")),
+    )
+    .expect("root")
 }
 
 fn schema_of(dir: &tempfile::TempDir, name: &str) -> Value {
@@ -262,8 +261,7 @@ fn every_required_argument_is_sent() {
 #[test]
 fn every_payload_deserializes_as_the_tools_own_args() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let backend = backend(&dir);
-    let authorized = backend.with_authority(None).expect("authorize");
+    let authorized = root(&dir);
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

@@ -1,7 +1,6 @@
 mod common;
 
 use common::{confined, found, grep, held, note, notes_root, read, rp, write};
-use noted::authorization::Authorization;
 use noted::note::LogQuery;
 use noted::store::NotedDir;
 use noted::tasks::{GroupPath, TaskNote, TaskQuery, TaskRef, TaskTitle};
@@ -308,25 +307,16 @@ async fn a_denied_log_region_still_leaves_the_notes_region_open() {
     assert!(read(&root, "Inbox.md").await.is_ok());
 }
 
+fn listings(dir: &tempfile::TempDir, grants: Vec<PolicyFragment>) -> Vec<noted::ToolListing> {
+    common::root(dir).with_authority(&grants).unwrap().tools()
+}
+
 fn tool_names(dir: &tempfile::TempDir, grants: Vec<PolicyFragment>) -> Vec<&'static str> {
-    let backend = common::backend(dir);
-    let authorization = Authorization::new(grants, None).unwrap();
-    backend
-        .with_authority(Some(&authorization))
-        .unwrap()
-        .tools()
-        .iter()
-        .map(|t| t.name)
-        .collect()
+    listings(dir, grants).iter().map(|t| t.name).collect()
 }
 
 fn described(dir: &tempfile::TempDir, name: &str, grants: Vec<PolicyFragment>) -> String {
-    let backend = common::backend(dir);
-    let authorization = Authorization::new(grants, None).unwrap();
-    backend
-        .with_authority(Some(&authorization))
-        .unwrap()
-        .tools()
+    listings(dir, grants)
         .into_iter()
         .find(|t| t.name == name)
         .unwrap()
