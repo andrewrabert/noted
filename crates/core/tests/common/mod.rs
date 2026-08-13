@@ -104,19 +104,18 @@ pub fn confined_backend(dir: &tempfile::TempDir, policy: &str) -> Backend {
 }
 
 pub fn policed_backend(dir: &tempfile::TempDir, policy: PolicyFragment) -> Backend {
-    Backend::new(BackendArgs {
-        dir: Some(notes_root(dir).display().to_string()),
-        source: Some("test".to_string()),
+    Backend::new(BackendArgs::Local {
+        dir: NotedDir::new(notes_root(dir)),
+        source: Some(Source::new("test")),
         policy: PolicyArgs {
             policy: Some(policy.to_string()),
             ..Default::default()
         },
-        ..Default::default()
     })
     .unwrap()
 }
 
 pub async fn invoke(backend: &Backend, name: &str, args: Value) -> noted::Result<ToolOutput> {
     let call = ToolCall::raw(name, args)?;
-    backend.with_authority(None)?.invoke(&call).await
+    backend.invoke(&call).await
 }

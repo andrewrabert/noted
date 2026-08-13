@@ -4,10 +4,10 @@ use rand::Rng;
 use sha2::{Digest, Sha256};
 
 use crate::password::hash_password;
+use noted::PolicyFragment;
 use noted::error::{Result, rejected};
 use noted::types::{SecondsDuration, Ttl, UnixEpochSeconds};
 use noted::util::random_token;
-use noted::{Authorization, PolicyFragment};
 
 use super::db::{
     ApiKeyCred, CredentialCore, CredentialKind, CredentialRecord, CredentialStatus, Db, KeyRecord,
@@ -230,8 +230,6 @@ impl AuthService {
                 .apply(&mut verification)
                 .ok_or_else(|| rejected("macaroon caveat rejected"))?;
         }
-        Authorization::new(verification.fragments.clone(), None)
-            .map_err(|_| rejected("macaroon authority rejected"))?;
         Ok(verification.fragments)
     }
 
