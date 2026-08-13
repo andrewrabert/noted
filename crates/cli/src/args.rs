@@ -4,43 +4,54 @@ use clap::Args;
 
 use noted::types::Ttl;
 
-/// The dotenv file the prologue loads. Learned from argv before the real
-/// parse, so a binding for it inside the file itself is inert.
-#[derive(Args)]
-pub struct EnvFileArg {
-    #[arg(long = "env-file", env = "NOTED_ENV_FILE", global = true)]
-    pub(crate) env_file: Option<PathBuf>,
-}
+use crate::settings::{Flags, Layer, Variable};
 
+/// Every setting arrives through a layer, so no argument here reads the
+/// environment or carries a default.
 #[derive(Args)]
 pub struct GlobalArgs {
-    #[command(flatten)]
-    pub(crate) env_file: EnvFileArg,
+    /// Dotenv file read as the furthest settings layer
+    #[arg(long = "env-file", global = true)]
+    pub(crate) env_file: Option<PathBuf>,
     /// Credential metadata path; setting it forces plaintext secret storage
-    #[arg(long = "hosts-file", env = "NOTED_HOSTS_FILE", global = true)]
+    #[arg(long = "hosts-file", global = true)]
     pub(crate) hosts_file: Option<PathBuf>,
-    #[arg(long, env = "NOTED_DIR", global = true)]
+    #[arg(long, global = true)]
     pub(crate) dir: Option<String>,
-    #[arg(long, env = "NOTED_URL", global = true)]
+    #[arg(long, global = true)]
     pub(crate) url: Option<String>,
-    #[arg(long, env = "NOTED_TOKEN", global = true)]
+    #[arg(long, global = true)]
     pub(crate) token: Option<String>,
     /// Provenance recorded on log entries
-    #[arg(short = 's', long, env = "NOTED_SOURCE", global = true)]
+    #[arg(short = 's', long, global = true)]
     pub(crate) source: Option<String>,
-    #[arg(
-        long = "log-level",
-        env = "NOTED_LOG_LEVEL",
-        global = true,
-        default_value = "INFO"
-    )]
-    pub(crate) log_level: String,
-    #[arg(long = "log-file", env = "NOTED_LOG_FILE", global = true)]
+    #[arg(long = "log-level", global = true)]
+    pub(crate) log_level: Option<String>,
+    #[arg(long = "log-file", global = true)]
     pub(crate) log_file: Option<String>,
-    #[arg(long, env = "NOTED_POLICY", global = true)]
+    #[arg(long, global = true)]
     pub(crate) policy: Option<String>,
-    #[arg(long, env = "NOTED_SCOPE", global = true)]
+    #[arg(long, global = true)]
     pub(crate) scope: Option<String>,
+}
+
+fn path_of(path: &Option<PathBuf>) -> Option<String> {
+    path.as_ref().map(|p| p.display().to_string())
+}
+
+impl Flags for GlobalArgs {
+    fn write(&self, layer: &mut Layer) {
+        layer.set(Variable::EnvFile, path_of(&self.env_file).as_deref());
+        layer.set(Variable::HostsFile, path_of(&self.hosts_file).as_deref());
+        layer.set(Variable::Dir, self.dir.as_deref());
+        layer.set(Variable::Url, self.url.as_deref());
+        layer.set(Variable::Token, self.token.as_deref());
+        layer.set(Variable::Source, self.source.as_deref());
+        layer.set(Variable::LogLevel, self.log_level.as_deref());
+        layer.set(Variable::LogFile, self.log_file.as_deref());
+        layer.set(Variable::Policy, self.policy.as_deref());
+        layer.set(Variable::Scope, self.scope.as_deref());
+    }
 }
 
 #[derive(Args, Default)]
@@ -53,11 +64,22 @@ pub struct EntryFlags {
 /// and the admin commands alike.
 #[derive(Args)]
 pub struct AuthPaths {
-    #[arg(long = "auth-db", env = "NOTED_AUTH_DB", global = true)]
+    #[arg(long = "auth-db", global = true)]
     pub(crate) auth_db: Option<PathBuf>,
     #[cfg(unix)]
-    #[arg(long = "admin-socket", env = "NOTED_ADMIN_SOCKET", global = true)]
+    #[arg(long = "admin-socket", global = true)]
     pub(crate) admin_socket: Option<PathBuf>,
+}
+
+impl Flags for AuthPaths {
+    fn write(&self, layer: &mut Layer) {
+        layer.set(Variable::AuthDb, path_of(&self.auth_db).as_deref());
+        #[cfg(unix)]
+        layer.set(
+            Variable::AdminSocket,
+            path_of(&self.admin_socket).as_deref(),
+        );
+    }
 }
 
 pub fn parse_ttl(s: &str) -> std::result::Result<Ttl, String> {

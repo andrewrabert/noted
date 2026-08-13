@@ -1,36 +1,8 @@
 use std::path::Path;
 
-use noted_cli::config::{EnvFile, Environment, credential_store_config};
+use noted_cli::config::{EnvFile, credential_store_config};
+use noted_cli::settings::Variable;
 use noted_client::credentials::SecretStorage;
-
-#[test]
-fn the_env_file_flag_is_found_before_the_subcommand() {
-    let found = noted_cli::env_file_arg(["noted", "--env-file", "/etc/x.env", "read", "a.md"]);
-    assert_eq!(found.as_deref(), Some(Path::new("/etc/x.env")));
-}
-
-#[test]
-fn the_env_file_flag_is_found_after_the_subcommand() {
-    let found = noted_cli::env_file_arg(["noted", "read", "a.md", "--env-file", "/etc/x.env"]);
-    assert_eq!(found.as_deref(), Some(Path::new("/etc/x.env")));
-}
-
-#[test]
-fn an_argv_the_real_parse_rejects_still_yields_the_env_file() {
-    let found = noted_cli::env_file_arg([
-        "noted",
-        "--env-file",
-        "/etc/x.env",
-        "read",
-        "--no-such-flag",
-    ]);
-    assert_eq!(found.as_deref(), Some(Path::new("/etc/x.env")));
-}
-
-#[test]
-fn a_help_request_yields_no_env_file() {
-    assert_eq!(noted_cli::env_file_arg(["noted", "--help"]), None);
-}
 
 #[test]
 fn an_explicit_hosts_file_forces_plaintext_storage() {
@@ -134,49 +106,31 @@ fn no_notedenv_falls_back_to_the_config_dir() {
 }
 
 #[test]
+fn an_absent_env_file_yields_an_empty_layer() {
+    let root = tempfile::tempdir().unwrap();
+    let file = EnvFile::resolve(Some(&root.path().join("nothing.env")), None, None).unwrap();
+    let layer = file.layer().unwrap();
+    assert!(layer.get(Variable::Source).is_none());
+}
+
+#[test]
+fn an_env_file_yields_its_bindings_as_a_layer() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("noted.env");
+    std::fs::write(&path, "# a comment\nNOTED_SOURCE=repo\n\nALPHA=/notes\n").unwrap();
+    let file = EnvFile::resolve(Some(&path), None, None).unwrap();
+    let layer = file.layer().unwrap();
+    assert_eq!(layer.get(Variable::Source), Some("repo"));
+    assert_eq!(layer.origin().to_string(), path.display().to_string());
+}
+
+#[test]
 fn a_malformed_env_file_is_rejected() {
-    let file = EnvFile::resolve(Some(Path::new("/etc/noted.env")), None, None).unwrap();
-    let err = file
-        .parse("ALPHA=/notes\nthis is not a binding\n")
-        .unwrap_err();
-    let message = err.to_string();
-    assert!(message.contains("/etc/noted.env"), "{message}");
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("noted.env");
+    std::fs::write(&path, "NOTED_DIR=/notes\nthis is not a binding\n").unwrap();
+    let file = EnvFile::resolve(Some(&path), None, None).unwrap();
+    let message = file.layer().unwrap_err().to_string();
+    assert!(message.contains(&path.display().to_string()), "{message}");
     assert!(message.contains("this is not a binding"), "{message}");
-}
-
-#[test]
-fn an_env_file_yields_its_bindings_in_file_order() {
-    let file = EnvFile::resolve(Some(Path::new("/etc/noted.env")), None, None).unwrap();
-    let bindings = file
-        .parse("# a comment\nALPHA=/notes\n\nBETA=cli\n")
-        .unwrap();
-    assert_eq!(
-        bindings,
-        vec![
-            ("ALPHA".to_string(), "/notes".to_string()),
-            ("BETA".to_string(), "cli".to_string()),
-        ]
-    );
-}
-
-#[test]
-fn visual_is_preferred_over_editor_and_empties_are_dropped() {
-    let preference = Environment {
-        visual: Some("vim".into()),
-        editor: Some("nano".into()),
-        ..Environment::default()
-    }
-    .editor_preference();
-    assert_eq!(
-        preference.commands(),
-        ["vim".to_string(), "nano".to_string()]
-    );
-
-    let preference = Environment {
-        visual: Some(String::new()),
-        editor: Some("nano".into()),
-        ..Environment::default()
-    }
-    .editor_preference();
-    assert_eq!(preference.commands(), ["nano".to_string()]);
 }
