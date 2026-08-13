@@ -153,6 +153,25 @@ async fn unregistered_name_is_rejected() {
 }
 
 #[test]
+fn every_tool_schema_is_byte_identical_to_the_pinned_set() {
+    let dir = fixture_dir();
+    let pinned: Vec<serde_json::Value> = tool_listings(&dir)
+        .iter()
+        .map(|d| json!({"name": d.name, "input_schema": d.input_schema}))
+        .collect();
+    let mut current = serde_json::to_string_pretty(&pinned).unwrap();
+    current.push('\n');
+    let expected = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tool_schemas.json"),
+    )
+    .unwrap();
+    assert_eq!(
+        current, expected,
+        "a tool argument schema drifted from tests/fixtures/tool_schemas.json"
+    );
+}
+
+#[test]
 fn the_picker_query_asks_for_recency() {
     let args = serde_json::to_value(noted::tools::SearchNotesArgs::recent()).unwrap();
     assert_eq!(args["mode"], json!("path"));
