@@ -1,28 +1,21 @@
 mod common;
 
-use noted::authorization::Bearer;
 use noted::error::NotedError;
 use noted::tools::ToolOutput;
-use noted::{Backend, BackendArgs, ToolCall, Transport};
-use noted_server::http::build_app;
+use noted::{Backend, BackendArgs, Bearer, ToolCall, Transport};
 use serde_json::json;
 
-fn open_app(dir: &tempfile::TempDir) -> axum::Router {
-    build_app(common::backend(dir), None, None)
+fn dialing(router: axum::Router, token: Option<&str>) -> Backend {
+    Backend::new(BackendArgs::Remote {
+        endpoint: "http://test".parse().unwrap(),
+        bearer: token.map(Bearer::new),
+        transport: Transport::Router(router),
+    })
+    .unwrap()
 }
 
 fn remote(dir: &tempfile::TempDir) -> Backend {
-    remote_with_token(dir, None)
-}
-
-fn remote_with_token(dir: &tempfile::TempDir, token: Option<&str>) -> Backend {
-    Backend::new(BackendArgs {
-        endpoint: Some("http://test".parse().unwrap()),
-        token: token.map(Bearer::new),
-        transport: Some(Transport::Router(open_app(dir))),
-        ..Default::default()
-    })
-    .unwrap()
+    dialing(common::open_app(dir), None)
 }
 
 async fn invoke(
@@ -31,7 +24,7 @@ async fn invoke(
     args: serde_json::Value,
 ) -> noted::Result<ToolOutput> {
     let call = ToolCall::raw(name, args)?;
-    backend.with_authority(None)?.invoke(&call).await
+    backend.invoke(&call).await
 }
 
 #[tokio::test]
@@ -84,27 +77,15 @@ async fn http_sends_and_checks_bearer_token() {
     let dir = common::fixture_dir();
     let svc = common::auth_service(&dir);
     let token = common::mint_key(&svc, "test", noted::PolicyFragment::default());
-    let authed_app = build_app(common::backend(&dir), Some(svc), None);
+    let authed_app = common::origin_app(&dir, &svc);
 
-    let ok_backend = Backend::new(BackendArgs {
-        endpoint: Some("http://test".parse().unwrap()),
-        token: Some(Bearer::new(token)),
-        transport: Some(Transport::Router(authed_app.clone())),
-        ..Default::default()
-    })
-    .unwrap();
+    let ok_backend = dialing(authed_app.clone(), Some(&token));
     let ok = invoke(&ok_backend, "ReadNote", json!({"path": "Inbox.md"}))
         .await
         .unwrap();
     assert!(ok.render().contains("# Inbox"));
 
-    let bad_backend = Backend::new(BackendArgs {
-        endpoint: Some("http://test".parse().unwrap()),
-        token: Some(Bearer::new("noted_key_wrong")),
-        transport: Some(Transport::Router(authed_app)),
-        ..Default::default()
-    })
-    .unwrap();
+    let bad_backend = dialing(authed_app, Some("noted_key_wrong"));
     let err = invoke(&bad_backend, "ReadNote", json!({"path": "Inbox.md"}))
         .await
         .unwrap_err();
@@ -136,12 +117,7 @@ fn canned(status: u16, body: &'static str) -> axum::Router {
 }
 
 async fn invoke_canned(status: u16, body: &'static str) -> Result<ToolOutput, NotedError> {
-    let backend = Backend::new(BackendArgs {
-        endpoint: Some("http://x".parse().unwrap()),
-        transport: Some(Transport::Router(canned(status, body))),
-        ..Default::default()
-    })
-    .unwrap();
+    let backend = dialing(canned(status, body), None);
     invoke(&backend, "ReadNote", json!({"path": "a.md"})).await
 }
 
@@ -216,10 +192,10 @@ async fn search_path_mode_lists_every_note_for_the_picker() {
 #[test]
 fn a_socket_endpoint_refuses_an_in_process_router() {
     let dir = common::fixture_dir();
-    let result = Backend::new(BackendArgs {
-        endpoint: Some("unix:///run/noted.sock".parse().unwrap()),
-        transport: Some(Transport::Router(open_app(&dir))),
-        ..Default::default()
+    let result = Backend::new(BackendArgs::Remote {
+        endpoint: "unix:///run/noted.sock".parse().unwrap(),
+        bearer: None,
+        transport: Transport::Router(common::open_app(&dir)),
     });
     let Err(err) = result else {
         panic!("expected a socket endpoint to refuse a router");
