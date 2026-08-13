@@ -309,6 +309,35 @@ async fn a_revoked_caller_token_id_produces_no_upstream_request() {
 }
 
 #[tokio::test]
+async fn a_relay_minted_credential_presented_back_composes_its_scope_once() {
+    let dir = common::fixture_dir();
+    seed(&dir, "a/x.md", "once").await;
+    let (origin, seen) = upstream(&dir);
+    let cred = credential(r#"{"scope":"a"}"#, None);
+    let ask = Mint {
+        policy: PolicyFragment::default(),
+        ttl: noted::types::Ttl::from_secs(3600),
+        session: None,
+        label: None,
+    };
+    let minted = Minter::mint(cred.as_ref(), &Verified::anonymous(), &ask).unwrap();
+    let token = minted.macaroon.expose().to_string();
+    let app = in_front_of(cred, origin);
+
+    let (status, body) = read(&app, Some(&token), "x.md").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(data(&body), "once");
+
+    let carried = seen.lock().unwrap().first().cloned().expect("one request");
+    let macaroon =
+        Macaroon::from_encoded(carried.strip_prefix("Bearer ").unwrap().to_string()).unwrap();
+    let caveats = macaroon.caveats().unwrap();
+    let scope = Caveat::Policy(common::held(r#"{"scope":"a"}"#));
+    assert_eq!(caveats.iter().filter(|c| **c == scope).count(), 1);
+    assert_eq!(caveats[0], scope);
+}
+
+#[tokio::test]
 async fn mcp_bodies_cross_a_relay_byte_for_byte() {
     let dir = common::fixture_dir();
     let origin = common::open_app(&dir);
