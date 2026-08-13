@@ -4,10 +4,8 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use noted::authorization::Bearer;
 use noted::tools::ReadArgs;
-use noted::{Backend, BackendArgs, PolicyFragment, ToolCall};
-use noted_server::http::build_app;
+use noted::{Backend, BackendArgs, Bearer, PolicyFragment, ToolCall, Transport};
 use noted_server::socket::{
     SocketBind, SocketEnv, bind_unix_socket, lock_path, socket_base_dir, socket_root, staging_dir,
     staging_socket, write_endpoint_line,
@@ -25,7 +23,7 @@ async fn serve(dir: &tempfile::TempDir) -> (PathBuf, String) {
     let token = common::mint_key(&svc, "test", PolicyFragment::default());
     let sock = dir.path().join("noted.sock");
     let (listener, guard) = bind_unix_socket(&sock, None).unwrap();
-    let app = build_app(common::backend(dir), Some(svc), None);
+    let app = common::origin_app(common::root(dir), &svc);
     tokio::spawn(async move {
         let _guard = guard;
         let _ = axum::serve(listener, app).await;
@@ -34,10 +32,10 @@ async fn serve(dir: &tempfile::TempDir) -> (PathBuf, String) {
 }
 
 fn dialing(sock: &Path, token: &str) -> Backend {
-    Backend::new(BackendArgs {
-        endpoint: Some(format!("unix://{}", sock.display()).parse().unwrap()),
-        token: Some(Bearer::new(token)),
-        ..Default::default()
+    Backend::new(BackendArgs::Remote {
+        endpoint: format!("unix://{}", sock.display()).parse().unwrap(),
+        bearer: Some(Bearer::new(token)),
+        transport: Transport::Real,
     })
     .unwrap()
 }
@@ -48,12 +46,7 @@ async fn tools_round_trip_over_a_unix_socket() {
     let (sock, token) = serve(&dir).await;
     let backend = dialing(&sock, &token);
     let call = ToolCall::new(ReadArgs::new(common::rp("Inbox.md"))).unwrap();
-    let out = backend
-        .with_authority(None)
-        .unwrap()
-        .invoke(&call)
-        .await
-        .unwrap();
+    let out = backend.invoke(&call).await.unwrap();
     assert!(out.render().contains("follow up with Dana"));
 }
 
@@ -63,12 +56,7 @@ async fn an_unknown_bearer_is_refused_over_the_socket() {
     let (sock, _token) = serve(&dir).await;
     let backend = dialing(&sock, "not-a-token");
     let call = ToolCall::new(ReadArgs::new(common::rp("Inbox.md"))).unwrap();
-    let err = backend
-        .with_authority(None)
-        .unwrap()
-        .invoke(&call)
-        .await
-        .unwrap_err();
+    let err = backend.invoke(&call).await.unwrap_err();
     assert!(err.is_rejection(), "{err}");
 }
 

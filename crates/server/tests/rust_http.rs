@@ -2,15 +2,14 @@ mod common;
 
 use axum::http::StatusCode;
 use noted::PolicyFragment;
-use noted_server::http::build_app;
 use serde_json::json;
 
-use common::{json_body, post_json, post_mcp};
+use common::{json_body, post_json, post_mcp, post_mcp_at};
 
 fn keyed_app(dir: &tempfile::TempDir, policy: PolicyFragment) -> (axum::Router, String) {
     let svc = common::auth_service(dir);
     let token = common::mint_key(&svc, "t", policy);
-    (build_app(common::backend(dir), Some(svc), None), token)
+    (common::origin_app(common::root(dir), &svc), token)
 }
 
 fn held(text: &str) -> PolicyFragment {
@@ -56,8 +55,7 @@ async fn tool_search_fixed_glob_and_hidden_flags() {
 #[test]
 fn search_schema_is_lean_and_surface_clean() {
     let dir = common::fixture_dir();
-    let backend = common::backend(&dir);
-    let defs = backend.with_authority(None).unwrap().tools();
+    let defs = common::root(&dir).tools();
     let search = defs.iter().find(|d| d.name == "SearchNotes").unwrap();
     let props = search.input_schema["properties"].as_object().unwrap();
     for expected in ["pattern", "mode", "context", "fixed", "glob"] {
@@ -196,20 +194,12 @@ async fn mcp_refuses_a_write_the_policy_denies() {
 }
 
 #[tokio::test]
-async fn resolver_rejects_everything_but_a_live_prefixed_bearer() {
+async fn only_a_live_macaroon_of_this_server_reaches_a_tool() {
     let dir = common::fixture_dir();
     let svc = common::auth_service(&dir);
     let live = common::mint_key(&svc, "live", PolicyFragment::default());
-    let pending = svc
-        .key_create(&lb("pending"), PolicyFragment::default(), None)
-        .unwrap()
-        .token
-        .expose()
-        .to_string();
-    let revoked = common::mint_key(&svc, "dead", PolicyFragment::default());
-    svc.key_revoke(&noted_auth::oauth::service::RevokeBy::Label(lb("dead")))
-        .unwrap();
-    let app = build_app(common::backend(&dir), Some(svc), None);
+    let doomed = common::mint_key(&svc, "dead", PolicyFragment::default());
+    let app = common::origin_app(common::root(&dir), &svc);
 
     let probe = |tok: Option<String>| {
         let app = app.clone();
@@ -227,24 +217,56 @@ async fn resolver_rejects_everything_but_a_live_prefixed_bearer() {
 
     assert_eq!(probe(Some(live)).await, StatusCode::OK);
     assert_eq!(probe(None).await, StatusCode::UNAUTHORIZED);
-    assert_eq!(
-        probe(Some("ghp_notours".into())).await,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        probe(Some("random-old-style-token".into())).await,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        probe(Some("noted_ref_whatever".into())).await,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        probe(Some("noted_key_wrong".into())).await,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(probe(Some(pending)).await, StatusCode::UNAUTHORIZED);
-    assert_eq!(probe(Some(revoked)).await, StatusCode::UNAUTHORIZED);
+    for unparseable in [
+        "ghp_notours",
+        "random-old-style-token",
+        "noted_ref_whatever",
+    ] {
+        assert_eq!(
+            probe(Some(unparseable.into())).await,
+            StatusCode::BAD_REQUEST,
+            "{unparseable}"
+        );
+    }
+    assert_eq!(probe(Some(doomed.clone())).await, StatusCode::OK);
+    let (s, _) = post_json(
+        &app,
+        "/macaroon/revoke",
+        Some(&doomed),
+        &json!({"id": token_id(&doomed)}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(probe(Some(doomed)).await, StatusCode::UNAUTHORIZED);
+}
+
+/// The `token_id=` caveat the server stamped on a credential it minted.
+fn token_id(bearer: &str) -> String {
+    let macaroon = noted_auth::Macaroon::from_encoded(bearer.to_string()).unwrap();
+    macaroon
+        .caveats()
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find_map(|caveat| match caveat {
+            noted_auth::credential::Caveat::Token(id) => Some(id.as_str().to_string()),
+            _ => None,
+        })
+        .expect("a minted credential carries a token id")
+}
+
+#[tokio::test]
+async fn a_tools_call_posted_under_a_public_path_is_unauthorized() {
+    let dir = common::fixture_dir();
+    let (app, _t) = keyed_app(&dir, PolicyFragment::default());
+    let (s, _h, _b) = post_mcp_at(
+        &app,
+        "/mcp/token",
+        None,
+        &mcp_call("SearchNotes", json!({"pattern": "."})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -331,12 +353,14 @@ async fn a_write_only_folder_leaves_the_task_region_open() {
 async fn a_live_policy_edit_is_visible_to_the_next_request() {
     let dir = common::fixture_dir();
     let svc = common::auth_service(&dir);
-    let token = common::mint_key(
-        &svc,
-        "agent",
+    svc.user_add(&common::un("agent"), &pw("pw")).unwrap();
+    svc.user_set_policy(
+        &common::un("agent"),
         held(r#"{"access":{"read":false,"write":false}}"#),
-    );
-    let app = build_app(common::backend(&dir), Some(svc.clone()), None);
+    )
+    .unwrap();
+    let token = common::login_token(&svc, "agent");
+    let app = common::origin_app(common::root(&dir), &svc);
 
     let (s, _) = post_json(
         &app,
@@ -347,10 +371,9 @@ async fn a_live_policy_edit_is_visible_to_the_next_request() {
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 
-    svc.key_set_policy(
-        Some(&lb("agent")),
-        None,
-        r#"{"access":{"read":true,"write":false}}"#.parse::<PolicyFragment>().unwrap(),
+    svc.user_set_policy(
+        &common::un("agent"),
+        held(r#"{"access":{"read":true,"write":false}}"#),
     )
     .unwrap();
     let (s, _) = post_json(
@@ -366,7 +389,7 @@ async fn a_live_policy_edit_is_visible_to_the_next_request() {
 #[tokio::test]
 async fn mcp_initialize_returns_server_info() {
     let dir = common::fixture_dir();
-    let app = build_app(common::backend(&dir), None, None);
+    let app = common::open_app(&dir);
     let (s, _headers, b) = post_mcp(
         &app,
         None,
@@ -382,7 +405,7 @@ async fn mcp_initialize_returns_server_info() {
 #[tokio::test]
 async fn mcp_stateless_needs_no_session() {
     let dir = common::fixture_dir();
-    let app = build_app(common::backend(&dir), None, None);
+    let app = common::open_app(&dir);
     let (s, _h, b) = post_mcp(
         &app,
         None,
@@ -453,19 +476,6 @@ async fn write_schema_hides_when_via_mcp() {
     assert!(props.get("when").is_none(), "when leaked into MCP schema");
 }
 
-#[allow(dead_code)]
-fn un(s: impl AsRef<str>) -> noted_auth::oauth::types::Username {
-    s.as_ref().parse().unwrap()
-}
-#[allow(dead_code)]
-fn pw(s: impl AsRef<str>) -> noted_auth::oauth::types::Password {
-    noted_auth::oauth::types::Password::new(s.as_ref())
-}
-#[allow(dead_code)]
-fn lb(s: impl AsRef<str>) -> noted_auth::oauth::types::Label {
-    noted_auth::oauth::types::Label::new(s.as_ref()).unwrap()
-}
-#[allow(dead_code)]
-fn ci(s: impl AsRef<str>) -> noted_auth::oauth::types::CredentialId {
-    noted_auth::oauth::types::CredentialId::new(s.as_ref()).expect("valid credential id in test")
+fn pw(s: &str) -> noted_auth::types::Password {
+    noted_auth::types::Password::new(s)
 }

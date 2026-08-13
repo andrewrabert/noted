@@ -189,6 +189,15 @@ pub(crate) fn host() -> String {
         .unwrap_or_default()
 }
 
+fn authority(target: &HttpUrl) -> String {
+    let url = target.as_url();
+    match (url.host_str(), url.port()) {
+        (Some(host), Some(port)) => format!("{host}:{port}"),
+        (Some(host), None) => host.to_string(),
+        (None, _) => "localhost".to_string(),
+    }
+}
+
 pub(crate) async fn route(
     router: &Router,
     target: &HttpUrl,
@@ -199,9 +208,12 @@ pub(crate) async fn route(
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    // a real client names the authority it dialed; a routed request carries no
+    // socket to infer one from, so the target url supplies it
     let mut builder = Request::builder()
         .method("POST")
-        .uri(target.path_and_query());
+        .uri(target.path_and_query())
+        .header("host", authority(target));
     for (name, value) in headers {
         builder = builder.header(*name, *value);
     }
