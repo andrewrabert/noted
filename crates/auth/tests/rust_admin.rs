@@ -2,28 +2,36 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use noted::PolicyFragment;
-use noted_auth::oauth::Db;
-use noted_auth::oauth::admin::{self, AdminClient, AdminRequest};
-use noted_auth::oauth::service::{AuthService, RevokeBy};
+use noted_auth::Db;
+use noted_auth::admin::{self, Admin, AdminClient, AdminRequest};
+use noted_auth::authority::{OriginAuthority, Revoke, Verifier};
+use noted_auth::service::AuthService;
+use noted_auth::types::Label;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-async fn spawn_server(dir: &tempfile::TempDir) -> (PathBuf, Arc<AuthService>) {
+async fn spawn_server(
+    dir: &tempfile::TempDir,
+) -> (PathBuf, Arc<AuthService>, Arc<OriginAuthority>) {
     let db = Arc::new(Db::open(&dir.path().join("auth.redb")).unwrap());
     let svc = Arc::new(AuthService::new(
         db,
         noted::types::Ttl::from_secs(30 * 24 * 3600),
     ));
+    let authority = Arc::new(OriginAuthority::new(svc.clone()));
     let sock = dir.path().join("admin.sock");
     let listener = tokio::net::UnixListener::bind(&sock).unwrap();
-    tokio::spawn(admin::serve_socket(listener, svc.clone()));
-    (sock, svc)
+    tokio::spawn(admin::serve_socket(
+        listener,
+        Admin::new(svc.clone(), authority.clone()),
+    ));
+    (sock, svc, authority)
 }
 
 #[tokio::test]
-async fn verbs_round_trip_and_two_phase_mint() {
+async fn verbs_round_trip_and_a_key_is_minted_live() {
     let dir = tempfile::tempdir().unwrap();
-    let (sock, svc) = spawn_server(&dir).await;
+    let (sock, _svc, authority) = spawn_server(&dir).await;
     let mut client = AdminClient::connect(&sock).await.unwrap();
 
     client
@@ -44,50 +52,40 @@ async fn verbs_round_trip_and_two_phase_mint() {
         })
         .await
         .unwrap();
-    let token = minted["token"].as_str().unwrap().to_string();
-    let id = minted["credential_id"].as_str().unwrap().to_string();
-    assert!(svc.resolve_bearer(&token).unwrap().is_none());
-    client
-        .call(&AdminRequest::KeyFinalize {
-            credential_id: id.clone(),
-        })
-        .await
-        .unwrap();
-    let (owner, policy) = svc.resolve_bearer(&token).unwrap().unwrap();
-    assert_eq!(owner, format!("key:{id}"));
-    assert_eq!(
-        policy.to_string(),
-        r#"{"access":{"read":true,"write":false}}"#
+    let token = minted["macaroon"].as_str().unwrap().to_string();
+    assert!(token.starts_with("noted_mac_"));
+
+    // a key is live the moment it is minted: no second phase
+    let verified = authority.verify(Some(&token)).unwrap();
+    assert!(
+        verified
+            .fragments()
+            .iter()
+            .any(|f| f.to_string() == r#"{"access":{"read":true,"write":false}}"#)
     );
 
-    client
-        .call(&AdminRequest::KeySetPolicy {
+    let listed = client
+        .call(&AdminRequest::KeyList {
             label: Some("agent".into()),
-            id: None,
-            policy: r#"{"access":{"read":true,"write":false},"paths":{"projects":{"read":false,"write":false}}}"#.parse::<PolicyFragment>().unwrap(),
         })
         .await
         .unwrap();
-    let (_, policy) = svc.resolve_bearer(&token).unwrap().unwrap();
-    assert_eq!(
-        policy.to_string(),
-        r#"{"access":{"read":true,"write":false},"paths":{"projects":{"read":false,"write":false}}}"#
-    );
+    assert_eq!(listed.as_array().unwrap().len(), 1);
 
     let revoked = client
         .call(&AdminRequest::KeyRevoke {
-            by: RevokeBy::Label(noted_auth::oauth::types::Label::new("agent").unwrap()),
+            by: Revoke::Label(Label::new("agent").unwrap()),
         })
         .await
         .unwrap();
     assert_eq!(revoked["revoked"], 1);
-    assert!(svc.resolve_bearer(&token).unwrap().is_none());
+    assert!(authority.verify(Some(&token)).is_err());
 }
 
 #[tokio::test]
 async fn domain_errors_keep_the_session_open() {
     let dir = tempfile::tempdir().unwrap();
-    let (sock, _svc) = spawn_server(&dir).await;
+    let (sock, _svc, _authority) = spawn_server(&dir).await;
     let mut client = AdminClient::connect(&sock).await.unwrap();
 
     let err = client
@@ -110,7 +108,7 @@ async fn domain_errors_keep_the_session_open() {
 #[tokio::test]
 async fn malformed_line_answers_then_closes() {
     let dir = tempfile::tempdir().unwrap();
-    let (sock, _svc) = spawn_server(&dir).await;
+    let (sock, _svc, _authority) = spawn_server(&dir).await;
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
