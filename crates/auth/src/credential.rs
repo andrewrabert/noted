@@ -51,7 +51,8 @@ impl KeyRecord {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub enum Caveat {
     Epoch(RevocationEpoch),
     Before(UnixEpochSeconds),
@@ -94,6 +95,20 @@ impl FromStr for Caveat {
             KEY_SESSION => Ok(Caveat::Session(SessionId::new(value))),
             _ => Err(bad()),
         }
+    }
+}
+
+impl From<Caveat> for String {
+    fn from(caveat: Caveat) -> String {
+        caveat.to_string()
+    }
+}
+
+impl TryFrom<String> for Caveat {
+    type Error = noted::error::NotedError;
+
+    fn try_from(value: String) -> Result<Caveat> {
+        value.parse()
     }
 }
 

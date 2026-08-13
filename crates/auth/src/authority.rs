@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::credential::{Caveat, KeyRecord, Macaroon, MacaroonId};
 use crate::db::MintRecord;
 use crate::service::{AuthService, MintSummary};
-use crate::types::{Fingerprint, Label, Owner, SessionId};
+use crate::types::{Fingerprint, Label, Owner, RevocationEpoch, SessionId};
 use noted::error::{Result, rejected};
 use noted::types::{Ttl, UnixEpochSeconds};
 use noted::{Bearer, PolicyFragment};
@@ -51,6 +51,16 @@ impl Verified {
 
     pub fn macaroon(&self) -> Option<&Macaroon> {
         self.macaroon.as_ref()
+    }
+
+    /// A caller known by owner alone: what an administrator acts as.
+    pub fn as_owner(owner: Owner) -> Verified {
+        Verified {
+            owner: Some(owner),
+            fragments: Vec::new(),
+            caveats: Vec::new(),
+            macaroon: None,
+        }
     }
 }
 
@@ -109,6 +119,70 @@ impl Revoke {
             })
             .ok_or_else(|| rejected("that credential carries no token id"))
     }
+
+    /// The caveat this ask names outright; a label and `All` name none.
+    fn caveat(&self) -> Option<Caveat> {
+        match self {
+            Revoke::Token(id) => Some(Caveat::Token(id.clone())),
+            Revoke::Session(id) => Some(Caveat::Session(id.clone())),
+            Revoke::Label(_) | Revoke::All => None,
+        }
+    }
+
+    /// Whether a ledger row is one this ask names.
+    fn names(&self, id: &MacaroonId, rec: &MintRecord) -> bool {
+        match self {
+            Revoke::Token(token) => id == token,
+            Revoke::Label(label) => rec.label.as_ref() == Some(label),
+            Revoke::Session(session) => rec.session.as_ref() == Some(session),
+            Revoke::All => true,
+        }
+    }
+}
+
+/// What a revocation withdrew.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Withdrawn {
+    /// The caveats no credential may carry any more, in ledger order.
+    pub revoked: Vec<Caveat>,
+    /// The epoch the owner's root moved to, reaching past every name the ledger
+    /// holds.
+    pub epoch: Option<RevocationEpoch>,
+}
+
+impl Withdrawn {
+    pub(crate) fn sealed(
+        revoked: Vec<Caveat>,
+        epoch: Option<RevocationEpoch>,
+    ) -> Result<Withdrawn> {
+        if revoked.is_empty() && epoch.is_none() {
+            return Err(rejected("this server minted nothing of that name"));
+        }
+        Ok(Withdrawn { revoked, epoch })
+    }
+}
+
+/// Tombstones every `token_id=` the ask names among `owner`'s ledger rows, with
+/// the ask's own caveat beside them, and drops those rows. A ledger that names
+/// nothing withdraws nothing.
+fn withdraw(service: &AuthService, owner: &Owner, ask: &Revoke) -> Result<Vec<Caveat>> {
+    let db = service.db();
+    let rows: Vec<MacaroonId> = db
+        .all_minted()?
+        .into_iter()
+        .filter(|(id, rec)| rec.owner == *owner && ask.names(id, rec))
+        .map(|(id, _)| id)
+        .collect();
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut dead: Vec<Caveat> = rows.iter().cloned().map(Caveat::Token).collect();
+    if let Some(caveat) = ask.caveat().filter(|c| !dead.contains(c)) {
+        dead.push(caveat);
+    }
+    let until = UnixEpochSeconds::now()? + service.default_ttl();
+    db.withdraw(&dead, &rows, until)?;
+    Ok(dead)
 }
 
 pub trait Minter: Send + Sync + 'static {
@@ -119,8 +193,9 @@ pub trait Minter: Send + Sync + 'static {
     /// `policy=`, `session_id=` when asked, a fresh `token_id=`, then `before=`.
     fn mint(&self, caller: &Verified, ask: &Mint) -> Result<Minted>;
 
-    /// Withdraws only what this server minted for the caller's owner.
-    fn revoke(&self, caller: &Verified, ask: &Revoke) -> Result<usize>;
+    /// Withdraws only what this server records having minted for the caller's
+    /// owner; an ask that withdraws nothing is refused.
+    fn revoke(&self, caller: &Verified, ask: &Revoke) -> Result<Withdrawn>;
 
     fn minted(&self, owner: &Owner) -> Result<Vec<MintSummary>>;
 }
@@ -145,6 +220,7 @@ fn ledger_record(ask: &Mint, owner: &Owner, minted: &Minted, now: UnixEpochSecon
     MintRecord {
         owner: owner.clone(),
         label: ask.label.clone(),
+        session: ask.session.clone(),
         policy: ask.policy.clone(),
         fingerprint: minted.fingerprint.clone(),
         created_at: now,
@@ -246,11 +322,8 @@ impl Verifier for OriginAuthority {
                     return unauthorized("credential expired");
                 }
                 Caveat::Policy(fragment) => fragments.push(fragment.clone()),
-                Caveat::Token(id) if self.service.db().is_revoked(id.as_str()).unwrap_or(true) => {
-                    return unauthorized("credential revoked");
-                }
-                Caveat::Session(id)
-                    if self.service.db().is_revoked(id.as_str()).unwrap_or(true) =>
+                Caveat::Token(_) | Caveat::Session(_)
+                    if self.service.db().is_revoked(caveat).unwrap_or(true) =>
                 {
                     return unauthorized("credential revoked");
                 }
@@ -302,39 +375,22 @@ impl Minter for OriginAuthority {
         Ok(minted)
     }
 
-    fn revoke(&self, caller: &Verified, ask: &Revoke) -> Result<usize> {
+    fn revoke(&self, caller: &Verified, ask: &Revoke) -> Result<Withdrawn> {
         let owner = caller
             .owner()
             .or_else(|| self.own.owner())
             .ok_or_else(|| rejected("this server holds no credential to revoke under"))?
             .clone();
-        let db = self.service.db();
-        if let Revoke::All = ask {
-            db.bump_root_epoch(&owner)?;
-            return Ok(1);
-        }
-        let until = UnixEpochSeconds::now()? + self.service.default_ttl();
-        if let Revoke::Session(session) = ask {
-            db.revoke_id(session.as_str(), until)?;
-            return Ok(1);
-        }
-        let mut n = 0;
-        for (id, rec) in db.all_minted()? {
-            let hit = match ask {
-                Revoke::Token(token) => id == *token,
-                Revoke::Label(label) => rec.label.as_ref() == Some(label),
-                Revoke::Session(_) | Revoke::All => false,
-            };
-            if hit && rec.owner == owner {
-                db.revoke_id(id.as_str(), until)?;
-                db.remove_minted(&id)?;
-                n += 1;
+        let dead = withdraw(&self.service, &owner, ask)?;
+        let epoch = match ask {
+            Revoke::All => {
+                self.root_of(&owner)?;
+                self.service.db().remove_refresh_of(&owner)?;
+                Some(self.service.db().bump_root_epoch(&owner)?)
             }
-        }
-        if n == 0 {
-            return Err(rejected("no such credential"));
-        }
-        Ok(n)
+            _ => None,
+        };
+        Withdrawn::sealed(dead, epoch)
     }
 
     fn minted(&self, owner: &Owner) -> Result<Vec<MintSummary>> {
@@ -459,9 +515,9 @@ impl RelayCredential {
         &self.at
     }
 
-    fn is_revoked(&self, id: &str) -> bool {
+    fn is_revoked(&self, caveat: &Caveat) -> bool {
         match &self.ledger {
-            Some(service) => service.db().is_revoked(id).unwrap_or(true),
+            Some(service) => service.db().is_revoked(caveat).unwrap_or(true),
             None => false,
         }
     }
@@ -489,10 +545,7 @@ impl Verifier for RelayCredential {
                     return unauthorized("credential expired");
                 }
                 Caveat::Policy(fragment) => fragments.push(fragment.clone()),
-                Caveat::Token(id) if self.is_revoked(id.as_str()) => {
-                    return unauthorized("credential revoked");
-                }
-                Caveat::Session(id) if self.is_revoked(id.as_str()) => {
+                Caveat::Token(_) | Caveat::Session(_) if self.is_revoked(caveat) => {
                     return unauthorized("credential revoked");
                 }
                 _ => {}
@@ -528,39 +581,21 @@ impl Minter for RelayCredential {
         Ok(minted)
     }
 
-    fn revoke(&self, _caller: &Verified, ask: &Revoke) -> Result<usize> {
+    fn revoke(&self, caller: &Verified, ask: &Revoke) -> Result<Withdrawn> {
+        let named = |m: &str| rejected(format!("{}: {m}", self.at));
+        if let Revoke::All = ask {
+            return Err(named("a relay holds no epoch to bump"));
+        }
         let service = self
             .ledger
             .as_ref()
-            .ok_or_else(|| rejected("this relay holds no ledger to revoke from"))?;
-        let db = service.db();
-        let until = UnixEpochSeconds::now()? + service.default_ttl();
-        match ask {
-            Revoke::Token(id) => {
-                db.revoke_id(id.as_str(), until)?;
-                db.remove_minted(id)?;
-                Ok(1)
-            }
-            Revoke::Session(id) => {
-                db.revoke_id(id.as_str(), until)?;
-                Ok(1)
-            }
-            Revoke::Label(label) => {
-                let mut n = 0;
-                for (id, rec) in db.all_minted()? {
-                    if rec.label.as_ref() == Some(label) {
-                        db.revoke_id(id.as_str(), until)?;
-                        db.remove_minted(&id)?;
-                        n += 1;
-                    }
-                }
-                if n == 0 {
-                    return Err(rejected("no such credential"));
-                }
-                Ok(n)
-            }
-            Revoke::All => Err(rejected("a relay holds no epoch to bump")),
-        }
+            .ok_or_else(|| named("this relay records nothing it mints"))?;
+        let owner = caller
+            .owner()
+            .or_else(|| self.own.owner())
+            .ok_or_else(|| named("this relay holds no credential to revoke under"))?
+            .clone();
+        Withdrawn::sealed(withdraw(service, &owner, ask)?, None).map_err(|e| named(&e.message()))
     }
 
     fn minted(&self, owner: &Owner) -> Result<Vec<MintSummary>> {

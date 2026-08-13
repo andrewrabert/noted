@@ -219,7 +219,7 @@ pub(crate) async fn run_user(cmd: UserCmd, config: &Config) -> Result<()> {
                 },
             )
             .await?;
-            println!("revoked {}", v["revoked"].as_u64().unwrap_or(0));
+            crate::auth::print_withdrawn(&from_response(v)?);
         }
         UserSub::Remove(a) => {
             admin_one(
@@ -279,7 +279,7 @@ pub(crate) async fn run_key(cmd: KeyCmd, config: &Config) -> Result<()> {
                 (Some(_), Some(_)) => unreachable!("clap conflicts_with"),
             };
             let v = admin_one(config, AdminRequest::KeyRevoke { by }).await?;
-            println!("revoked {}", v["revoked"].as_u64().unwrap_or(0));
+            crate::auth::print_withdrawn(&from_response(v)?);
             Ok(())
         }
     }

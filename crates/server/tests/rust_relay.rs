@@ -309,6 +309,37 @@ async fn a_revoked_caller_token_id_produces_no_upstream_request() {
 }
 
 #[tokio::test]
+async fn a_relay_refuses_a_revocation_it_cannot_name() {
+    let dir = common::fixture_dir();
+    let svc = common::auth_service(&dir);
+    let ledgered = Arc::new(
+        RelayCredential::open(
+            None,
+            PolicyFragment::default(),
+            Some(svc.clone()),
+            "http://relay.test".to_string(),
+        )
+        .unwrap(),
+    );
+    for ask in [
+        Revoke::Token(noted_auth::credential::MacaroonId::new("never-minted")),
+        Revoke::All,
+    ] {
+        let e = Minter::revoke(ledgered.as_ref(), &Verified::anonymous(), &ask).unwrap_err();
+        assert!(e.message().contains("http://relay.test"), "{e}");
+    }
+
+    let ledger_less = credential("{}", None);
+    let e = Minter::revoke(
+        ledger_less.as_ref(),
+        &Verified::anonymous(),
+        &Revoke::Token(noted_auth::credential::MacaroonId::new("anything")),
+    )
+    .unwrap_err();
+    assert!(e.message().contains("http://relay.test"), "{e}");
+}
+
+#[tokio::test]
 async fn a_relay_minted_credential_presented_back_composes_its_scope_once() {
     let dir = common::fixture_dir();
     seed(&dir, "a/x.md", "once").await;

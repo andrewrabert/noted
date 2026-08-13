@@ -11,7 +11,7 @@ use tokio::net::{UnixListener, UnixStream};
 use noted::PolicyFragment;
 use noted::error::{Result, rejected, unavailable};
 
-use crate::authority::{Mint, Minter, OriginAuthority, Revoke};
+use crate::authority::{Mint, Minter, OriginAuthority, Revoke, Verified};
 use crate::db::Db;
 use crate::service::{AuthService, DEFAULT_CREDENTIAL_TTL};
 use crate::types::{Label, Owner, Password, Username};
@@ -151,8 +151,14 @@ pub fn apply(admin: &Admin, req: AdminRequest) -> AdminResponse {
                 }
             }
             AdminRequest::UserRevoke { name } => {
-                let n = svc.user_revoke(&Username::new(name)?)?;
-                json!({ "revoked": n })
+                let name = Username::new(name)?;
+                svc.user_get(&name)?
+                    .ok_or_else(|| rejected(format!("no such user: '{name}'")))?;
+                to_value(
+                    admin
+                        .minter
+                        .revoke(&Verified::as_owner(Owner::User(name)), &Revoke::All)?,
+                )?
             }
             AdminRequest::UserRemove { name } => {
                 svc.user_remove(&Username::new(name)?)?;
@@ -184,7 +190,7 @@ pub fn apply(admin: &Admin, req: AdminRequest) -> AdminResponse {
                 to_value(listed)?
             }
             AdminRequest::KeyRevoke { by } => {
-                json!({ "revoked": admin.minter.revoke(admin.minter.own(), &by)? })
+                to_value(admin.minter.revoke(admin.minter.own(), &by)?)?
             }
         })
     })();

@@ -160,17 +160,6 @@ impl AuthService {
         self.db.remove_user_txn(name)
     }
 
-    /// Drops every refresh record of the user and bumps its epoch, so every
-    /// credential minted under its key so far is dead.
-    pub fn user_revoke(&self, name: &Username) -> Result<usize> {
-        self.require_user(name)?;
-        let owner = Owner::User(name.clone());
-        let n = self.db.remove_refresh_of(&owner)?;
-        self.user_root(name)?;
-        self.db.bump_root_epoch(&owner)?;
-        Ok(n)
-    }
-
     pub fn login_user(&self, name: &str) -> Result<Option<UserRecord>> {
         match name.parse::<Username>() {
             Ok(name) => self.db.user(&name),

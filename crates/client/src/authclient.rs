@@ -12,7 +12,7 @@ use noted::error::{Result, http_error, io_error, rejected, unavailable};
 use noted::types::{Ttl, UnixEpochSeconds};
 use noted::util::random_token;
 use noted::{Bearer, PolicyFragment};
-use noted_auth::authority::Revoke;
+use noted_auth::authority::{Revoke, Withdrawn};
 use noted_auth::credential::{Macaroon, MacaroonId};
 use noted_auth::types::{ClientId, Fingerprint, RefreshToken, SessionId};
 
@@ -246,7 +246,7 @@ impl Session {
             .map_err(|e| unavailable(format!("{endpoint}: unreadable answer: {e}")))
     }
 
-    pub async fn revoke(&self, selector: Revoke) -> Result<usize> {
+    pub async fn revoke(&self, selector: Revoke) -> Result<Withdrawn> {
         let credential = self
             .credential()
             .await?
@@ -263,10 +263,8 @@ impl Session {
         };
         let endpoint = self.url.join("macaroon/revoke");
         let answer = post_json(&endpoint, credential.expose(), &body).await?;
-        Ok(answer
-            .get("revoked")
-            .and_then(Value::as_u64)
-            .unwrap_or_default() as usize)
+        serde_json::from_value(answer)
+            .map_err(|e| unavailable(format!("{endpoint}: unreadable answer: {e}")))
     }
 }
 
