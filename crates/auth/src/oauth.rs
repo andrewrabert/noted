@@ -24,21 +24,13 @@ use serde_json::{Value, json};
 
 use crate::AuthState;
 use crate::password::{verify_dummy, verify_password};
+use crate::service::AuthService;
 use noted::error::Result;
 use noted::types::{Ttl, UnixEpochSeconds};
 use noted::util::random_token;
 
-pub mod admin;
-mod db;
 mod issuer;
-pub(crate) mod macaroon;
-pub mod service;
-pub mod types;
-pub use db::{CredentialKind, CredentialRecord, CredentialStatus, Db, KeyRecord, UserRecord};
 pub use issuer::DbIssuer;
-pub use macaroon::Macaroon;
-pub use service::AuthService;
-pub use types::Owner;
 
 const TXN_TTL: Ttl = Ttl::from_secs(10 * 60);
 const MAX_TXNS: usize = 1024;
@@ -110,7 +102,7 @@ impl OAuthProvider {
     pub fn new(public_url: &str, auth: Arc<AuthService>) -> Result<OAuthProvider> {
         let public_url = public_url.trim_end_matches('/').to_string();
         let mut oxide = Oxide::new(auth.clone());
-        for (cid, data) in auth.db()?.all_clients()? {
+        for (cid, data) in auth.db().all_clients()? {
             if let Ok(v) = serde_json::from_str::<Value>(&data) {
                 register_oxide_client(&mut oxide.registrar, &cid, &v);
             }
@@ -140,7 +132,7 @@ impl OAuthProvider {
     pub fn has_client(&self, client_id: &str) -> bool {
         self.auth
             .db()
-            .and_then(|db| db.all_clients())
+            .all_clients()
             .map(|clients| clients.iter().any(|(cid, _)| cid == client_id))
             .unwrap_or(false)
     }
@@ -347,11 +339,7 @@ async fn register(State(state): State<AuthState>, body: Bytes) -> Response {
         map.entry("token_endpoint_auth_method")
             .or_insert(json!("none"));
     }
-    if let Err(e) = p
-        .auth
-        .db()
-        .and_then(|db| db.put_client(&client_id, &info.to_string()))
-    {
+    if let Err(e) = p.auth.db().put_client(&client_id, &info.to_string()) {
         tracing::error!(error = %e, "oauth client persistence failed");
         return oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
     }

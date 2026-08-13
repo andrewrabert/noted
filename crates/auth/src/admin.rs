@@ -11,9 +11,10 @@ use tokio::net::{UnixListener, UnixStream};
 use noted::PolicyFragment;
 use noted::error::{Result, rejected, unavailable};
 
-use super::db::Db;
-use super::service::{AuthService, DEFAULT_CREDENTIAL_TTL, RevokeBy};
-use super::types::{CredentialId, Label, Password, Username};
+use crate::authority::{Mint, Minter, OriginAuthority, Revoke};
+use crate::db::Db;
+use crate::service::{AuthService, DEFAULT_CREDENTIAL_TTL};
+use crate::types::{Label, Owner, Password, Username};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -36,7 +37,6 @@ pub enum AdminRequest {
     },
     UserRevoke {
         name: String,
-        id: Option<String>,
     },
     UserRemove {
         name: String,
@@ -46,19 +46,11 @@ pub enum AdminRequest {
         policy: PolicyFragment,
         ttl: Option<noted::types::Ttl>,
     },
-    KeyFinalize {
-        credential_id: String,
-    },
-    KeySetPolicy {
-        label: Option<String>,
-        id: Option<String>,
-        policy: PolicyFragment,
-    },
     KeyList {
         label: Option<String>,
     },
     KeyRevoke {
-        by: RevokeBy,
+        by: Revoke,
     },
 }
 
@@ -110,7 +102,29 @@ fn to_value<T: Serialize>(v: T) -> Result<Value> {
     serde_json::to_value(v).map_err(|e| unavailable(format!("serialize admin response: {e}")))
 }
 
-pub fn apply(svc: &AuthService, req: AdminRequest) -> AdminResponse {
+/// The database and the credential authority one administrative connection
+/// speaks to. Every key it hands out descends from the server's own credential.
+pub struct Admin {
+    service: Arc<AuthService>,
+    minter: Arc<dyn Minter>,
+}
+
+impl Admin {
+    pub fn new(service: Arc<AuthService>, minter: Arc<dyn Minter>) -> Admin {
+        Admin { service, minter }
+    }
+
+    fn owner(&self) -> Result<Owner> {
+        self.minter
+            .own()
+            .owner()
+            .cloned()
+            .ok_or_else(|| rejected("this server holds no credential of its own"))
+    }
+}
+
+pub fn apply(admin: &Admin, req: AdminRequest) -> AdminResponse {
+    let svc = &admin.service;
     let result: Result<Value> = (|| {
         Ok(match req {
             AdminRequest::UserAdd { name, password } => {
@@ -130,15 +144,14 @@ pub fn apply(svc: &AuthService, req: AdminRequest) -> AdminResponse {
                 let name = Username::new(name)?;
                 match svc.user_get(&name)? {
                     Some(user) => {
-                        let creds = svc.user_credentials(&name)?;
-                        json!({"user": to_value(user)?, "credentials": to_value(creds)?})
+                        let minted = admin.minter.minted(&Owner::User(name))?;
+                        json!({"user": to_value(user)?, "credentials": to_value(minted)?})
                     }
                     None => return Err(rejected(format!("no such user: '{name}'"))),
                 }
             }
-            AdminRequest::UserRevoke { name, id } => {
-                let id = id.map(CredentialId::new).transpose()?;
-                let n = svc.user_revoke(&Username::new(name)?, id.as_ref())?;
+            AdminRequest::UserRevoke { name } => {
+                let n = svc.user_revoke(&Username::new(name)?)?;
                 json!({ "revoked": n })
             }
             AdminRequest::UserRemove { name } => {
@@ -146,37 +159,48 @@ pub fn apply(svc: &AuthService, req: AdminRequest) -> AdminResponse {
                 json!({})
             }
             AdminRequest::KeyCreate { label, policy, ttl } => {
-                to_value(svc.key_create(&Label::new(label)?, policy, ttl)?)?
-            }
-            AdminRequest::KeyFinalize { credential_id } => {
-                svc.key_finalize(&CredentialId::new(credential_id)?)?;
-                json!({})
-            }
-            AdminRequest::KeySetPolicy { label, id, policy } => {
-                let label = label.map(Label::new).transpose()?;
-                let id = id.map(CredentialId::new).transpose()?;
-                let n = svc.key_set_policy(label.as_ref(), id.as_ref(), policy)?;
-                json!({ "updated": n })
+                let ask = Mint {
+                    policy,
+                    ttl: ttl.unwrap_or_else(|| svc.default_ttl()),
+                    session: None,
+                    label: Some(Label::new(label)?),
+                };
+                let minted = admin.minter.mint(admin.minter.own(), &ask)?;
+                json!({
+                    "macaroon": minted.macaroon.expose(),
+                    "token_id": minted.token_id,
+                    "fingerprint": minted.fingerprint,
+                    "expires_at": minted.expires_at,
+                })
             }
             AdminRequest::KeyList { label } => {
                 let label = label.map(Label::new).transpose()?;
-                to_value(svc.key_list(label.as_ref())?)?
+                let listed: Vec<_> = admin
+                    .minter
+                    .minted(&admin.owner()?)?
+                    .into_iter()
+                    .filter(|m| label.as_ref().is_none_or(|l| m.label.as_ref() == Some(l)))
+                    .collect();
+                to_value(listed)?
             }
-            AdminRequest::KeyRevoke { by } => json!({ "revoked": svc.key_revoke(&by)? }),
+            AdminRequest::KeyRevoke { by } => {
+                json!({ "revoked": admin.minter.revoke(admin.minter.own(), &by)? })
+            }
         })
     })();
     AdminResponse::from_result(result)
 }
 
 #[cfg(unix)]
-pub async fn serve_socket(listener: UnixListener, svc: Arc<AuthService>) {
+pub async fn serve_socket(listener: UnixListener, admin: Admin) {
+    let admin = Arc::new(admin);
     loop {
         let Ok((stream, _)) = listener.accept().await else {
             continue;
         };
-        let svc = svc.clone();
+        let admin = admin.clone();
         tokio::spawn(async move {
-            if let Err(e) = serve_conn(stream, svc).await {
+            if let Err(e) = serve_conn(stream, admin).await {
                 tracing::debug!("admin socket connection ended: {e}");
             }
         });
@@ -184,7 +208,7 @@ pub async fn serve_socket(listener: UnixListener, svc: Arc<AuthService>) {
 }
 
 #[cfg(unix)]
-async fn serve_conn(stream: UnixStream, svc: Arc<AuthService>) -> std::io::Result<()> {
+async fn serve_conn(stream: UnixStream, admin: Arc<Admin>) -> std::io::Result<()> {
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
     while let Some(line) = lines.next_line().await? {
@@ -193,8 +217,8 @@ async fn serve_conn(stream: UnixStream, svc: Arc<AuthService>) -> std::io::Resul
         }
         let response = match serde_json::from_str::<AdminRequest>(&line) {
             Ok(req) => {
-                let svc = svc.clone();
-                tokio::task::spawn_blocking(move || apply(&svc, req))
+                let admin = admin.clone();
+                tokio::task::spawn_blocking(move || apply(&admin, req))
                     .await
                     .unwrap_or_else(|e| AdminResponse::Err {
                         kind: AdminErrorKind::Unavailable,
@@ -268,15 +292,15 @@ impl AdminClient {
 }
 
 pub enum AdminConn {
-    Direct(Arc<AuthService>),
+    Direct(Arc<Admin>),
     #[cfg(unix)]
     Socket(AdminClient),
 }
 
 impl AdminConn {
-    /// Connect to a running server's admin socket where available, else open
-    /// the auth database directly. Callers must supply at least one of the two;
-    /// naming the flags that carry them is the CLI's job, not core's.
+    /// The socket where one answers, else the database opened directly, whose
+    /// mints descend from the stored server key alone. Callers must supply at
+    /// least one of the two; naming the flags that carry them is the CLI's job.
     pub async fn open(
         admin_socket: Option<&StdPath>,
         auth_db: Option<&StdPath>,
@@ -306,17 +330,16 @@ impl AdminConn {
                     "{e} (if the server is running, connect to its admin socket)"
                 ))
             })?;
-        Ok(AdminConn::Direct(Arc::new(AuthService::new(
-            Arc::new(db),
-            DEFAULT_CREDENTIAL_TTL,
-        ))))
+        let service = Arc::new(AuthService::new(Arc::new(db), DEFAULT_CREDENTIAL_TTL));
+        let minter = Arc::new(OriginAuthority::new(service.clone()));
+        Ok(AdminConn::Direct(Arc::new(Admin::new(service, minter))))
     }
 
     pub async fn call(&mut self, req: AdminRequest) -> Result<Value> {
         match self {
-            AdminConn::Direct(svc) => {
-                let svc = svc.clone();
-                tokio::task::spawn_blocking(move || apply(&svc, req))
+            AdminConn::Direct(admin) => {
+                let admin = admin.clone();
+                tokio::task::spawn_blocking(move || apply(&admin, req))
                     .await
                     .map_err(|e| unavailable(format!("admin task failed: {e}")))?
                     .into_result()
