@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use noted::error::{Result, rejected};
 use noted::newtype::{secret_newtype, str_newtype, str_newtype_validated};
+use noted::util::random_token;
 
 fn valid_charset(s: &str) -> bool {
     let mut chars = s.chars();
@@ -25,6 +26,18 @@ fn validate_label(name: &str) -> Result<()> {
     }
 }
 
+fn validate_server_id(id: &str) -> Result<()> {
+    let ok = !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if ok {
+        Ok(())
+    } else {
+        Err(rejected(format!("invalid server id: '{id}'")))
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Username(String);
@@ -38,22 +51,14 @@ impl std::fmt::Debug for Username {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct CredentialId(String);
-str_newtype_validated!(CredentialId, validate_credential_id);
+pub struct ServerId(String);
+str_newtype_validated!(ServerId, validate_server_id);
 
-const CRED_ID_LEN: usize = 10;
+const SERVER_ID_BYTES: usize = 12;
 
-fn validate_credential_id(s: &str) -> Result<()> {
-    let ok = s.strip_prefix("cred_").is_some_and(|rest| {
-        rest.len() == CRED_ID_LEN
-            && rest
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || (b'2'..=b'7').contains(&b))
-    });
-    if ok {
-        Ok(())
-    } else {
-        Err(rejected(format!("invalid credential id: '{s}'")))
+impl ServerId {
+    pub fn fresh() -> ServerId {
+        ServerId(random_token(SERVER_ID_BYTES))
     }
 }
 
@@ -129,11 +134,6 @@ secret_newtype!(Secret);
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct AccessToken(String);
-secret_newtype!(AccessToken);
-
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
 pub struct RefreshToken(String);
 secret_newtype!(RefreshToken);
 
@@ -146,7 +146,7 @@ secret_newtype!(Password);
 #[serde(try_from = "String", into = "String")]
 pub enum Owner {
     User(Username),
-    Key(CredentialId),
+    Server(ServerId),
 }
 
 impl Owner {
@@ -154,8 +154,8 @@ impl Owner {
         Ok(Owner::User(Username::new(name)?))
     }
 
-    pub fn key(id: impl Into<String>) -> Result<Owner> {
-        Ok(Owner::Key(CredentialId::new(id)?))
+    pub fn server(id: impl Into<String>) -> Result<Owner> {
+        Ok(Owner::Server(ServerId::new(id)?))
     }
 }
 
@@ -163,7 +163,7 @@ impl std::fmt::Display for Owner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Owner::User(n) => write!(f, "user:{n}"),
-            Owner::Key(id) => write!(f, "key:{id}"),
+            Owner::Server(id) => write!(f, "self:{id}"),
         }
     }
 }
@@ -174,8 +174,8 @@ impl std::str::FromStr for Owner {
         if let Some(name) = s.strip_prefix("user:") {
             return Owner::user(name);
         }
-        if let Some(id) = s.strip_prefix("key:") {
-            return Owner::key(id);
+        if let Some(id) = s.strip_prefix("self:") {
+            return Owner::server(id);
         }
         Err(rejected(format!("unqualified owner: '{s}'")))
     }
@@ -198,7 +198,7 @@ impl Owner {
     fn eq_str(&self, o: &str) -> bool {
         match self {
             Owner::User(n) => o.strip_prefix("user:") == Some(n.as_str()),
-            Owner::Key(id) => o.strip_prefix("key:") == Some(id.as_str()),
+            Owner::Server(id) => o.strip_prefix("self:") == Some(id.as_str()),
         }
     }
 }
@@ -239,37 +239,36 @@ mod tests {
         let u: Owner = "user:ann".parse().unwrap();
         assert_eq!(u, Owner::user("ann").unwrap());
         assert_eq!(u.to_string(), "user:ann");
-        let k: Owner = "key:cred_abcde23456".parse().unwrap();
-        assert_eq!(k.to_string(), "key:cred_abcde23456");
+        let s: Owner = "self:abc-123".parse().unwrap();
+        assert_eq!(s.to_string(), "self:abc-123");
         assert!("bare".parse::<Owner>().is_err());
-        assert!("key:cred_abc".parse::<Owner>().is_err());
+        assert!("self:has space".parse::<Owner>().is_err());
         assert_eq!(serde_json::to_string(&u).unwrap(), "\"user:ann\"");
         assert_eq!(
-            serde_json::from_str::<Owner>("\"key:cred_abcde23456\"").unwrap(),
-            k
+            serde_json::from_str::<Owner>("\"self:abc-123\"").unwrap(),
+            s
         );
     }
 
     #[test]
-    fn credential_id_validates() {
-        assert!("cred_abcde23456".parse::<CredentialId>().is_ok());
-        assert!("cred_abc".parse::<CredentialId>().is_err());
-        assert!("cred_ABCDE23456".parse::<CredentialId>().is_err());
-        assert!("cred_abcde01899".parse::<CredentialId>().is_err());
-        assert!("nope_abcde23456".parse::<CredentialId>().is_err());
+    fn a_fresh_server_id_is_its_own_owner() {
+        let id = ServerId::fresh();
+        let owner = Owner::Server(id.clone());
+        assert_eq!(owner.to_string().parse::<Owner>().unwrap(), owner);
+        assert_eq!(ServerId::new(id.as_str()).unwrap(), id);
     }
 
     #[test]
     fn secret_debug_is_redacted() {
-        let t = AccessToken::new("noted_acc_supersecret");
-        assert_eq!(format!("{t:?}"), "AccessToken(…)");
+        let t = Secret::new("noted_ref_supersecret");
+        assert_eq!(format!("{t:?}"), "Secret(…)");
         assert!(!format!("{t:?}").contains("supersecret"));
-        assert_eq!(t.expose(), "noted_acc_supersecret");
+        assert_eq!(t.expose(), "noted_ref_supersecret");
     }
 
     #[test]
     fn secret_serde_is_transparent() {
-        let t = AccessToken::new("noted_acc_x");
-        assert_eq!(serde_json::to_string(&t).unwrap(), "\"noted_acc_x\"");
+        let t = Secret::new("noted_ref_x");
+        assert_eq!(serde_json::to_string(&t).unwrap(), "\"noted_ref_x\"");
     }
 }

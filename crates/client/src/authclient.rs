@@ -11,8 +11,10 @@ use noted::HttpUrl;
 use noted::error::{Result, http_error, io_error, rejected, unavailable};
 use noted::types::{Ttl, UnixEpochSeconds};
 use noted::util::random_token;
-use noted_auth::oauth::Macaroon;
-use noted_auth::oauth::types::{AccessToken, ClientId, RefreshToken};
+use noted::{Bearer, PolicyFragment};
+use noted_auth::authority::Revoke;
+use noted_auth::credential::{Macaroon, MacaroonId};
+use noted_auth::types::{ClientId, Fingerprint, RefreshToken, SessionId};
 
 async fn get_json(client: &reqwest::Client, url: &HttpUrl) -> Result<Value> {
     let resp = client
@@ -143,20 +145,34 @@ pub async fn login(url: &HttpUrl) -> Result<Credential> {
         .and_then(Value::as_u64)
         .map(|s| now + Ttl::from_secs(s));
 
-    let root_macaroon = fetch_root(&client, url, &access_token).await.ok();
-    let user = root_macaroon
-        .as_ref()
-        .and_then(|root| root.owner().ok())
-        .map(|owner| owner.to_string());
+    let user = Macaroon::from_encoded(access_token.clone())
+        .and_then(|access| access.owner())
+        .map(|owner| owner.to_string())
+        .ok();
 
     Ok(Credential {
         user,
         client_id: ClientId::new(client_id),
-        access_token: AccessToken::new(access_token),
+        access_token: Bearer::new(access_token),
         refresh_token: refresh_token.map(RefreshToken::new),
         expires_at,
-        root_macaroon,
     })
+}
+
+/// What a caller asks a server to mint for it.
+pub struct Ask {
+    pub policy: PolicyFragment,
+    pub ttl: Ttl,
+    pub session: Option<SessionId>,
+}
+
+/// What the server minted in answer.
+#[derive(serde::Deserialize)]
+pub struct Granted {
+    pub macaroon: Macaroon,
+    pub token_id: MacaroonId,
+    pub fingerprint: Fingerprint,
+    pub expires_at: UnixEpochSeconds,
 }
 
 pub struct Session {
@@ -174,9 +190,10 @@ impl Session {
         }
     }
 
-    pub async fn bearer(&self) -> Result<Option<String>> {
+    /// The stored login's access macaroon, refreshed when it has expired.
+    pub async fn credential(&self) -> Result<Option<Macaroon>> {
         if let Some(token) = &self.token_override {
-            return Ok(Some(token.clone()));
+            return self.as_macaroon(token).map(Some);
         }
         let Some(cred) = self.store.get(&self.url)? else {
             return Ok(None);
@@ -184,7 +201,7 @@ impl Session {
         let now = UnixEpochSeconds::now()?;
         let expired = cred.expires_at.map(|e| now >= e).unwrap_or(false);
         if !expired {
-            return Ok(Some(cred.access_token.expose().to_string()));
+            return self.as_macaroon(cred.access_token.expose()).map(Some);
         }
         let Some(rt) = cred.refresh_token.clone() else {
             return Err(rejected("session expired; run `noted auth login` again"));
@@ -192,25 +209,86 @@ impl Session {
         match refresh(&self.url, cred.client_id.as_str(), rt.expose()).await {
             Ok((access, refresh_token, expires_at)) => {
                 let updated = Credential {
-                    access_token: AccessToken::new(access.clone()),
+                    access_token: Bearer::new(access.clone()),
                     refresh_token: refresh_token.map(RefreshToken::new),
                     expires_at,
                     ..cred
                 };
                 self.store.set(&self.url, &updated)?;
-                Ok(Some(access))
+                self.as_macaroon(&access).map(Some)
             }
             Err(_) => Err(rejected("session expired; run `noted auth login` again")),
         }
     }
 
-    pub async fn revoke(&self, selector: RevokeSelector) -> Result<()> {
-        let bearer = self
-            .bearer()
+    fn as_macaroon(&self, token: &str) -> Result<Macaroon> {
+        Macaroon::from_encoded(token.to_string()).map_err(|_| {
+            rejected(format!(
+                "{}: that credential is not a macaroon; log in again",
+                self.url
+            ))
+        })
+    }
+
+    pub async fn mint(&self, ask: &Ask) -> Result<Granted> {
+        let credential = self
+            .credential()
             .await?
             .ok_or_else(|| rejected("not logged in; run `noted auth login`"))?;
-        revoke_with(&self.url, &bearer, selector).await
+        let endpoint = self.url.join("macaroon/mint");
+        let body = json!({
+            "policy": ask.policy,
+            "ttl": ask.ttl.as_secs(),
+            "session": ask.session.as_ref().map(|s| s.as_str()),
+        });
+        let answer = post_json(&endpoint, credential.expose(), &body).await?;
+        serde_json::from_value(answer)
+            .map_err(|e| unavailable(format!("{endpoint}: unreadable answer: {e}")))
     }
+
+    pub async fn revoke(&self, selector: Revoke) -> Result<usize> {
+        let credential = self
+            .credential()
+            .await?
+            .ok_or_else(|| rejected("not logged in; run `noted auth login`"))?;
+        let body = match &selector {
+            Revoke::All => json!({ "all": true }),
+            Revoke::Session(s) => json!({ "session": s.as_str() }),
+            Revoke::Token(id) => json!({ "id": id.as_str() }),
+            Revoke::Label(_) => {
+                return Err(rejected(
+                    "a label names a credential only to its own server",
+                ));
+            }
+        };
+        let endpoint = self.url.join("macaroon/revoke");
+        let answer = post_json(&endpoint, credential.expose(), &body).await?;
+        Ok(answer
+            .get("revoked")
+            .and_then(Value::as_u64)
+            .unwrap_or_default() as usize)
+    }
+}
+
+async fn post_json(endpoint: &HttpUrl, bearer: &str, body: &Value) -> Result<Value> {
+    let resp = reqwest::Client::new()
+        .post(endpoint.as_str())
+        .bearer_auth(bearer)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| http_error(format!("cannot reach {endpoint}"), e))?;
+    let status = resp.status();
+    let answer: Value = resp.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        let detail = answer
+            .get("detail")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("HTTP {status}"));
+        return Err(rejected(format!("{endpoint}: {detail}")));
+    }
+    Ok(answer)
 }
 
 pub async fn refresh(
@@ -247,58 +325,6 @@ pub async fn refresh(
         .and_then(Value::as_u64)
         .map(|s| now + Ttl::from_secs(s));
     Ok((access, new_refresh, expires_at))
-}
-
-pub async fn fetch_root(
-    client: &reqwest::Client,
-    url: &HttpUrl,
-    access_token: &str,
-) -> Result<Macaroon> {
-    #[derive(serde::Deserialize)]
-    struct RootResponse {
-        macaroon: Macaroon,
-    }
-
-    let endpoint = url.join("macaroon/root");
-    let resp = client
-        .post(endpoint.as_str())
-        .bearer_auth(access_token)
-        .send()
-        .await
-        .map_err(|e| http_error(format!("cannot reach {url}"), e))?;
-    if !resp.status().is_success() {
-        return Err(unavailable(format!("{endpoint}: HTTP {}", resp.status())));
-    }
-    resp.json::<RootResponse>()
-        .await
-        .map(|body| body.macaroon)
-        .map_err(|e| http_error(format!("{url}"), e))
-}
-
-pub enum RevokeSelector {
-    All,
-    Session(String),
-    Id(String),
-}
-
-async fn revoke_with(url: &HttpUrl, bearer: &str, selector: RevokeSelector) -> Result<()> {
-    let body = match selector {
-        RevokeSelector::All => json!({ "all": true }),
-        RevokeSelector::Session(s) => json!({ "session": s }),
-        RevokeSelector::Id(id) => json!({ "id": id }),
-    };
-    let endpoint = url.join("macaroon/revoke");
-    let resp = reqwest::Client::new()
-        .post(endpoint.as_str())
-        .bearer_auth(bearer)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| http_error(format!("cannot reach {url}"), e))?;
-    if !resp.status().is_success() {
-        return Err(rejected(format!("{endpoint}: HTTP {}", resp.status())));
-    }
-    Ok(())
 }
 
 fn endpoint(meta: &Value, key: &str) -> Result<HttpUrl> {
