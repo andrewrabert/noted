@@ -117,10 +117,8 @@ pub(crate) fn build_log(cmd: LogCmd) -> Result<Dispatch> {
 
 pub(crate) async fn run_dispatch(config: &Config, dispatch: Dispatch) -> Result<ExitCode> {
     use std::io::IsTerminal;
-    let backend = config.connect().await?;
-    let backend = backend.with_authority(None)?;
     tracing::debug!(tool = %dispatch.call.name(), "dispatching");
-    let result = backend.invoke(&dispatch.call).await?;
+    let result = config.connect().await?.invoke(&dispatch.call).await?;
     let color = std::io::stdout().is_terminal();
     let out = render(&dispatch.render, &result, color);
     if out.is_empty() && dispatch.empty_is_failure {

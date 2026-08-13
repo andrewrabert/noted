@@ -124,9 +124,10 @@ pub struct CredentialStoreConfig {
     pub storage: SecretStorage,
 }
 
+#[derive(Clone)]
 pub struct CredentialStore {
     hosts_path: PathBuf,
-    backend: Box<dyn SecretBackend>,
+    backend: std::sync::Arc<dyn SecretBackend>,
 }
 
 impl CredentialStore {
@@ -136,10 +137,10 @@ impl CredentialStore {
             storage,
         } = config;
         let use_keyring = matches!(storage, SecretStorage::Auto) && keyring_available();
-        let backend: Box<dyn SecretBackend> = if use_keyring {
-            Box::new(Keyring)
+        let backend: std::sync::Arc<dyn SecretBackend> = if use_keyring {
+            std::sync::Arc::new(Keyring)
         } else {
-            Box::new(PlaintextFile {
+            std::sync::Arc::new(PlaintextFile {
                 path: secrets_path(&hosts_path),
             })
         };
