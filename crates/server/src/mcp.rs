@@ -10,38 +10,38 @@ use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler};
 use serde_json::Value;
 
-use noted::authorization::Authorization;
-use noted::{Backend, ToolCall};
+use noted::{NotedRoot, ToolCall};
+use noted_auth::Verified;
 
 pub const SERVER_NAME: &str = "noted";
 pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone)]
 pub struct McpContext {
-    pub backend: Arc<Backend>,
+    pub root: NotedRoot,
 }
 
 impl McpContext {
-    fn call_authorization(&self, context: &RequestContext<RoleServer>) -> Option<Authorization> {
+    fn caller(&self, context: &RequestContext<RoleServer>) -> Verified {
         context
             .extensions
             .get::<http::request::Parts>()
-            .and_then(|parts| parts.extensions.get::<Option<Authorization>>().cloned())
-            .flatten()
+            .and_then(|parts| parts.extensions.get::<Verified>().cloned())
+            .unwrap_or_else(Verified::anonymous)
     }
 
-    async fn dispatch(
-        &self,
-        params: CallToolRequestParams,
-        authorization: Option<Authorization>,
-    ) -> CallToolResult {
+    fn confined(&self, caller: &Verified) -> noted::Result<NotedRoot> {
+        self.root.with_authority(caller.fragments())
+    }
+
+    async fn dispatch(&self, params: CallToolRequestParams, caller: &Verified) -> CallToolResult {
         let name = params.name.as_ref();
         let arguments = params
             .arguments
             .map(Value::Object)
             .unwrap_or(Value::Object(Default::default()));
 
-        match self.invoke(name, arguments, authorization).await {
+        match self.invoke(name, arguments, caller).await {
             Ok(output) => tool_ok(output),
             Err(e) => tool_error(format!("error: {}", e.message())),
         }
@@ -51,11 +51,10 @@ impl McpContext {
         &self,
         name: &str,
         arguments: Value,
-        authorization: Option<Authorization>,
+        caller: &Verified,
     ) -> noted::Result<String> {
         let call = ToolCall::raw(name, arguments)?;
-        let backend = self.backend.with_authority(authorization.as_ref())?;
-        Ok(backend.invoke(&call).await?.render())
+        Ok(self.confined(caller)?.invoke(&call).await?.render())
     }
 }
 
@@ -63,12 +62,7 @@ impl ServerHandler for McpContext {
     fn get_info(&self) -> ServerInfo {
         InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(SERVER_NAME, SERVER_VERSION))
-            .with_instructions(
-                self.backend
-                    .with_authority(None)
-                    .map(|backend| backend.instructions())
-                    .unwrap_or_default(),
-            )
+            .with_instructions(self.root.instructions())
     }
 
     async fn list_tools(
@@ -76,12 +70,10 @@ impl ServerHandler for McpContext {
         _request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let authorization = self.call_authorization(&context);
-        let backend = self
-            .backend
-            .with_authority(authorization.as_ref())
-            .map_err(|e| McpError::internal_error(e.message().into_owned(), None))?;
-        let tools: Vec<Tool> = backend
+        let caller = self.caller(&context);
+        let tools: Vec<Tool> = self
+            .confined(&caller)
+            .map_err(|e| McpError::internal_error(e.message().into_owned(), None))?
             .tools()
             .into_iter()
             .map(|listing| {
@@ -101,8 +93,8 @@ impl ServerHandler for McpContext {
         params: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        let authorization = self.call_authorization(&context);
-        Ok(self.dispatch(params, authorization).await.into())
+        let caller = self.caller(&context);
+        Ok(self.dispatch(params, &caller).await.into())
     }
 }
 
@@ -121,6 +113,6 @@ fn tool_error(message: String) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(message)])
 }
 
-pub fn context(backend: Arc<Backend>) -> McpContext {
-    McpContext { backend }
+pub fn context(root: NotedRoot) -> McpContext {
+    McpContext { root }
 }
