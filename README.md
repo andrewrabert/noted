@@ -12,6 +12,39 @@ were written, and a scoped task tracker.
 The tree has one open region plus two reserved ones, and each gets its own search:
 `SearchNotes` for ordinary notes, `SearchLog` for `Log/`, `SearchTasks` for `Tasks/`.
 
+## Downloads
+
+Development builds from the latest successful CI run on `main`:
+
+### Android / Termux
+
+Install the aarch64 package repository:
+
+```sh
+echo "deb [trusted=yes] https://andrewrabert.github.io/noted stable main" \
+  > "$PREFIX/etc/apt/sources.list.d/noted.list"
+pkg update
+pkg install noted
+```
+
+The repository is currently unsigned; `[trusted=yes]` explicitly trusts its packages.
+The [raw aarch64 build](https://nightly.link/andrewrabert/noted/workflows/ci/main/noted-aarch64-linux-android.zip)
+is also available.
+
+### Linux
+
+- glibc: [x86_64](https://nightly.link/andrewrabert/noted/workflows/ci/main/noted-x86_64-unknown-linux-gnu.zip) · [aarch64](https://nightly.link/andrewrabert/noted/workflows/ci/main/noted-aarch64-unknown-linux-gnu.zip)
+- musl: [x86_64](https://nightly.link/andrewrabert/noted/workflows/ci/main/noted-x86_64-unknown-linux-musl.zip) · [aarch64](https://nightly.link/andrewrabert/noted/workflows/ci/main/noted-aarch64-unknown-linux-musl.zip)
+
+### macOS
+
+- [Apple Silicon](https://nightly.link/andrewrabert/noted/workflows/ci/main/noted-aarch64-apple-darwin.zip)
+- [Intel](https://nightly.link/andrewrabert/noted/workflows/ci/main/noted-x86_64-apple-darwin.zip)
+
+### Windows
+
+- [x64](https://nightly.link/andrewrabert/noted/workflows/ci/main/noted-x86_64-pc-windows-msvc.zip)
+
 ## Usage
 
 ```
