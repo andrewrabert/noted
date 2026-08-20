@@ -50,6 +50,8 @@ jobs:
             os: ubuntu-latest
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
+          - target: aarch64-linux-android
+            os: ubuntu-latest
           - target: x86_64-apple-darwin
             os: macos-latest
           - target: aarch64-apple-darwin
@@ -84,8 +86,11 @@ jobs:
       - name: Build with cross
         if: matrix.target == 'aarch64-unknown-linux-musl'
         run: cross build --release --target ${{ matrix.target }}
+      - name: Build Android with cross
+        if: matrix.target == 'aarch64-linux-android'
+        run: just build-android
       - name: Build with cargo
-        if: matrix.target != 'aarch64-unknown-linux-musl'
+        if: matrix.target != 'aarch64-unknown-linux-musl' && matrix.target != 'aarch64-linux-android'
         run: cargo build --release --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
