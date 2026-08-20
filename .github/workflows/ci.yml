@@ -69,6 +69,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+      - uses: extractions/setup-just@v3
+        if: matrix.target == 'aarch64-linux-android'
       - name: Install cross-compilation tools
         if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'x86_64-unknown-linux-musl'
         run: |
@@ -92,9 +94,72 @@ jobs:
       - name: Build with cargo
         if: matrix.target != 'aarch64-unknown-linux-musl' && matrix.target != 'aarch64-linux-android'
         run: cargo build --release --target ${{ matrix.target }}
+      - name: Package for Termux
+        if: matrix.target == 'aarch64-linux-android'
+        shell: bash
+        run: |
+          cargo_version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "noted") | .version')
+          commit_time=$(git show -s --format=%ct)
+          timestamp=$(date -u -d "@$commit_time" +%Y%m%d%H%M%S)
+          package_version="${cargo_version}~git${timestamp}.${GITHUB_RUN_NUMBER}"
+          packaging/termux/package.sh \
+            target/aarch64-linux-android/release/noted \
+            "$package_version" dist
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb
       - uses: actions/upload-artifact@v4
         with:
           name: noted-${{ matrix.target }}
           path: |
             target/${{ matrix.target }}/release/noted
             target/${{ matrix.target }}/release/noted.exe
+            dist/*.deb
+
+  build-termux-repository:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: noted-aarch64-linux-android
+          path: packages
+      - name: Install repository tools
+        run: sudo apt-get update && sudo apt-get install -y apt-utils dpkg-dev
+      - name: Build package repository
+        run: packaging/termux/repository.sh packages pages
+      - uses: actions/upload-artifact@v4
+        with:
+          name: noted-termux-repository
+          path: pages
+
+  publish-termux-repository:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-termux-repository
+    runs-on: ubuntu-latest
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      id-token: write
+      pages: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: noted-termux-repository
+          path: pages
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -18,7 +18,18 @@ Development builds from the latest successful CI run on `main`:
 
 ### Android / Termux
 
-- [aarch64](https://nightly.link/andrewrabert/noted/workflows/ci/main/noted-aarch64-linux-android.zip)
+Install the aarch64 package repository:
+
+```sh
+echo "deb [trusted=yes] https://andrewrabert.github.io/noted stable main" \
+  > "$PREFIX/etc/apt/sources.list.d/noted.list"
+pkg update
+pkg install noted
+```
+
+The repository is currently unsigned; `[trusted=yes]` explicitly trusts its packages.
+The [raw aarch64 build](https://nightly.link/andrewrabert/noted/workflows/ci/main/noted-aarch64-linux-android.zip)
+is also available.
 
 ### Linux
 
