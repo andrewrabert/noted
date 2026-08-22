@@ -1,30 +1,17 @@
 mod common;
 
-use common::{backend, fixture_dir, invoke};
-use noted::Backend;
-use noted::authorization::Authorization;
+use common::{backend, fixture_dir, invoke, root};
 use serde_json::json;
 
 /// Must match `run_tool`'s unknown-tool sentinel message verbatim.
 const UNKNOWN_PREFIX: &str = "Unknown tool:";
 
-fn tool_names(backend: &Backend) -> Vec<&'static str> {
-    backend
-        .with_authority(None)
-        .unwrap()
-        .tools()
-        .iter()
-        .map(|t| t.name)
-        .collect()
+fn tool_names(dir: &tempfile::TempDir) -> Vec<&'static str> {
+    tool_listings(dir).iter().map(|t| t.name).collect()
 }
 
 fn tool_listings(dir: &tempfile::TempDir) -> Vec<noted::ToolListing> {
-    let backend = backend(dir);
-    let authorization = Authorization::new(vec![], None).unwrap();
-    backend
-        .with_authority(Some(&authorization))
-        .unwrap()
-        .tools()
+    root(dir).tools()
 }
 
 /// Empty args may legitimately yield a validation `Rejected`; only the
@@ -33,7 +20,7 @@ fn tool_listings(dir: &tempfile::TempDir) -> Vec<noted::ToolListing> {
 async fn every_registry_name_is_dispatchable() {
     let dir = fixture_dir();
     let bknd = backend(&dir);
-    for name in tool_names(&bknd) {
+    for name in tool_names(&dir) {
         let result = invoke(&bknd, name, json!({})).await;
         if let Err(e) = &result {
             assert!(
@@ -103,7 +90,7 @@ fn arg_schema_defaults_are_pinned() {
 #[test]
 fn the_registry_is_the_fifteen_tools() {
     let dir = fixture_dir();
-    let names = tool_names(&backend(&dir));
+    let names = tool_names(&dir);
     assert_eq!(
         names,
         vec![
@@ -149,6 +136,25 @@ async fn unregistered_name_is_rejected() {
     assert!(
         matches!(err, noted::NotedError::NotFound),
         "expected an unknown tool name to be not-found, got: {err:?}"
+    );
+}
+
+#[test]
+fn every_tool_schema_is_byte_identical_to_the_pinned_set() {
+    let dir = fixture_dir();
+    let pinned: Vec<serde_json::Value> = tool_listings(&dir)
+        .iter()
+        .map(|d| json!({"name": d.name, "input_schema": d.input_schema}))
+        .collect();
+    let mut current = serde_json::to_string_pretty(&pinned).unwrap();
+    current.push('\n');
+    let expected = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tool_schemas.json"),
+    )
+    .unwrap();
+    assert_eq!(
+        current, expected,
+        "a tool argument schema drifted from tests/fixtures/tool_schemas.json"
     );
 }
 

@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+pub const TEST_PEER: std::net::SocketAddr =
+    std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 41000);
+
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::Arc;
 
@@ -10,11 +13,26 @@ use noted::note::{Condition, TextNote};
 use noted::path::Path;
 use noted::search::{Hit, SearchMode, SearchQuery};
 use noted::store::NotedDir;
-use noted::types::Source;
-use noted::{Backend, BackendArgs, NotedRoot, PolicyArgs, PolicyFragment};
-use noted_auth::oauth::{AuthService, Db};
+use noted::types::{Source, Ttl};
+use noted::{NotedRoot, PolicyFragment};
+use noted_auth::AuthService;
+use noted_auth::authority::{Mint, Minter, OriginAuthority, Verified};
+use noted_auth::types::{ClientId, Label, Username};
+use noted_server::auth::AuthState;
+use noted_server::http::{Served, build_app};
+use noted_server::serve::{Bind, Bound};
 use serde_json::Value;
 use tower::ServiceExt;
+
+pub async fn bound_listener() -> Bound {
+    Bind::Tcp {
+        host: std::net::Ipv4Addr::LOCALHOST.to_string(),
+        port: 0,
+    }
+    .bind()
+    .await
+    .unwrap()
+}
 
 pub fn rp(s: &str) -> Path {
     s.parse().unwrap()
@@ -60,32 +78,58 @@ pub async fn found(root: &NotedRoot, pattern: &str) -> noted::Result<Vec<String>
 }
 
 pub fn auth_service(dir: &tempfile::TempDir) -> Arc<AuthService> {
-    let db = Arc::new(Db::open(&dir.path().join("auth.redb")).unwrap());
     Arc::new(AuthService::new(
-        db,
-        noted::types::Ttl::from_secs(30 * 24 * 3600),
+        Arc::new(noted_auth::Db::open(&dir.path().join("auth.redb")).unwrap()),
+        Ttl::from_secs(30 * 24 * 3600),
     ))
 }
 
-pub fn mint_key(svc: &AuthService, label: &str, policy: PolicyFragment) -> String {
-    let minted = svc
-        .key_create(
-            &noted_auth::oauth::types::Label::new(label).unwrap(),
-            policy,
-            None,
-        )
-        .unwrap();
-    svc.key_finalize(&minted.credential_id).unwrap();
-    minted.token.expose().to_string()
+/// A credential the server minted from its own, labelled so an admin can name
+/// it: what an agent carries.
+pub fn mint_key(svc: &Arc<AuthService>, label: &str, policy: PolicyFragment) -> String {
+    let minter = OriginAuthority::new(svc.clone());
+    let ask = Mint {
+        policy,
+        ttl: svc.default_ttl(),
+        label: Some(Label::new(label).unwrap()),
+    };
+    minter
+        .mint(&Verified::anonymous(), &ask)
+        .unwrap()
+        .macaroon
+        .expose()
+        .to_string()
 }
 
-pub fn app_with_key(dir: &tempfile::TempDir) -> (Router, String) {
+/// The access macaroon a user's login carries: its policy is the one the user
+/// record holds, read afresh on every request.
+pub fn login_token(svc: &Arc<AuthService>, user: &str) -> String {
+    svc.issue_login(&un(user), &ClientId::new("test"))
+        .unwrap()
+        .access
+        .expose()
+        .to_string()
+}
+
+pub fn un(s: &str) -> Username {
+    s.parse().unwrap()
+}
+
+pub fn open_app(dir: &tempfile::TempDir) -> Router {
+    build_app(Served::origin(root(dir), AuthState::open()))
+}
+
+pub async fn origin_app(root: NotedRoot, svc: &Arc<AuthService>) -> Router {
+    build_app(Served::origin(
+        root,
+        AuthState::origin(svc.clone(), None).await.unwrap(),
+    ))
+}
+
+pub async fn app_with_key(dir: &tempfile::TempDir) -> (Router, String) {
     let svc = auth_service(dir);
     let token = mint_key(&svc, "test", PolicyFragment::default());
-    (
-        noted_server::http::build_app(backend(dir), Some(svc), None),
-        token,
-    )
+    (origin_app(root(dir), &svc).await, token)
 }
 
 pub fn copy_tree(src: &StdPath, dst: &StdPath) {
@@ -127,25 +171,6 @@ pub fn policed_root(dir: &tempfile::TempDir, policy: PolicyFragment) -> NotedRoo
         .unwrap()
         .with_authority(&[policy])
         .unwrap()
-}
-
-pub fn backend(dir: &tempfile::TempDir) -> Arc<Backend> {
-    policed_backend(dir, PolicyFragment::default())
-}
-
-pub fn policed_backend(dir: &tempfile::TempDir, policy: PolicyFragment) -> Arc<Backend> {
-    Arc::new(
-        Backend::new(BackendArgs {
-            dir: Some(notes_root(dir).display().to_string()),
-            source: Some("test".to_string()),
-            policy: PolicyArgs {
-                policy: Some(policy.to_string()),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .unwrap(),
-    )
 }
 
 pub async fn request(
@@ -202,9 +227,18 @@ pub async fn post_mcp(
     token: Option<&str>,
     body: &Value,
 ) -> (StatusCode, HeaderMap, Vec<u8>) {
+    post_mcp_at(router, "/mcp", token, body).await
+}
+
+pub async fn post_mcp_at(
+    router: &Router,
+    path: &str,
+    token: Option<&str>,
+    body: &Value,
+) -> (StatusCode, HeaderMap, Vec<u8>) {
     let mut builder = Request::builder()
         .method("POST")
-        .uri("/mcp")
+        .uri(path)
         .header("host", "localhost")
         .header("content-type", "application/json")
         .header("accept", "application/json, text/event-stream");

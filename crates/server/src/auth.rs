@@ -1,0 +1,321 @@
+use std::sync::Arc;
+
+use axum::{
+    Json, Router,
+    body::Bytes,
+    extract::State,
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
+    routing::post,
+};
+use noted::PolicyFragment;
+use noted::types::Ttl;
+use noted_auth::authority::{
+    Denial, Mint, Minted, Minter, OpenAuthority, OriginAuthority, Revoke, Verified, Verifier,
+};
+use noted_auth::credential::MacaroonId;
+use serde_json::{Value, json};
+
+pub(crate) async fn run_blocking<F, T>(operation: F) -> noted::error::Result<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| {
+            noted::error::unavailable(format!("blocking authentication task failed: {error}"))
+        })
+}
+
+#[derive(Clone)]
+pub struct AuthState {
+    verifier: Arc<dyn Verifier>,
+    minter: Option<Arc<dyn Minter>>,
+    oauth: Option<Arc<crate::oauth::OAuthProvider>>,
+    relay: Option<Arc<crate::relay::Relay>>,
+}
+
+impl AuthState {
+    pub async fn origin(
+        service: Arc<noted_auth::AuthService>,
+        oauth: Option<Arc<crate::oauth::OAuthProvider>>,
+    ) -> noted::error::Result<AuthState> {
+        let authority = run_blocking(move || Arc::new(OriginAuthority::new(service))).await?;
+        Ok(AuthState {
+            verifier: authority.clone(),
+            minter: Some(authority),
+            oauth,
+            relay: None,
+        })
+    }
+
+    pub fn open() -> AuthState {
+        AuthState {
+            verifier: Arc::new(OpenAuthority),
+            minter: None,
+            oauth: None,
+            relay: None,
+        }
+    }
+
+    pub(crate) fn relay(relay: Arc<crate::relay::Relay>) -> AuthState {
+        let credential = relay.credential().clone();
+        AuthState {
+            verifier: credential.clone(),
+            minter: Some(credential),
+            oauth: None,
+            relay: Some(relay),
+        }
+    }
+
+    pub(crate) fn relay_self_error(
+        &self,
+        error: noted::error::NotedError,
+    ) -> noted::error::NotedError {
+        match &self.relay {
+            Some(relay) => relay.self_error(error),
+            None => error,
+        }
+    }
+
+    pub fn verifier(&self) -> &Arc<dyn Verifier> {
+        &self.verifier
+    }
+
+    pub fn minter(&self) -> Option<&Arc<dyn Minter>> {
+        self.minter.as_ref()
+    }
+
+    pub fn oauth(&self) -> Option<&Arc<crate::oauth::OAuthProvider>> {
+        self.oauth.as_ref()
+    }
+}
+
+pub(crate) fn routes(state: AuthState) -> Router {
+    let mut router = Router::new();
+    if state.oauth().is_some() {
+        router = crate::oauth::mount_routes(router);
+    }
+    router
+        .route("/macaroon/mint", post(mint))
+        .route("/macaroon/revoke", post(revoke))
+        .with_state(state)
+}
+
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+}
+
+fn detail(status: StatusCode, message: &str) -> Response {
+    (status, Json(json!({ "detail": message }))).into_response()
+}
+
+fn denied(denial: &Denial) -> Response {
+    match denial {
+        Denial::Malformed(message) => detail(StatusCode::BAD_REQUEST, message),
+        Denial::Unauthorized(_) => detail(StatusCode::UNAUTHORIZED, "unauthorized"),
+        Denial::Forbidden(message) => detail(StatusCode::FORBIDDEN, message),
+    }
+}
+
+async fn caller(state: &AuthState, headers: &HeaderMap) -> Result<Verified, Box<Response>> {
+    let credential = bearer(headers).map(noted_auth::types::CredentialPresentation::submitted);
+    let verifier = state.verifier().clone();
+    match run_blocking(move || verifier.verify(credential.as_ref())).await {
+        Ok(Ok(verified)) => Ok(verified),
+        Ok(Err(denial)) => Err(Box::new(denied(&denial))),
+        Err(error) => Err(Box::new(detail(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &state.relay_self_error(error).to_string(),
+        ))),
+    }
+}
+
+fn minter(state: &AuthState) -> Result<Arc<dyn Minter>, Box<Response>> {
+    state
+        .minter()
+        .cloned()
+        .ok_or_else(|| Box::new(StatusCode::NOT_FOUND.into_response()))
+}
+
+fn operation_error(state: &AuthState, error: noted::error::NotedError) -> Response {
+    let error = state.relay_self_error(error);
+    let status = if error.is_rejection() {
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    detail(status, &error.to_string())
+}
+
+async fn mint(State(state): State<AuthState>, headers: HeaderMap, body: Bytes) -> Response {
+    let minter = match minter(&state) {
+        Ok(minter) => minter,
+        Err(response) => return *response,
+    };
+    let caller = match caller(&state, &headers).await {
+        Ok(caller) => caller,
+        Err(response) => return *response,
+    };
+    let asked: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let policy = match asked.get("policy") {
+        Some(value) => match serde_json::from_value::<PolicyFragment>(value.clone()) {
+            Ok(policy) => policy,
+            Err(error) => return detail(StatusCode::BAD_REQUEST, &error.to_string()),
+        },
+        None => PolicyFragment::default(),
+    };
+    let ask = Mint {
+        policy,
+        ttl: asked
+            .get("ttl")
+            .and_then(Value::as_u64)
+            .map(Ttl::from_secs)
+            .unwrap_or(noted_auth::service::DEFAULT_CREDENTIAL_TTL),
+        label: None,
+    };
+    match run_blocking(move || minter.mint(&caller, &ask)).await {
+        Ok(Ok(Minted {
+            macaroon,
+            token_id,
+            fingerprint,
+            expires_at,
+        })) => Json(json!({
+            "macaroon": macaroon.expose(),
+            "token_id": token_id,
+            "fingerprint": fingerprint,
+            "expires_at": expires_at,
+        }))
+        .into_response(),
+        Ok(Err(error)) => operation_error(&state, error),
+        Err(error) => detail(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &state.relay_self_error(error).to_string(),
+        ),
+    }
+}
+
+async fn revoke(State(state): State<AuthState>, headers: HeaderMap, body: Bytes) -> Response {
+    let minter = match minter(&state) {
+        Ok(minter) => minter,
+        Err(response) => return *response,
+    };
+    let caller = match caller(&state, &headers).await {
+        Ok(caller) => caller,
+        Err(response) => return *response,
+    };
+    let asked: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let ask = if asked.get("all").and_then(Value::as_bool) == Some(true) {
+        Revoke::All
+    } else if let Some(id) = asked.get("id").and_then(Value::as_str) {
+        Revoke::Token(MacaroonId::new(id))
+    } else {
+        return detail(StatusCode::BAD_REQUEST, "provide id or all");
+    };
+    match run_blocking(move || minter.revoke(&caller, &ask)).await {
+        Ok(Ok(withdrawn)) => Json(withdrawn).into_response(),
+        Ok(Err(error)) => operation_error(&state, error),
+        Err(error) => detail(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &state.relay_self_error(error).to_string(),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use noted::Transport;
+    use noted_auth::authority::RelayCredential;
+
+    async fn relay_state() -> (crate::serve::Bound, AuthState) {
+        let bound = crate::serve::Bind::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        }
+        .bind()
+        .await
+        .unwrap();
+        let relay = Arc::new(
+            crate::relay::Relay::open(
+                Arc::new(
+                    RelayCredential::open(None, noted::PolicyFragment::default(), None).unwrap(),
+                ),
+                "http://upstream.test/internal".parse().unwrap(),
+                &bound,
+                Transport::Router(axum::Router::new()),
+            )
+            .unwrap(),
+        );
+        (bound, AuthState::relay(relay))
+    }
+
+    async fn blocking_error() -> noted::error::NotedError {
+        run_blocking(|| panic!("authentication task failed"))
+            .await
+            .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn relay_caller_blocking_failure_names_the_relays_listener_endpoint() {
+        let (bound, state) = relay_state().await;
+        let error = state.relay_self_error(blocking_error().await);
+        assert!(
+            error
+                .to_string()
+                .starts_with(&format!("{}: ", bound.endpoint()))
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("blocking authentication task failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_mint_blocking_failure_names_the_relays_listener_endpoint() {
+        let (bound, state) = relay_state().await;
+        let error = state.relay_self_error(blocking_error().await);
+        assert!(
+            error
+                .to_string()
+                .starts_with(&format!("{}: ", bound.endpoint()))
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("blocking authentication task failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_mint_domain_failure_keeps_its_class_detail_and_listener_endpoint() {
+        let (bound, state) = relay_state().await;
+        let response = operation_error(&state, noted::error::rejected("mint refused"));
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body["detail"],
+            format!("{}: mint refused", bound.endpoint())
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_revoke_failures_name_the_relays_listener_endpoint() {
+        let (bound, state) = relay_state().await;
+        let error = state.relay_self_error(noted::error::rejected("revoke failed"));
+        assert_eq!(
+            error.to_string(),
+            format!("{}: revoke failed", bound.endpoint())
+        );
+    }
+}

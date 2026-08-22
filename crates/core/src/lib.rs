@@ -6,9 +6,9 @@ mod policyargs;
 mod regions;
 mod root;
 mod timerange;
+mod upstream;
 
-pub mod authorization;
-pub mod endpoint;
+mod endpoint;
 pub mod error;
 pub mod front_matter;
 pub mod httpurl;
@@ -22,8 +22,7 @@ pub mod tools;
 pub mod types;
 pub mod util;
 
-pub use authorization::{Authorization, Bearer};
-pub use backend::{AuthorizedBackend, Backend, BackendArgs, ToolCall, ToolListing, Transport};
+pub use backend::{Backend, BackendArgs, ToolCall, ToolListing};
 pub use endpoint::Endpoint;
 pub use error::{NotedError, Result};
 pub use fragment::{AccessFragment, PolicyFragment};
@@ -37,3 +36,5 @@ pub use root::NotedRoot;
 pub use store::NotedDir;
 pub use tasks::TaskNote;
 pub use timerange::{TimeRange, TimeRangeBound};
+pub use types::Bearer;
+pub use upstream::{Reply, Transport, Upstream};

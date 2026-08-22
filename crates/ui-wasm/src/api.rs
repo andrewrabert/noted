@@ -1,7 +1,7 @@
 use base64::Engine;
 use noted::search::{SearchMode, SearchOrder};
 use noted::tools::ToolOutput;
-use noted::{Backend, BackendArgs, ToolCall};
+use noted::{Backend, BackendArgs, ToolCall, Transport};
 use serde::Serialize;
 
 #[derive(Clone, Serialize)]
@@ -339,17 +339,13 @@ pub fn record(output: ToolOutput) -> serde_json::Value {
 
 pub async fn invoke(call: noted::Result<ToolCall>) -> Result<ToolOutput, String> {
     let call = call.map_err(message)?;
-    let backend = Backend::new(BackendArgs {
-        endpoint: Some(origin()?.parse().map_err(message)?),
-        ..Default::default()
+    let backend = Backend::new(BackendArgs::Remote {
+        endpoint: origin()?.parse().map_err(message)?,
+        bearer: None,
+        transport: Transport::Real,
     })
     .map_err(message)?;
-    backend
-        .with_authority(None)
-        .map_err(message)?
-        .invoke(&call)
-        .await
-        .map_err(message)
+    backend.invoke(&call).await.map_err(message)
 }
 
 #[cfg(target_arch = "wasm32")]

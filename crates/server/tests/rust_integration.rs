@@ -247,7 +247,7 @@ fn tool_text(result: &Value) -> String {
 #[tokio::test]
 async fn mcp_initialize_list_and_call() {
     let dir = fixture_dir();
-    let app = noted_server::http::build_app(common::backend(&dir), None, None);
+    let app = common::open_app(&dir);
 
     let init = mcp_post(&app, &init_msg()).await;
     assert_eq!(init["result"]["serverInfo"]["name"], "noted");
@@ -308,7 +308,10 @@ async fn mcp_read_only_hides_and_refuses_mutators() {
     let dir = fixture_dir();
     let policy =
         r#"{"access":{"read":true,"write":false}}"#.parse::<noted::PolicyFragment>().unwrap();
-    let app = noted_server::http::build_app(common::policed_backend(&dir, policy), None, None);
+    let app = noted_server::http::build_app(noted_server::http::Served::origin(
+        common::policed_root(&dir, policy),
+        noted_server::auth::AuthState::open(),
+    ));
 
     let list = mcp_post(
         &app,
@@ -342,7 +345,7 @@ async fn mcp_read_only_hides_and_refuses_mutators() {
 #[tokio::test]
 async fn mcp_notification_has_no_response() {
     let dir = fixture_dir();
-    let app = noted_server::http::build_app(common::backend(&dir), None, None);
+    let app = common::open_app(&dir);
     let resp = mcp_raw(
         &app,
         &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
@@ -359,7 +362,7 @@ async fn body_json(resp: axum::response::Response) -> Value {
 #[tokio::test]
 async fn http_tool_route_and_errors() {
     let dir = fixture_dir();
-    let app = noted_server::http::build_app(common::backend(&dir), None, None);
+    let app = common::open_app(&dir);
 
     let resp = app
         .clone()
@@ -398,7 +401,7 @@ async fn http_tool_route_and_errors() {
 #[tokio::test]
 async fn http_bearer_auth_gates_requests() {
     let dir = fixture_dir();
-    let (app, token) = common::app_with_key(&dir);
+    let (app, token) = common::app_with_key(&dir).await;
 
     let unauth = app
         .clone()
@@ -436,7 +439,7 @@ async fn http_bearer_auth_gates_requests() {
 #[tokio::test]
 async fn http_mcp_endpoint_roundtrip() {
     let dir = fixture_dir();
-    let app = noted_server::http::build_app(common::backend(&dir), None, None);
+    let app = common::open_app(&dir);
 
     let req = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": "SearchNotes", "arguments": {"pattern": "XYZZY", "mode": "line"}}});

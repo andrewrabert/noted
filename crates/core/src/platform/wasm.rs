@@ -77,8 +77,8 @@ pub(crate) fn host() -> String {
 pub(crate) async fn route(
     router: &Router,
     _target: &HttpUrl,
-    _token: Option<&str>,
+    _headers: &[(&str, &str)],
     _body: Vec<u8>,
-) -> std::result::Result<(u16, Vec<u8>), String> {
+) -> std::result::Result<(u16, Option<String>, Vec<u8>), String> {
     match *router {}
 }

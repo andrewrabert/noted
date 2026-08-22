@@ -4,10 +4,9 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use noted::authorization::Bearer;
 use noted::tools::ReadArgs;
-use noted::{Backend, BackendArgs, PolicyFragment, ToolCall};
-use noted_server::http::build_app;
+use noted::{Backend, BackendArgs, Bearer, Endpoint, PolicyFragment, ToolCall, Transport};
+use noted_server::serve::{Bind, HttpConfig, ServedConfig, serve_http};
 use noted_server::socket::{
     SocketBind, SocketEnv, bind_unix_socket, lock_path, socket_base_dir, socket_root, staging_dir,
     staging_socket, write_endpoint_line,
@@ -25,7 +24,7 @@ async fn serve(dir: &tempfile::TempDir) -> (PathBuf, String) {
     let token = common::mint_key(&svc, "test", PolicyFragment::default());
     let sock = dir.path().join("noted.sock");
     let (listener, guard) = bind_unix_socket(&sock, None).unwrap();
-    let app = build_app(common::backend(dir), Some(svc), None);
+    let app = common::origin_app(common::root(dir), &svc).await;
     tokio::spawn(async move {
         let _guard = guard;
         let _ = axum::serve(listener, app).await;
@@ -34,12 +33,42 @@ async fn serve(dir: &tempfile::TempDir) -> (PathBuf, String) {
 }
 
 fn dialing(sock: &Path, token: &str) -> Backend {
-    Backend::new(BackendArgs {
-        endpoint: Some(format!("unix://{}", sock.display()).parse().unwrap()),
-        token: Some(Bearer::new(token)),
-        ..Default::default()
+    Backend::new(BackendArgs::Remote {
+        endpoint: format!("unix://{}", sock.display()).parse().unwrap(),
+        bearer: Some(Bearer::new(token)),
+        transport: Transport::Real,
     })
     .unwrap()
+}
+
+#[tokio::test]
+async fn a_bound_unix_listener_endpoint_names_the_absolute_placed_socket() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("noted.sock");
+    let upstream: Endpoint = "http://upstream.test/internal".parse().unwrap();
+
+    let error = serve_http(HttpConfig {
+        served: ServedConfig::Relay {
+            endpoint: upstream,
+            bearer: Some(Bearer::new("not-a-macaroon")),
+            policy: noted::PolicyArgs::default(),
+            transport: Transport::Router(axum::Router::new()),
+        },
+        bind: Bind::Socket(SocketBind::Explicit(socket.clone())),
+        public_url: None,
+        authentication: None,
+        admin_socket: None,
+    })
+    .await
+    .unwrap_err();
+
+    assert!(socket.is_absolute());
+    assert!(
+        error
+            .to_string()
+            .starts_with(&format!("unix://{}: ", socket.display())),
+        "{error}"
+    );
 }
 
 #[tokio::test]
@@ -48,12 +77,7 @@ async fn tools_round_trip_over_a_unix_socket() {
     let (sock, token) = serve(&dir).await;
     let backend = dialing(&sock, &token);
     let call = ToolCall::new(ReadArgs::new(common::rp("Inbox.md"))).unwrap();
-    let out = backend
-        .with_authority(None)
-        .unwrap()
-        .invoke(&call)
-        .await
-        .unwrap();
+    let out = backend.invoke(&call).await.unwrap();
     assert!(out.render().contains("follow up with Dana"));
 }
 
@@ -63,12 +87,7 @@ async fn an_unknown_bearer_is_refused_over_the_socket() {
     let (sock, _token) = serve(&dir).await;
     let backend = dialing(&sock, "not-a-token");
     let call = ToolCall::new(ReadArgs::new(common::rp("Inbox.md"))).unwrap();
-    let err = backend
-        .with_authority(None)
-        .unwrap()
-        .invoke(&call)
-        .await
-        .unwrap_err();
+    let err = backend.invoke(&call).await.unwrap_err();
     assert!(err.is_rejection(), "{err}");
 }
 
@@ -395,6 +414,15 @@ async fn a_base_directory_under_a_root_that_denies_mkdir_is_refused() {
     );
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert!(!root.join("noted").exists());
+}
+
+#[test]
+fn a_relative_endpoint_line_is_rejected_without_writing() {
+    let mut out = Vec::new();
+    let error = write_endpoint_line(&mut out, Path::new("relative.sock")).unwrap_err();
+
+    assert!(error.is_rejection());
+    assert!(out.is_empty());
 }
 
 #[tokio::test]

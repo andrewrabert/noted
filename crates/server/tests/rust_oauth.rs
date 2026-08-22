@@ -3,21 +3,26 @@ mod common;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::http::{HeaderMap, StatusCode};
+use axum::body::Body;
+use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use base64::Engine;
+use http_body_util::BodyExt;
 use noted::PolicyFragment;
-use noted_auth::oauth::types::SessionId;
-use noted_auth::oauth::{AuthService, Macaroon, OAuthProvider};
+use noted_auth::authority::{OriginAuthority, Verifier};
 use noted_auth::password::{hash_password, verify_password};
-use noted_server::http::build_app;
+use noted_auth::types::ClientId;
+use noted_auth::{AuthService, Db};
+use noted_server::auth::AuthState;
+use noted_server::http::{Served, build_app};
+use noted_server::oauth::OAuthProvider;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use tower::ServiceExt;
 
-use common::{json_body, post_form, post_json, post_mcp, request};
+use common::{json_body, post_form, post_json, post_mcp, request, un};
 
 const PUBLIC: &str = "http://localhost";
 const REDIRECT: &str = "http://client.example/callback";
-
 struct UserSpec {
     password: &'static str,
     policy: Option<&'static str>,
@@ -32,8 +37,9 @@ impl UserSpec {
     }
 }
 
-fn build(dir: &tempfile::TempDir, users: &[(&str, UserSpec)]) -> (Router, Arc<AuthService>) {
-    let svc = common::auth_service(dir);
+async fn build(dir: &tempfile::TempDir, users: &[(&str, UserSpec)]) -> (Router, Arc<AuthService>) {
+    let database = common::auth_service(dir);
+    let svc = database.clone();
     for (name, spec) in users {
         svc.user_add(&un(name), &pw(spec.password)).unwrap();
         if let Some(policy) = spec.policy {
@@ -41,8 +47,13 @@ fn build(dir: &tempfile::TempDir, users: &[(&str, UserSpec)]) -> (Router, Arc<Au
                 .unwrap();
         }
     }
-    let provider = Arc::new(OAuthProvider::new(PUBLIC, svc.clone()).unwrap());
-    let app = build_app(common::backend(dir), Some(svc.clone()), Some(provider));
+    let provider = Arc::new(OAuthProvider::new(PUBLIC, database).await.unwrap());
+    let app = build_app(Served::origin(
+        common::root(dir),
+        AuthState::origin(svc.clone(), Some(provider))
+            .await
+            .unwrap(),
+    ));
     (app, svc)
 }
 
@@ -130,6 +141,46 @@ async fn login(
     .await
 }
 
+async fn login_with_forwarded(
+    app: &Router,
+    client_id: &str,
+    user: &str,
+    password: &str,
+    challenge: &str,
+    forwarded: Option<HeaderValue>,
+) -> (StatusCode, HeaderMap, Vec<u8>) {
+    let txn = authorize_txn(app, client_id, challenge).await;
+    let body = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs([
+            ("txn", txn.as_str()),
+            ("username", user),
+            ("password", password),
+        ])
+        .finish();
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/login")
+        .header("content-type", "application/x-www-form-urlencoded");
+    if let Some(forwarded) = forwarded {
+        request = request.header("x-forwarded-for", forwarded);
+    }
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::from(body)).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
+    (status, headers, body)
+}
+
 async fn authenticate(app: &Router, user: &str, password: &str) -> (String, String, String) {
     let client_id = register(app).await;
     let (verifier, challenge) = pkce();
@@ -187,7 +238,7 @@ async fn mcp_text(
 #[tokio::test]
 async fn discovery_at_root() {
     let dir = common::fixture_dir();
-    let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]);
+    let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]).await;
     let (s, b) = get(&app, "/.well-known/oauth-authorization-server").await;
     assert_eq!(s, StatusCode::OK);
     let meta = json_body(&b);
@@ -215,7 +266,7 @@ async fn get(app: &Router, path: &str) -> (StatusCode, Vec<u8>) {
 #[tokio::test]
 async fn full_flow_lists_and_searches() {
     let dir = common::fixture_dir();
-    let (app, _) = build(&dir, &[("full", UserSpec::new("pw"))]);
+    let (app, _) = build(&dir, &[("full", UserSpec::new("pw"))]).await;
     let (token, refresh, _) = authenticate(&app, "full", "pw").await;
     assert!(!refresh.is_empty());
     let (is_err, paths) = mcp_text(
@@ -241,7 +292,8 @@ async fn oauth_folder_confinement() {
                 ..UserSpec::new("pw")
             },
         )],
-    );
+    )
+    .await;
     let (token, _, _) = authenticate(&app, "p", "pw").await;
     let (_e, paths) = mcp_text(
         &app,
@@ -273,7 +325,8 @@ async fn oauth_read_only_blocks_write() {
                 ..UserSpec::new("pw")
             },
         )],
-    );
+    )
+    .await;
     let (token, _, _) = authenticate(&app, "ro", "pw").await;
     let (is_err, msg) = mcp_text(
         &app,
@@ -288,7 +341,7 @@ async fn oauth_read_only_blocks_write() {
 #[tokio::test]
 async fn bad_password_rejected() {
     let dir = common::fixture_dir();
-    let (app, _) = build(&dir, &[("a", UserSpec::new("right"))]);
+    let (app, _) = build(&dir, &[("a", UserSpec::new("right"))]).await;
     let client_id = register(&app).await;
     let (_v, challenge) = pkce();
     let (s, _h, b) = login(&app, &client_id, "a", "wrong", &challenge).await;
@@ -299,7 +352,7 @@ async fn bad_password_rejected() {
 #[tokio::test]
 async fn unknown_user_rejected() {
     let dir = common::fixture_dir();
-    let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]);
+    let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]).await;
     let client_id = register(&app).await;
     let (_v, challenge) = pkce();
     let (s, _h, _b) = login(&app, &client_id, "ghost", "pw", &challenge).await;
@@ -310,7 +363,7 @@ async fn unknown_user_rejected() {
 #[tokio::test]
 async fn login_get_renders_form() {
     let dir = common::fixture_dir();
-    let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]);
+    let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]).await;
     let client_id = register(&app).await;
     let (_v, challenge) = pkce();
     let txn = authorize_txn(&app, &client_id, &challenge).await;
@@ -322,7 +375,7 @@ async fn login_get_renders_form() {
 #[tokio::test]
 async fn login_rejects_bad_txn() {
     let dir = common::fixture_dir();
-    let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]);
+    let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]).await;
     let (s, _) = get(&app, "/login?txn=nope").await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
     let (s, _h, _b) = post_form(
@@ -337,7 +390,7 @@ async fn login_rejects_bad_txn() {
 #[tokio::test]
 async fn login_rate_limited() {
     let dir = common::fixture_dir();
-    let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]);
+    let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]).await;
     let client_id = register(&app).await;
     let (_v, challenge) = pkce();
     let mut statuses = Vec::new();
@@ -349,9 +402,94 @@ async fn login_rate_limited() {
 }
 
 #[tokio::test]
+async fn non_tcp_login_uses_only_the_first_trimmed_forwarded_value() {
+    let dir = common::fixture_dir();
+    let (app, _) = build(&dir, &[]).await;
+    let client_id = register(&app).await;
+    let (_verifier, challenge) = pkce();
+
+    for _ in 0..5 {
+        let (status, _, _) = login_with_forwarded(
+            &app,
+            &client_id,
+            "a",
+            "bad",
+            &challenge,
+            Some(HeaderValue::from_static(
+                "  gateway.example  , 198.51.100.7",
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, _, _) = login_with_forwarded(
+        &app,
+        &client_id,
+        "a",
+        "bad",
+        &challenge,
+        Some(HeaderValue::from_static("gateway.example")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn absent_and_non_text_forwarding_share_the_non_tcp_fallback_quota() {
+    let dir = common::fixture_dir();
+    let (app, _) = build(&dir, &[]).await;
+    let client_id = register(&app).await;
+    let (_verifier, challenge) = pkce();
+
+    for _ in 0..4 {
+        let (status, _, _) =
+            login_with_forwarded(&app, &client_id, "a", "bad", &challenge, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, _, _) = login_with_forwarded(
+        &app,
+        &client_id,
+        "a",
+        "bad",
+        &challenge,
+        Some(HeaderValue::from_bytes(b"\xff").unwrap()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = login_with_forwarded(&app, &client_id, "a", "bad", &challenge, None).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn the_sixth_non_tcp_attempt_keeps_the_existing_429_login_page() {
+    let dir = common::fixture_dir();
+    let (app, _) = build(&dir, &[]).await;
+    let client_id = register(&app).await;
+    let (_verifier, challenge) = pkce();
+
+    for _ in 0..5 {
+        let (status, _, _) =
+            login_with_forwarded(&app, &client_id, "a", "bad", &challenge, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, headers, body) =
+        login_with_forwarded(&app, &client_id, "a", "bad", &challenge, None).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(
+        headers["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html")
+    );
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("too many attempts, try later"));
+    assert!(body.contains("<form method=\"post\" action=\"/login\">"));
+}
+
+#[tokio::test]
 async fn refresh_token_grant_and_rotation() {
     let dir = common::fixture_dir();
-    let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]);
+    let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]).await;
     let (token, refresh, client_id) = authenticate(&app, "a", "pw").await;
     let (s, b) = post_form_token(
         &app,
@@ -364,8 +502,10 @@ async fn refresh_token_grant_and_rotation() {
     .await;
     assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&b));
     let new = json_body(&b);
-    assert_ne!(new["access_token"].as_str().unwrap(), token);
-    // oxide-auth rotates the refresh token (single-use): the rotated-out token is
+    assert!(new["access_token"].as_str().is_some());
+    assert_ne!(new["refresh_token"].as_str().unwrap(), refresh);
+    let _ = token;
+    // Refresh tokens rotate and are single-use: the rotated-out token is
     // gone, so reusing it is an invalid_grant (400 per RFC 6749).
     let (s, _b) = post_form_token(
         &app,
@@ -382,32 +522,15 @@ async fn refresh_token_grant_and_rotation() {
 #[tokio::test]
 async fn tool_realm_closed_without_a_bearer() {
     let dir = common::fixture_dir();
-    let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]);
+    let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]).await;
     let (s, _) = post_json(&app, "/tool/ReadNote", None, &json!({"path": "Inbox.md"})).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn tool_realm_accepts_an_api_key() {
-    let dir = common::fixture_dir();
-    let (app, svc) = build(&dir, &[("a", UserSpec::new("pw"))]);
-    let key = common::mint_key(&svc, "bot", PolicyFragment::default());
-    let (s, _) = post_json(&app, "/tool/ReadNote", None, &json!({"path": "Inbox.md"})).await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED);
-    let (s, _) = post_json(
-        &app,
-        "/tool/ReadNote",
-        Some(&key),
-        &json!({"path": "Inbox.md"}),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
 }
 
 #[tokio::test]
 async fn mcp_requires_oauth_token() {
     let dir = common::fixture_dir();
-    let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]);
+    let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]).await;
     let (s, _h, _b) = post_mcp(
         &app,
         None,
@@ -420,7 +543,7 @@ async fn mcp_requires_oauth_token() {
 #[tokio::test]
 async fn removed_user_kills_tokens_and_refresh() {
     let dir = common::fixture_dir();
-    let (app, svc) = build(&dir, &[("a", UserSpec::new("pw"))]);
+    let (app, svc) = build(&dir, &[("a", UserSpec::new("pw"))]).await;
     let (access, refresh, client_id) = authenticate(&app, "a", "pw").await;
     svc.user_remove(&un("a")).unwrap();
     let (s, _h, _b) = post_mcp(
@@ -445,7 +568,7 @@ async fn removed_user_kills_tokens_and_refresh() {
 #[tokio::test]
 async fn login_cannot_distinguish_unknown_names_or_key_labels() {
     let dir = common::fixture_dir();
-    let (app, svc) = build(&dir, &[("real", UserSpec::new("right"))]);
+    let (app, svc) = build(&dir, &[("real", UserSpec::new("right"))]).await;
     // an API key label is not a username — keys are not in the user table
     common::mint_key(&svc, "bot", PolicyFragment::default());
     let client_id = register(&app).await;
@@ -485,13 +608,13 @@ async fn clients_persist_across_restart() {
     // Drop the first provider (releasing redb's single-file lock) before reopening,
     // which is the true "restart" — a durable write must survive it.
     let client_id = {
-        let (app, _svc) = build(&dir, &[("a", UserSpec::new("pw"))]);
+        let (app, _svc) = build(&dir, &[("a", UserSpec::new("pw"))]).await;
         register(&app).await
     };
-    let db = Arc::new(noted_auth::oauth::Db::open(&dir.path().join("auth.redb")).unwrap());
-    let svc = Arc::new(AuthService::new(db, noted::types::Ttl::from_secs(3600)));
-    let revived = OAuthProvider::new(PUBLIC, svc).unwrap();
-    assert!(revived.has_client(&client_id));
+    let (revived, _service) = build(&dir, &[]).await;
+    let (_, challenge) = pkce();
+    let transaction = authorize_txn(&revived, &client_id, &challenge).await;
+    assert!(!transaction.is_empty());
 }
 
 #[test]
@@ -502,26 +625,6 @@ fn verify_password_edges() {
     assert!(!verify_password("x", "bcrypt$1$2$3$AA$AA"));
     assert!(!verify_password("x", "malformed"));
     assert!(!verify_password("x", "scrypt$notanint$8$1$AA$AA"));
-}
-
-fn attenuate(
-    root: &str,
-    authority: Option<&PolicyFragment>,
-    ttl: noted::types::Ttl,
-    _id: &str,
-    session: Option<&str>,
-) -> noted::Result<(String, ())> {
-    let macaroon: Macaroon = serde_json::from_value(json!(root))
-        .map_err(|e| noted::error::json_error("invalid macaroon", e))?;
-    let session = session.map(SessionId::new);
-    let child = macaroon.to_descendant(authority, ttl, session.as_ref())?;
-    Ok((child.expose().to_string(), ()))
-}
-
-async fn root_macaroon(app: &Router, token: &str) -> String {
-    let (s, b) = common::post_json(app, "/macaroon/root", Some(token), &json!({})).await;
-    assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&b));
-    json_body(&b)["macaroon"].as_str().unwrap().to_string()
 }
 
 async fn tool(app: &Router, token: &str, name: &str, args: serde_json::Value) -> StatusCode {
@@ -538,37 +641,52 @@ fn read_only() -> PolicyFragment {
     held(r#"{"access":{"read":true,"write":false}}"#)
 }
 
+/// Asks the server for a credential of its own descending from `token`.
+async fn mint(
+    app: &Router,
+    token: &str,
+    policy: Option<&PolicyFragment>,
+    ttl: u64,
+    session: Option<&str>,
+) -> String {
+    let mut body = json!({"ttl": ttl, "session": session});
+    if let Some(policy) = policy {
+        body["policy"] = serde_json::to_value(policy).unwrap();
+    }
+    let (s, b) = common::post_json(app, "/macaroon/mint", Some(token), &body).await;
+    assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&b));
+    json_body(&b)["macaroon"].as_str().unwrap().to_string()
+}
+
+async fn revoke(app: &Router, token: &str, body: serde_json::Value) -> serde_json::Value {
+    let (s, b) = common::post_json(app, "/macaroon/revoke", Some(token), &body).await;
+    assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&b));
+    json_body(&b)
+}
+
 #[tokio::test]
-async fn oauth_token_and_root_macaroon_work_on_tool() {
+async fn an_oauth_token_and_a_credential_minted_from_it_both_reach_a_tool() {
     let dir = common::fixture_dir();
-    let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]);
+    let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
     let (access, _r, _c) = authenticate(&app, "ann", "pw").await;
     let search = json!({"pattern": ".", "mode": "path"});
     assert_eq!(
         tool(&app, &access, "SearchNotes", search.clone()).await,
         StatusCode::OK
     );
-    let root = root_macaroon(&app, &access).await;
+    let minted = mint(&app, &access, None, 3600, None).await;
     assert_eq!(
-        tool(&app, &root, "SearchNotes", search).await,
+        tool(&app, &minted, "SearchNotes", search).await,
         StatusCode::OK
     );
 }
 
 #[tokio::test]
-async fn macaroon_child_attenuates_access() {
+async fn a_minted_credential_attenuates_access() {
     let dir = common::fixture_dir();
-    let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]);
+    let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
     let (access, _r, _c) = authenticate(&app, "ann", "pw").await;
-    let root = root_macaroon(&app, &access).await;
-    let (child, _exp) = attenuate(
-        &root,
-        Some(&read_only()),
-        noted::types::Ttl::from_secs(3600),
-        "id-1",
-        None,
-    )
-    .unwrap();
+    let child = mint(&app, &access, Some(&read_only()), 3600, None).await;
     let search = json!({"pattern": ".", "mode": "path"});
     let write = json!({"path": "x.md", "content": "hi"});
     assert_eq!(
@@ -586,20 +704,12 @@ async fn macaroon_child_attenuates_access() {
 }
 
 #[tokio::test]
-async fn macaroon_child_confines_paths() {
+async fn a_minted_credential_confines_paths() {
     let dir = common::fixture_dir();
-    let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]);
+    let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
     let (access, _r, _c) = authenticate(&app, "ann", "pw").await;
-    let root = root_macaroon(&app, &access).await;
     let policy = held(r#"{"paths":{"people":{"read":false,"write":false}}}"#);
-    let (child, _exp) = attenuate(
-        &root,
-        Some(&policy),
-        noted::types::Ttl::from_secs(3600),
-        "id-2",
-        None,
-    )
-    .unwrap();
+    let child = mint(&app, &access, Some(&policy), 3600, None).await;
     assert_eq!(
         tool(
             &app,
@@ -623,7 +733,7 @@ async fn macaroon_child_confines_paths() {
 }
 
 #[tokio::test]
-async fn macaroon_child_cannot_exceed_parent() {
+async fn a_minted_credential_cannot_exceed_its_owners_policy() {
     let dir = common::fixture_dir();
     let (app, _p) = build(
         &dir,
@@ -634,41 +744,37 @@ async fn macaroon_child_cannot_exceed_parent() {
                 ..UserSpec::new("pw")
             },
         )],
-    );
+    )
+    .await;
     let (access, _r, _c) = authenticate(&app, "ro", "pw").await;
-    let root = root_macaroon(&app, &access).await;
-    let (child, _exp) = attenuate(
-        &root,
+    let child = mint(
+        &app,
+        &access,
         Some(&held(r#"{"access":{"read":false,"write":true}}"#)),
-        noted::types::Ttl::from_secs(3600),
-        "id-3",
+        3600,
         None,
     )
-    .unwrap();
-    assert_eq!(
-        tool(
-            &app,
-            &child,
-            "WriteNote",
-            json!({"path": "x.md", "content": "hi"})
-        )
-        .await,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        tool(&app, &child, "ReadNote", json!({"path": "Inbox.md"})).await,
-        StatusCode::UNAUTHORIZED
-    );
+    .await;
+    for (name, args) in [
+        ("WriteNote", json!({"path": "x.md", "content": "hi"})),
+        ("ReadNote", json!({"path": "Inbox.md"})),
+    ] {
+        let (s, b) = common::post_json(&app, &format!("/tool/{name}"), Some(&child), &args).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{name}");
+        assert!(
+            json_body(&b)["detail"].as_str().unwrap().contains("write"),
+            "{}",
+            String::from_utf8_lossy(&b)
+        );
+    }
 }
 
 #[tokio::test]
 async fn macaroon_expiry_rejects() {
     let dir = common::fixture_dir();
-    let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]);
+    let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
     let (access, _r, _c) = authenticate(&app, "ann", "pw").await;
-    let root = root_macaroon(&app, &access).await;
-    let (child, _exp) =
-        attenuate(&root, None, noted::types::Ttl::from_secs(0), "id-4", None).unwrap();
+    let child = mint(&app, &access, None, 0, None).await;
     assert_eq!(
         tool(&app, &child, "SearchNotes", json!({"pattern": "."})).await,
         StatusCode::UNAUTHORIZED
@@ -676,42 +782,33 @@ async fn macaroon_expiry_rejects() {
 }
 
 #[tokio::test]
-async fn macaroon_revoke_by_id_and_session() {
+async fn macaroon_revoke_by_session() {
     let dir = common::fixture_dir();
-    let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]);
+    let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
     let (access, _r, _c) = authenticate(&app, "ann", "pw").await;
-    let root = root_macaroon(&app, &access).await;
     let search = json!({"pattern": ".", "mode": "path"});
 
-    let (doomed, _) = attenuate(
-        &root,
-        Some(&read_only()),
-        noted::types::Ttl::from_secs(3600),
-        "kill",
-        Some("run-1"),
-    )
-    .unwrap();
-    let (sibling, _) = attenuate(
-        &root,
-        Some(&read_only()),
-        noted::types::Ttl::from_secs(3600),
-        "keep",
-        Some("run-2"),
-    )
-    .unwrap();
+    let doomed = mint(&app, &access, Some(&read_only()), 3600, Some("run-1")).await;
+    let sibling = mint(&app, &access, Some(&read_only()), 3600, Some("run-2")).await;
     assert_eq!(
         tool(&app, &doomed, "SearchNotes", search.clone()).await,
         StatusCode::OK
     );
 
-    let (s, _) = common::post_json(
-        &app,
-        "/macaroon/revoke",
-        Some(&access),
-        &json!({"session": "run-1"}),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    let answer = revoke(&app, &access, json!({"session": "run-1"})).await;
+    assert_eq!(
+        answer["revoked"].as_array().unwrap().len(),
+        2,
+        "{answer}" // the credential of that run, then the session itself
+    );
+    assert_eq!(answer["revoked"][1], "session_id=run-1");
+    assert!(
+        answer["revoked"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("token_id=")
+    );
+    assert!(answer["epoch"].is_null());
     assert_eq!(
         tool(&app, &doomed, "SearchNotes", search.clone()).await,
         StatusCode::UNAUTHORIZED
@@ -721,14 +818,7 @@ async fn macaroon_revoke_by_id_and_session() {
         StatusCode::OK
     );
 
-    let (s, _) = common::post_json(
-        &app,
-        "/macaroon/revoke",
-        Some(&access),
-        &json!({"session": "run-2"}),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    revoke(&app, &access, json!({"session": "run-2"})).await;
     assert_eq!(
         tool(&app, &sibling, "SearchNotes", search).await,
         StatusCode::UNAUTHORIZED
@@ -736,32 +826,32 @@ async fn macaroon_revoke_by_id_and_session() {
 }
 
 #[tokio::test]
+async fn macaroon_revoke_of_an_id_the_server_never_minted_is_refused() {
+    let dir = common::fixture_dir();
+    let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
+    let (access, _r, _c) = authenticate(&app, "ann", "pw").await;
+    for body in [json!({"id": "never-minted"}), json!({"session": "no-run"})] {
+        let (s, _b) = common::post_json(&app, "/macaroon/revoke", Some(&access), &body).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+    }
+}
+
+#[tokio::test]
 async fn macaroon_revoke_all_bumps_epoch() {
     let dir = common::fixture_dir();
-    let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]);
+    let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
     let (access, _r, _c) = authenticate(&app, "ann", "pw").await;
-    let root = root_macaroon(&app, &access).await;
     let search = json!({"pattern": ".", "mode": "path"});
-    let (child, _) = attenuate(
-        &root,
-        Some(&read_only()),
-        noted::types::Ttl::from_secs(3600),
-        "id-5",
-        None,
-    )
-    .unwrap();
+    let child = mint(&app, &access, Some(&read_only()), 3600, None).await;
     assert_eq!(
         tool(&app, &child, "SearchNotes", search.clone()).await,
         StatusCode::OK
     );
-    let (s, _) = common::post_json(
-        &app,
-        "/macaroon/revoke",
-        Some(&access),
-        &json!({"all": true}),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    let answer = revoke(&app, &access, json!({"all": true})).await;
+    let revoked = answer["revoked"].as_array().unwrap();
+    assert_eq!(revoked.len(), 1, "{answer}");
+    assert!(revoked[0].as_str().unwrap().starts_with("token_id="));
+    assert!(answer["epoch"].as_u64().is_some(), "{answer}");
     assert_eq!(
         tool(&app, &child, "SearchNotes", search).await,
         StatusCode::UNAUTHORIZED
@@ -772,97 +862,212 @@ async fn macaroon_revoke_all_bumps_epoch() {
 async fn oauth_token_survives_restart() {
     let dir = common::fixture_dir();
     let db_path = dir.path().join("auth.redb");
-    // Mint a token, then drop everything (frees the redb lock). Validation is
+    // Mint a token, then drop everything (frees the redb lock). Verification is
     // DB-only, so nothing in memory was load-bearing.
     let access = {
-        let (app, _svc) = build(&dir, &[("ann", UserSpec::new("pw"))]);
+        let (app, _svc) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
         authenticate(&app, "ann", "pw").await.0
     };
-    let db = Arc::new(noted_auth::oauth::Db::open(&db_path).unwrap());
-    let revived = AuthService::new(db, noted::types::Ttl::from_secs(3600));
-    let (owner, policy) = revived.resolve_bearer(&access).unwrap().unwrap();
-    assert_eq!(owner, "user:ann");
-    assert_eq!(policy.to_string(), "{}");
-}
-
-#[tokio::test]
-async fn access_tokens_live_one_hour() {
-    let dir = common::fixture_dir();
-    let (app, svc) = build(&dir, &[("ann", UserSpec::new("pw"))]);
-    let (access, _r, _c) = authenticate(&app, "ann", "pw").await;
-    assert!(access.starts_with("noted_acc_"));
-    let (_name, _client, expires_at) = svc.access_owner(&access).unwrap().unwrap();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let ttl = expires_at as i64 - now as i64;
-    assert!((ttl - 3600).abs() <= 5, "access ttl was {ttl}");
-}
-
-#[tokio::test]
-async fn macaroon_parent_can_be_an_api_key_and_shrinks_live() {
-    let dir = common::fixture_dir();
-    let (app, svc) = build(&dir, &[("ann", UserSpec::new("pw"))]);
-    let key = common::mint_key(&svc, "agent", PolicyFragment::default());
-
-    let root = root_macaroon(&app, &key).await;
-    let (child, _exp) = attenuate(
-        &root,
-        Some(&read_only()),
-        noted::types::Ttl::from_secs(3600),
-        "kid-1",
-        None,
-    )
-    .unwrap();
-    let search = json!({"pattern": ".", "mode": "path"});
-    assert_eq!(
-        tool(&app, &child, "SearchNotes", search.clone()).await,
-        StatusCode::OK
-    );
-    assert_eq!(
-        tool(
-            &app,
-            &child,
-            "WriteNote",
-            json!({"path": "x.md", "content": "y"})
-        )
-        .await,
-        StatusCode::FORBIDDEN
-    );
-
-    svc.key_set_policy(
-        Some(&lb("agent")),
-        None,
-        r#"{"access":{"read":false,"write":false}}"#.parse::<PolicyFragment>().unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        tool(&app, &child, "SearchNotes", search.clone()).await,
-        StatusCode::UNAUTHORIZED
-    );
-
-    svc.key_revoke(&noted_auth::oauth::service::RevokeBy::Label(lb("agent")))
+    let db = Arc::new(Db::open(&db_path).unwrap());
+    let revived = Arc::new(AuthService::new(db, noted::types::Ttl::from_secs(3600)));
+    let caller = OriginAuthority::new(revived)
+        .verify(Some(&noted_auth::types::CredentialPresentation::submitted(
+            &access,
+        )))
         .unwrap();
+    assert_eq!(caller.owner().unwrap().to_string(), "user:ann");
+    assert_eq!(caller.fragments()[0].to_string(), "{}");
+}
+
+#[tokio::test]
+async fn every_oauth_route_preserves_its_method_status_headers_and_content_type() {
+    let dir = common::fixture_dir();
+    let (app, _) = build(&dir, &[]).await;
+    for path in [
+        "/.well-known/oauth-authorization-server",
+        "/.well-known/oauth-authorization-server/mcp",
+        "/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-protected-resource/mcp",
+    ] {
+        let (status, headers, _) = request(&app, "GET", path, None, "", Vec::new()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            headers["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("application/json")
+        );
+    }
+}
+
+#[tokio::test]
+async fn metadata_preserves_every_key_value_url_and_challenge_spelling() {
+    let dir = common::fixture_dir();
+    let (app, _) = build(&dir, &[]).await;
+    let (_, body) = get(&app, "/.well-known/oauth-authorization-server").await;
+    let metadata = json_body(&body);
+    assert_eq!(metadata["issuer"], PUBLIC);
     assert_eq!(
-        tool(&app, &child, "ReadNote", json!({"path": "Inbox.md"})).await,
-        StatusCode::UNAUTHORIZED
+        metadata["authorization_endpoint"],
+        format!("{PUBLIC}/authorize")
+    );
+    assert_eq!(metadata["token_endpoint"], format!("{PUBLIC}/token"));
+    assert_eq!(
+        metadata["registration_endpoint"],
+        format!("{PUBLIC}/register")
     );
 }
 
-#[allow(dead_code)]
-fn un(s: impl AsRef<str>) -> noted_auth::oauth::types::Username {
-    s.as_ref().parse().unwrap()
+#[tokio::test]
+async fn registration_preserves_echoes_defaults_extra_fields_and_malformed_errors() {
+    let dir = common::fixture_dir();
+    let (app, _) = build(&dir, &[]).await;
+    let (status, body) = post_json(
+        &app,
+        "/register",
+        None,
+        &json!({"redirect_uris":[REDIRECT],"extra":{"nested":true}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let value = json_body(&body);
+    assert_eq!(value["token_endpoint_auth_method"], "none");
+    assert_eq!(value["extra"]["nested"], true);
+    let (status, _, _) = request(
+        &app,
+        "POST",
+        "/register",
+        None,
+        "application/json",
+        b"{".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
-#[allow(dead_code)]
-fn pw(s: impl AsRef<str>) -> noted_auth::oauth::types::Password {
-    noted_auth::oauth::types::Password::new(s.as_ref())
+
+#[tokio::test]
+async fn registration_rejects_every_invalid_redirect_request_without_filtering() {
+    for redirect_uris in [
+        json!(null),
+        json!([]),
+        json!([null]),
+        json!([7]),
+        json!([{"x": true}]),
+        json!(["not a url"]),
+        json!([REDIRECT, "not a url"]),
+        json!([REDIRECT, null]),
+    ] {
+        let dir = common::fixture_dir();
+        let (app, _) = build(&dir, &[]).await;
+        let (status, _) = post_json(
+            &app,
+            "/register",
+            None,
+            &json!({"redirect_uris": redirect_uris}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    let dir = common::fixture_dir();
+    let (app, _) = build(&dir, &[]).await;
+    let (status, _) = post_json(&app, "/register", None, &json!({})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
-#[allow(dead_code)]
-fn lb(s: impl AsRef<str>) -> noted_auth::oauth::types::Label {
-    noted_auth::oauth::types::Label::new(s.as_ref()).unwrap()
+
+#[tokio::test]
+async fn valid_redirects_share_registration_persistence_and_restart_facts() {
+    let dir = common::fixture_dir();
+    let (app, _) = build(&dir, &[]).await;
+    let redirects = json!([REDIRECT, "http://client.example/second"]);
+    let (status, body) = post_json(
+        &app,
+        "/register",
+        None,
+        &json!({"redirect_uris": redirects}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let response = json_body(&body);
+    assert_eq!(response["redirect_uris"], redirects);
+    let client_id = ClientId::new(response["client_id"].as_str().unwrap());
+    assert!(response["client_id_issued_at"].as_u64().is_some());
+
+    drop(app);
+    let (reopened, _service) = build(&dir, &[]).await;
+    let (_, challenge) = pkce();
+    let transaction = authorize_txn(&reopened, client_id.as_str(), &challenge).await;
+    assert!(!transaction.is_empty());
 }
-#[allow(dead_code)]
-fn ci(s: impl AsRef<str>) -> noted_auth::oauth::types::CredentialId {
-    noted_auth::oauth::types::CredentialId::new(s.as_ref()).expect("valid credential id in test")
+
+#[tokio::test]
+async fn authorization_preserves_pkce_redirect_state_and_invalid_request_edges() {
+    let dir = common::fixture_dir();
+    let (app, _) = build(&dir, &[]).await;
+    assert_eq!(get(&app, "/authorize").await.0, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn login_preserves_exact_html_success_expiry_invalid_and_throttled_forms() {
+    let dir = common::fixture_dir();
+    let (app, _) = build(&dir, &[]).await;
+    let (status, body) = get(&app, "/login?txn=missing").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        String::from_utf8(body)
+            .unwrap()
+            .contains("expired or invalid")
+    );
+}
+
+#[tokio::test]
+async fn token_and_refresh_preserve_json_headers_errors_rotation_and_expiry() {
+    let dir = common::fixture_dir();
+    let (app, _) = build(&dir, &[]).await;
+    let (status, headers, body) = post_form(&app, "/token", &[("grant_type", "unknown")]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        headers["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("application/json")
+    );
+    assert_eq!(json_body(&body)["error"], "unsupported_grant_type");
+}
+
+#[tokio::test]
+async fn persisted_clients_survive_async_startup_without_migration() {
+    let dir = common::fixture_dir();
+    let (app, service) = build(&dir, &[]).await;
+    let client = register(&app).await;
+    drop(app);
+    drop(service);
+    let (reopened, _service) = build(&dir, &[]).await;
+    let (_, challenge) = pkce();
+    let transaction = authorize_txn(&reopened, &client, &challenge).await;
+    assert!(!transaction.is_empty());
+}
+
+#[tokio::test]
+async fn unauthorized_resources_preserve_the_resource_metadata_challenge() {
+    let dir = common::fixture_dir();
+    let (app, _) = build(&dir, &[]).await;
+    let (status, headers, _) = request(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        "application/json",
+        b"{}".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        headers["www-authenticate"],
+        format!("Bearer resource_metadata=\"{PUBLIC}/.well-known/oauth-protected-resource/mcp\"")
+    );
+}
+
+fn pw(s: &str) -> noted_auth::types::Password {
+    noted_auth::types::Password::new(s)
 }

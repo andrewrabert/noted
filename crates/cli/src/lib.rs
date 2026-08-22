@@ -1,69 +1,60 @@
-use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 
 use noted::error::{Result, io_error, rejected, unavailable};
 use noted::tools::{DeleteArgs, EditArgs, MoveArgs, ReadArgs, SearchNotesArgs, WriteArgs};
-use noted::types::Ttl;
-use noted_auth::oauth::service::DEFAULT_CREDENTIAL_TTL_HUMAN;
+use noted_auth::service::DEFAULT_CREDENTIAL_TTL;
 use noted_server::serve::{Bind, HttpConfig, StdioConfig};
 #[cfg(unix)]
 use noted_server::socket::{SocketBind, SocketEnv};
 
-use crate::args::{AuthPaths, EntryFlags, EnvFileArg, GlobalArgs, parse_ttl};
-use crate::config::{Config, EnvFile, Environment};
+use crate::args::{AuthPaths, EntryFlags, GlobalArgs};
+use crate::config::{Config, EnvFile};
+use crate::settings::{Flags, Layer, Settings, Variable};
 
 mod admin;
 pub mod args;
 mod auth;
 pub mod config;
+mod credential;
 mod dispatch;
 pub mod logging;
 mod open;
 mod picker;
 mod prompt;
+pub mod settings;
 mod text_editor;
 
 use admin::{KeyCmd, UserCmd};
 use auth::AuthCmd;
 use dispatch::{LogCmd, TaskCmd};
 
+fn error_output(error: &noted::error::NotedError) -> String {
+    format!("error: {error}")
+}
+
 pub fn main() -> ExitCode {
     match start() {
         Ok(code) => code,
-        Err(e) => {
-            eprintln!("error: {e}");
+        Err(error) => {
+            eprintln!("{}", error_output(&error));
             ExitCode::FAILURE
         }
     }
 }
 
-/// The env file argv names, learned before the real parse. Help, version and
-/// every parse error are left to that parse: this one neither prints nor
-/// exits.
-pub fn env_file_arg<I, T>(argv: I) -> Option<PathBuf>
-where
-    I: IntoIterator<Item = T>,
-    T: Into<OsString> + Clone,
-{
-    let matches = Cli::command()
-        .ignore_errors(true)
-        .disable_help_flag(true)
-        .disable_version_flag(true)
-        .disable_help_subcommand(true)
-        .try_get_matches_from(argv)
-        .ok()?;
-    EnvFileArg::from_arg_matches(&matches).ok()?.env_file
-}
-
 fn start() -> Result<ExitCode> {
-    if let Some(env_file) = EnvFile::locate(env_file_arg(std::env::args_os()).as_deref()) {
-        env_file.load()?;
-    }
     let cli = Cli::parse();
-    let config = Config::new(cli.globals, Environment::capture());
+    let flags = cli.flags();
+    let near = Settings::resolve(vec![flags.clone(), Layer::environment()])?;
+    let settings = match EnvFile::locate(near.get(Variable::EnvFile).map(Path::new)) {
+        Some(file) => Settings::resolve(vec![flags, Layer::environment(), file.layer()?])?,
+        None => near,
+    };
+    let config = Config::new(settings, dirs::config_dir());
     let _log = logging::init(config.log_filter(), config.log_file())?;
     let runtime = tokio::runtime::Runtime::new().map_err(|e| io_error("runtime", e))?;
     runtime.block_on(run(cli.command, &config))
@@ -80,6 +71,28 @@ struct Cli {
     globals: GlobalArgs,
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+impl Cli {
+    /// Everything the command line binds, whatever spells it: the global
+    /// flags and every flag a subcommand carries for itself.
+    fn flags(&self) -> Layer {
+        let mut layer = Layer::flags();
+        self.globals.write(&mut layer);
+        match &self.command {
+            Some(Command::Auth(c)) => c.write(&mut layer),
+            Some(Command::Server(c)) => match &c.sub {
+                ServerSub::Http(c) => c.write(&mut layer),
+                #[cfg(unix)]
+                ServerSub::Socket(c) => c.write(&mut layer),
+                ServerSub::Mcp(c) => c.write(&mut layer),
+                ServerSub::User(c) => c.write(&mut layer),
+                ServerSub::Key(c) => c.write(&mut layer),
+            },
+            _ => {}
+        }
+        layer
+    }
 }
 
 #[derive(Subcommand)]
@@ -130,64 +143,105 @@ enum ServerSub {
 struct ServerArgs {
     #[command(flatten)]
     auth: AuthPaths,
-    #[arg(
-        long = "default-ttl",
-        env = "NOTED_DEFAULT_TTL",
-        default_value = DEFAULT_CREDENTIAL_TTL_HUMAN,
-        value_parser = parse_ttl
-    )]
-    default_ttl: Ttl,
+    #[arg(long = "default-ttl")]
+    default_ttl: Option<String>,
     #[command(flatten)]
     entries: EntryFlags,
 }
 
+impl Flags for ServerArgs {
+    fn write(&self, layer: &mut Layer) {
+        self.auth.write(layer);
+        layer.set(Variable::DefaultTtl, self.default_ttl.as_deref());
+    }
+}
+
+async fn initialized_auth(config: &Config) -> Result<Option<Arc<noted_auth::AuthService>>> {
+    let default_ttl = config.ttl(Variable::DefaultTtl, DEFAULT_CREDENTIAL_TTL)?;
+    match config.setting(Variable::AuthDb).map(PathBuf::from) {
+        Some(path) => Ok(Some(
+            tokio::task::spawn_blocking(move || -> Result<Arc<noted_auth::AuthService>> {
+                let service = Arc::new(noted_auth::AuthService::new(
+                    Arc::new(noted_auth::Db::open(&path)?),
+                    default_ttl,
+                ));
+                service.sweep()?;
+                Ok(service)
+            })
+            .await
+            .map_err(|error| unavailable(format!("cannot open auth database: {error}")))??,
+        )),
+        None => Ok(None),
+    }
+}
+
 impl ServerArgs {
-    /// The sole adapter from flags to core's server config. Validations whose
-    /// messages name CLI flags belong here, not in core.
-    fn into_config(
+    /// The sole adapter from settings to the server's own config.
+    /// Validations whose messages name CLI flags belong here.
+    async fn into_config(
         self,
         config: &Config,
         bind: Bind,
         public_url: Option<String>,
     ) -> Result<HttpConfig> {
+        let authentication = initialized_auth(config).await?;
         #[cfg(unix)]
-        if self.auth.admin_socket.is_some() && self.auth.auth_db.is_none() {
+        let admin_socket = config.setting(Variable::AdminSocket).map(PathBuf::from);
+        #[cfg(unix)]
+        if admin_socket.is_some() && authentication.is_none() {
             return Err(rejected("--admin-socket requires --auth-db"));
         }
         Ok(HttpConfig {
-            backend: config.backend_args(&self.entries)?,
+            served: config.served(&self.entries).await?,
             bind,
             public_url,
-            auth_db: self.auth.auth_db,
+            authentication,
             #[cfg(unix)]
-            admin_socket: self.auth.admin_socket,
-            default_ttl: self.default_ttl,
+            admin_socket,
         })
     }
 }
 
 #[derive(Args)]
 struct ServeCmd {
-    #[arg(long, env = "NOTED_HOST", default_value = "127.0.0.1")]
-    host: String,
-    #[arg(long, env = "NOTED_PORT", default_value_t = 8000)]
-    port: u16,
-    #[arg(long = "public-url", env = "NOTED_PUBLIC_URL")]
+    #[arg(long)]
+    host: Option<String>,
+    #[arg(long)]
+    port: Option<String>,
+    #[arg(long = "public-url")]
     public_url: Option<String>,
     #[command(flatten)]
     server: ServerArgs,
 }
 
+impl Flags for ServeCmd {
+    fn write(&self, layer: &mut Layer) {
+        layer.set(Variable::Host, self.host.as_deref());
+        layer.set(Variable::Port, self.port.as_deref());
+        layer.set(Variable::PublicUrl, self.public_url.as_deref());
+        self.server.write(layer);
+    }
+}
+
 impl ServeCmd {
-    fn into_config(self, config: &Config) -> Result<HttpConfig> {
-        if self.public_url.is_some() && self.server.auth.auth_db.is_none() {
+    async fn into_config(self, config: &Config) -> Result<HttpConfig> {
+        let public_url = config.setting(Variable::PublicUrl).map(str::to_string);
+        if public_url.is_some() && config.setting(Variable::AuthDb).is_none() {
             return Err(rejected("--public-url requires --auth-db"));
         }
         let bind = Bind::Tcp {
-            host: self.host,
-            port: self.port,
+            host: config
+                .setting(Variable::Host)
+                .unwrap_or("127.0.0.1")
+                .to_string(),
+            port: match config.setting(Variable::Port) {
+                None => 8000,
+                Some(raw) => raw
+                    .parse()
+                    .map_err(|e| rejected(format!("{}: {e}", Variable::Port.name())))?,
+            },
         };
-        self.server.into_config(config, bind, self.public_url)
+        self.server.into_config(config, bind, public_url).await
     }
 }
 
@@ -202,8 +256,15 @@ struct SocketCmd {
 }
 
 #[cfg(unix)]
+impl Flags for SocketCmd {
+    fn write(&self, layer: &mut Layer) {
+        self.server.write(layer);
+    }
+}
+
+#[cfg(unix)]
 impl SocketCmd {
-    fn into_config(self, config: &Config) -> Result<HttpConfig> {
+    async fn into_config(self, config: &Config) -> Result<HttpConfig> {
         let spec = match &self.path {
             Some(path) => SocketBind::Explicit(
                 std::path::absolute(path)
@@ -211,7 +272,9 @@ impl SocketCmd {
             ),
             None => SocketBind::Picked(SocketEnv::capture()),
         };
-        self.server.into_config(config, Bind::Socket(spec), None)
+        self.server
+            .into_config(config, Bind::Socket(spec), None)
+            .await
     }
 }
 
@@ -221,10 +284,14 @@ struct McpCmd {
     entries: EntryFlags,
 }
 
+impl Flags for McpCmd {
+    fn write(&self, _layer: &mut Layer) {}
+}
+
 impl McpCmd {
-    fn into_config(self, config: &Config) -> Result<StdioConfig> {
+    async fn into_config(self, config: &Config) -> Result<StdioConfig> {
         Ok(StdioConfig {
-            backend: config.backend_args(&self.entries)?,
+            served: config.served(&self.entries).await?,
         })
     }
 }
@@ -255,17 +322,123 @@ async fn run(command: Option<Command>, config: &Config) -> Result<ExitCode> {
 
 async fn run_server(cmd: ServerCmd, config: &Config) -> Result<ExitCode> {
     match cmd.sub {
-        ServerSub::Http(c) => noted_server::serve::serve_http(c.into_config(config)?)
+        ServerSub::Http(c) => noted_server::serve::serve_http(c.into_config(config).await?)
             .await
             .map(|()| ExitCode::SUCCESS),
         #[cfg(unix)]
-        ServerSub::Socket(c) => noted_server::serve::serve_http(c.into_config(config)?)
+        ServerSub::Socket(c) => noted_server::serve::serve_http(c.into_config(config).await?)
             .await
             .map(|()| ExitCode::SUCCESS),
-        ServerSub::Mcp(c) => noted_server::serve::serve_stdio(c.into_config(config)?)
+        ServerSub::Mcp(c) => noted_server::serve::serve_stdio(c.into_config(config).await?)
             .await
             .map(|()| ExitCode::SUCCESS),
         ServerSub::User(c) => admin::run_user(c, config).await.map(|()| ExitCode::SUCCESS),
         ServerSub::Key(c) => admin::run_key(c, config).await.map(|()| ExitCode::SUCCESS),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(bindings: &[(Variable, &str)]) -> Config {
+        let mut layer = Layer::flags();
+        for (variable, value) in bindings {
+            layer.set(*variable, Some(value));
+        }
+        Config::new(Settings::resolve(vec![layer]).unwrap(), None)
+    }
+
+    fn serve_command() -> ServeCmd {
+        ServeCmd {
+            host: None,
+            port: None,
+            public_url: None,
+            server: ServerArgs {
+                auth: AuthPaths {
+                    auth_db: None,
+                    #[cfg(unix)]
+                    admin_socket: None,
+                },
+                default_ttl: None,
+                entries: EntryFlags::default(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn http_config_contains_initialized_authentication_with_the_resolved_lifetime() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.redb");
+        let http = serve_command()
+            .into_config(&config(&[
+                (Variable::Dir, dir.path().to_str().unwrap()),
+                (Variable::AuthDb, path.to_str().unwrap()),
+                (Variable::DefaultTtl, "17m"),
+            ]))
+            .await
+            .unwrap();
+        let authentication = http.authentication.unwrap();
+
+        assert_eq!(authentication.default_ttl().as_secs(), 17 * 60);
+        assert!(path.is_file());
+    }
+
+    #[tokio::test]
+    async fn http_port_zero_remains_a_bind_allocation_instruction() {
+        let dir = tempfile::tempdir().unwrap();
+        let http = serve_command()
+            .into_config(&config(&[
+                (Variable::Dir, dir.path().to_str().unwrap()),
+                (Variable::Port, "0"),
+            ]))
+            .await
+            .unwrap();
+
+        let Bind::Tcp { port, .. } = http.bind else {
+            panic!("HTTP configuration produced a Unix bind");
+        };
+        assert_eq!(port, 0);
+    }
+
+    #[tokio::test]
+    async fn http_config_without_authentication_contains_no_capability() {
+        let dir = tempfile::tempdir().unwrap();
+        let http = serve_command()
+            .into_config(&config(&[(Variable::Dir, dir.path().to_str().unwrap())]))
+            .await
+            .unwrap();
+
+        assert!(http.authentication.is_none());
+    }
+
+    #[tokio::test]
+    async fn invalid_auth_database_fails_before_http_server_construction() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.redb");
+        std::fs::write(&path, b"not an authentication database").unwrap();
+
+        assert!(
+            serve_command()
+                .into_config(&config(&[
+                    (Variable::Dir, dir.path().to_str().unwrap()),
+                    (Variable::AuthDb, path.to_str().unwrap()),
+                ]))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn authentication_initialization_does_not_create_a_missing_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("missing");
+        let path = parent.join("auth.redb");
+        assert!(
+            initialized_auth(&config(&[(Variable::AuthDb, path.to_str().unwrap())]))
+                .await
+                .is_err()
+        );
+        assert!(!parent.exists());
     }
 }

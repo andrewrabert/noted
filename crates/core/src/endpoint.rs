@@ -1,5 +1,5 @@
 #[cfg(unix)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::{NotedError, Result, rejected};
 use crate::httpurl::HttpUrl;
@@ -12,7 +12,12 @@ const SOCKET_URL: &str = "http://localhost/";
 /// What a client dials: a TCP server named by URL, or a Unix socket named by
 /// path.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Endpoint {
+pub struct Endpoint {
+    kind: EndpointKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum EndpointKind {
     Tcp(HttpUrl),
     #[cfg(unix)]
     Unix(PathBuf),
@@ -20,28 +25,36 @@ pub enum Endpoint {
 
 impl Endpoint {
     pub fn tcp(&self) -> Option<&HttpUrl> {
-        match self {
-            Endpoint::Tcp(url) => Some(url),
+        match &self.kind {
+            EndpointKind::Tcp(url) => Some(url),
             #[cfg(unix)]
-            Endpoint::Unix(_) => None,
+            EndpointKind::Unix(_) => None,
+        }
+    }
+
+    #[cfg(unix)]
+    pub fn unix_path(&self) -> Option<&Path> {
+        match &self.kind {
+            EndpointKind::Tcp(_) => None,
+            EndpointKind::Unix(path) => Some(path),
         }
     }
 
     pub fn base_url(&self) -> Result<HttpUrl> {
-        match self {
-            Endpoint::Tcp(url) => Ok(url.clone()),
+        match &self.kind {
+            EndpointKind::Tcp(url) => Ok(url.clone()),
             #[cfg(unix)]
-            Endpoint::Unix(_) => SOCKET_URL.parse(),
+            EndpointKind::Unix(_) => SOCKET_URL.parse(),
         }
     }
 
     /// The http(s) url a stored credential is keyed by. A unix endpoint is
     /// rejected: it holds no stored login.
     pub fn login_url(&self) -> Result<HttpUrl> {
-        match self {
-            Endpoint::Tcp(url) => Ok(url.clone()),
+        match &self.kind {
+            EndpointKind::Tcp(url) => Ok(url.clone()),
             #[cfg(unix)]
-            Endpoint::Unix(_) => Err(rejected(
+            EndpointKind::Unix(_) => Err(rejected(
                 "a unix endpoint holds no stored login: use an http(s) url",
             )),
         }
@@ -52,7 +65,7 @@ impl Endpoint {
 /// as written, byte for byte, and must be absolute: a dialed URL has no
 /// working directory to resolve against.
 #[cfg(unix)]
-fn socket_path(raw: &std::path::Path) -> Result<PathBuf> {
+fn socket_path(raw: &Path) -> Result<PathBuf> {
     if !raw.is_absolute() {
         return Err(rejected(format!(
             "a unix socket is named by an absolute path: {}",
@@ -65,43 +78,58 @@ fn socket_path(raw: &std::path::Path) -> Result<PathBuf> {
 impl std::str::FromStr for Endpoint {
     type Err = NotedError;
 
-    fn from_str(s: &str) -> Result<Endpoint> {
-        match s.strip_prefix("unix:") {
+    fn from_str(value: &str) -> Result<Endpoint> {
+        match value.strip_prefix("unix:") {
             Some(tail) => {
                 let Some(path) = tail.strip_prefix("//") else {
                     return Err(rejected(format!(
-                        "a unix endpoint is spelled unix://<path>: {s}"
+                        "a unix endpoint is spelled unix://<path>: {value}"
                     )));
                 };
                 #[cfg(unix)]
                 {
-                    Ok(Endpoint::Unix(socket_path(std::path::Path::new(path))?))
+                    Ok(Endpoint {
+                        kind: EndpointKind::Unix(socket_path(Path::new(path))?),
+                    })
                 }
                 #[cfg(not(unix))]
                 {
                     let _ = path;
                     Err(rejected(format!(
-                        "this platform holds no unix sockets: {s}"
+                        "this platform holds no unix sockets: {value}"
                     )))
                 }
             }
-            None => Ok(Endpoint::Tcp(s.parse()?)),
+            None => {
+                let url: HttpUrl = value.parse()?;
+                if url.as_url().port() == Some(0) {
+                    return Err(rejected(format!(
+                        "a dialable TCP endpoint must have a nonzero port: {value}"
+                    )));
+                }
+                Ok(Endpoint {
+                    kind: EndpointKind::Tcp(url),
+                })
+            }
         }
     }
 }
 
 impl std::fmt::Display for Endpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Endpoint::Tcp(url) => write!(f, "{url}"),
+        match &self.kind {
+            EndpointKind::Tcp(url) => write!(f, "{url}"),
             #[cfg(unix)]
-            Endpoint::Unix(path) => write!(f, "unix://{}", path.display()),
+            EndpointKind::Unix(path) => write!(f, "unix://{}", path.display()),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::path::Path;
+
     use super::Endpoint;
 
     #[test]
@@ -113,11 +141,25 @@ mod tests {
         assert_eq!(tls.base_url().unwrap().as_str(), "https://host/base");
     }
 
+    #[test]
+    fn dialable_tcp_endpoints_reject_explicit_port_zero() {
+        assert!("http://127.0.0.1:0".parse::<Endpoint>().is_err());
+        assert!("https://example.com:0/base".parse::<Endpoint>().is_err());
+    }
+
+    #[test]
+    fn dialable_tcp_endpoints_keep_implicit_and_explicit_nonzero_ports() {
+        let implicit: Endpoint = "http://example.com/base".parse().unwrap();
+        assert_eq!(implicit.to_string(), "http://example.com/base");
+        let explicit: Endpoint = "http://127.0.0.1:8000".parse().unwrap();
+        assert_eq!(explicit.to_string(), "http://127.0.0.1:8000/");
+    }
+
     #[cfg(unix)]
     #[test]
     fn parses_an_absolute_unix_path() {
         let ep: Endpoint = "unix:///run/noted.sock".parse().unwrap();
-        assert_eq!(ep, Endpoint::Unix("/run/noted.sock".into()));
+        assert_eq!(ep.unix_path(), Some(Path::new("/run/noted.sock")));
         assert!(ep.tcp().is_none());
         assert_eq!(ep.base_url().unwrap().as_str(), "http://localhost/");
     }
@@ -135,14 +177,14 @@ mod tests {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
 
-        let raw = std::path::Path::new(OsStr::from_bytes(b"/run/nc\xffted.sock"));
+        let raw = Path::new(OsStr::from_bytes(b"/run/nc\xffted.sock"));
         assert_eq!(super::socket_path(raw).unwrap(), raw);
     }
 
     #[cfg(unix)]
     #[test]
     fn rejects_a_relative_path_given_as_a_path() {
-        assert!(super::socket_path(std::path::Path::new("noted.sock")).is_err());
+        assert!(super::socket_path(Path::new("noted.sock")).is_err());
     }
 
     #[test]

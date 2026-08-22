@@ -3,21 +3,19 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use noted::HttpUrl;
 use noted::error::{Result, io_error, json_error, unavailable};
 use noted::types::UnixEpochSeconds;
 use noted::util::atomic_write;
-use noted_auth::oauth::Macaroon;
-use noted_auth::oauth::types::{AccessToken, ClientId, RefreshToken};
+use noted::{Bearer, HttpUrl};
+use noted_auth::types::{ClientId, RefreshToken};
 
 #[derive(Clone, Debug)]
 pub struct Credential {
     pub user: Option<String>,
     pub client_id: ClientId,
-    pub access_token: AccessToken,
+    pub access_token: Bearer,
     pub refresh_token: Option<RefreshToken>,
     pub expires_at: Option<UnixEpochSeconds>,
-    pub root_macaroon: Option<Macaroon>,
 }
 
 #[derive(Clone, Debug)]
@@ -36,13 +34,11 @@ struct Pointer {
 
 #[derive(Serialize, Deserialize)]
 struct Secret {
-    access_token: AccessToken,
+    access_token: Bearer,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     refresh_token: Option<RefreshToken>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     expires_at: Option<UnixEpochSeconds>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    root_macaroon: Option<Macaroon>,
 }
 
 trait SecretBackend: Send + Sync {
@@ -128,9 +124,10 @@ pub struct CredentialStoreConfig {
     pub storage: SecretStorage,
 }
 
+#[derive(Clone)]
 pub struct CredentialStore {
     hosts_path: PathBuf,
-    backend: Box<dyn SecretBackend>,
+    backend: std::sync::Arc<dyn SecretBackend>,
 }
 
 impl CredentialStore {
@@ -140,10 +137,10 @@ impl CredentialStore {
             storage,
         } = config;
         let use_keyring = matches!(storage, SecretStorage::Auto) && keyring_available();
-        let backend: Box<dyn SecretBackend> = if use_keyring {
-            Box::new(Keyring)
+        let backend: std::sync::Arc<dyn SecretBackend> = if use_keyring {
+            std::sync::Arc::new(Keyring)
         } else {
-            Box::new(PlaintextFile {
+            std::sync::Arc::new(PlaintextFile {
                 path: secrets_path(&hosts_path),
             })
         };
@@ -177,7 +174,6 @@ impl CredentialStore {
             access_token: secret.access_token,
             refresh_token: secret.refresh_token,
             expires_at: secret.expires_at,
-            root_macaroon: secret.root_macaroon,
         }))
     }
 
@@ -196,7 +192,6 @@ impl CredentialStore {
             access_token: cred.access_token.clone(),
             refresh_token: cred.refresh_token.clone(),
             expires_at: cred.expires_at,
-            root_macaroon: cred.root_macaroon.clone(),
         };
         let blob = serde_json::to_string(&secret).map_err(|e| json_error("credential", e))?;
         self.backend.set(url, &blob)
