@@ -22,9 +22,17 @@ build-android:
     "$cross" build --release --target aarch64-linux-android
     echo "binary: $PWD/target/aarch64-linux-android/release/noted"
 
-# Run the test suite
-test:
-    @cargo test --manifest-path {{justfile_directory()}}/Cargo.toml --workspace
+# Run the workspace, one package, or one exact library test
+test package="" test_name="":
+    #!/usr/bin/env sh
+    set -eu
+    if [ -z '{{package}}' ]; then
+        cargo test --manifest-path {{justfile_directory()}}/Cargo.toml --workspace
+    elif [ -z '{{test_name}}' ]; then
+        cargo test --manifest-path {{justfile_directory()}}/Cargo.toml -p '{{package}}'
+    else
+        cargo test --manifest-path {{justfile_directory()}}/Cargo.toml -p '{{package}}' --lib '{{test_name}}' -- --exact --include-ignored
+    fi
 
 # Build the release binary and install it to ~/.local/bin/noted
 install:
