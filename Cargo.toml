@@ -36,3 +36,6 @@ tracing = "0.1"
 [profile.release]
 lto = true
 strip = true
+
+[profile.test.package.scrypt]
+opt-level = 2
