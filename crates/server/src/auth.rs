@@ -177,7 +177,6 @@ async fn mint(State(state): State<AuthState>, headers: HeaderMap, body: Bytes) -
             .and_then(Value::as_u64)
             .map(Ttl::from_secs)
             .unwrap_or(noted_auth::service::DEFAULT_CREDENTIAL_TTL),
-        label: None,
     };
     match run_blocking(move || minter.mint(&caller, &ask)).await {
         Ok(Ok(Minted {

@@ -170,8 +170,7 @@ relay withdraws only what it minted — and an open origin, holding no auth data
 honors no revocation at all.
 
 - A **user** logs in with username + password (OAuth flow / claude.ai).
-- An **API key** is a labeled, scoped, expiring macaroon. Labels are group handles
-  (duplicates allowed); identity is the `token-id`.
+- An **API key** is a scoped, expiring macaroon identified by its `token-id`.
 
 Both carry a **policy**: a scope plus per-path read/write entries. Every policy flag
 builds one fragment — `--scope` anchors it, `--in /path=read,write` names an entry, `--in
@@ -209,13 +208,12 @@ noted server user add myname                             # prompts for a passwor
 noted server user passwd myname                          # change a password
 noted server user policy ar --scope /dev --in /secrets=  # set the whole fragment
 noted server user list                                   # every user, with its policy
-noted server user revoke ar                              # withdraws ar's credentials, moves its epoch
+noted server user revoke ar                              # withdraws ar's credentials
 noted server user remove ar                              # drops the user and everything under it
-noted server key create claude --scope /dev/myproject    # prints the macaroon on stdout
-noted server key create logger --in /= --in /Log=write --ttl 90d
-noted server key list claude                             # label, token-id, fingerprint, expiry, policy
-noted server key revoke --label claude                   # withdraws every live key of that label
-noted server key revoke --id <token-id>                  # withdraws one
+noted server key create --scope /dev/myproject           # prints the macaroon on stdout
+noted server key create --in /= --in /Log=write --ttl 90d
+noted server key list                                    # token-id, fingerprint, expiry, policy
+noted server key revoke --id <token-id>                  # withdraws one live key
 ```
 
 ## Delegation
@@ -232,7 +230,7 @@ noted auth login --url https://notes.example.com         # browser OAuth; stores
 noted auth status                                        # who the stored login is, and until when
 noted auth mint --ttl 1h --scope /dev/myproject --in /=read --in /Tasks=read,write
 noted auth revoke <token-id>                             # withdraws one minted credential
-noted auth revoke --all                                  # withdraws every child and moves the epoch
+noted auth revoke --all                                  # withdraws every child
 noted auth logout                                        # drops the stored login
 ```
 

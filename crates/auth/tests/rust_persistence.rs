@@ -7,8 +7,8 @@ use noted_auth::oauth::{
     AuthorizationRequest, BeginAuthorizationOutcome, OAuthProtocol, RegisterOAuthClient,
 };
 use noted_auth::types::{
-    AuthorizationResponseType, ClientId, CodeChallenge, CodeChallengeMethod, Label, Owner,
-    Password, RedirectUri, SubmittedRedirectUri, Username,
+    AuthorizationResponseType, ClientId, CodeChallenge, CodeChallengeMethod, Owner, Password,
+    RedirectUri, SubmittedRedirectUri, Username,
 };
 use noted_auth::{AuthService, Db};
 use redb::{Database, ReadableDatabase, ReadableTableMetadata, TableDefinition};
@@ -73,7 +73,6 @@ fn populate(service: &Arc<AuthService>) {
             &Mint {
                 policy: PolicyFragment::default(),
                 ttl: Ttl::from_secs(3600),
-                label: Some(Label::new("agent").unwrap()),
             },
         )
         .unwrap();

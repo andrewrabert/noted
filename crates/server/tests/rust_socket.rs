@@ -21,7 +21,7 @@ fn env_at(runtime_dir: Option<&Path>, tmpdir: Option<&Path>) -> SocketEnv {
 
 async fn serve(dir: &tempfile::TempDir) -> (PathBuf, String) {
     let svc = common::auth_service(dir);
-    let token = common::mint_key(&svc, "test", PolicyFragment::default());
+    let token = common::mint_key(&svc, PolicyFragment::default());
     let sock = dir.path().join("noted.sock");
     let (listener, guard) = bind_unix_socket(&sock, None).unwrap();
     let app = common::origin_app(common::root(dir), &svc).await;

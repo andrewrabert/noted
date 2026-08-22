@@ -6,10 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::credential::{Caveat, KeyRecord, MacaroonId};
 use crate::oauth::{OAuthClient, RegisterOAuthClient};
-use crate::types::{
-    ClientId, Fingerprint, Label, Owner, PasswordHash, RedirectUri, RevocationEpoch, SecretHash,
-    ServerId, Username,
-};
+use crate::types::{ClientId, Fingerprint, Owner, PasswordHash, RedirectUri, SecretHash, Username};
 use noted::error::{NotedError, Result, db_error, json_error, rejected};
 use noted::types::UnixEpochSeconds;
 
@@ -21,7 +18,7 @@ const REVOKED: TableDefinition<&str, u64> = TableDefinition::new("revoked");
 const OAUTH_CLIENTS: TableDefinition<&str, &str> = TableDefinition::new("clients");
 
 /// The `roots` row holding the server's own identity. No owner spelling can
-/// collide with it: every other key is `user:…` or `self:…`.
+/// collide with it: every other key is `user:…` or `self`.
 const SERVER_ROW: &str = "self";
 
 fn db_err<E: Into<redb::Error>>(e: E) -> NotedError {
@@ -55,7 +52,6 @@ pub struct RefreshRecord {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MintRecord {
     pub owner: Owner,
-    pub label: Option<Label>,
     pub policy: noted::PolicyFragment,
     pub fingerprint: Fingerprint,
     pub created_at: UnixEpochSeconds,
@@ -64,7 +60,6 @@ pub struct MintRecord {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct ServerRecord {
-    id: ServerId,
     key: KeyRecord,
 }
 
@@ -184,20 +179,18 @@ impl Db {
     pub fn server_key(&self) -> Result<(Owner, KeyRecord)> {
         if let Some(bytes) = self.get(ROOTS, SERVER_ROW)? {
             let rec: ServerRecord = decode(&bytes)?;
-            return Ok((Owner::Server(rec.id), rec.key));
+            return Ok((Owner::Server, rec.key));
         }
         let rec = ServerRecord {
-            id: ServerId::fresh(),
             key: KeyRecord::fresh(),
         };
         self.put(ROOTS, SERVER_ROW, &encode(&rec)?)?;
-        Ok((Owner::Server(rec.id), rec.key))
+        Ok((Owner::Server, rec.key))
     }
 
     pub fn root(&self, owner: &Owner) -> Result<Option<KeyRecord>> {
-        if let Owner::Server(id) = owner {
-            let (own, key) = self.server_key()?;
-            return Ok((own == Owner::Server(id.clone())).then_some(key));
+        if let Owner::Server = owner {
+            return Ok(Some(self.server_key()?.1));
         }
         match self.get(ROOTS, &owner.to_string())? {
             Some(bytes) => Ok(Some(decode(&bytes)?)),
@@ -207,22 +200,6 @@ impl Db {
 
     pub fn put_root(&self, owner: &Owner, rec: &KeyRecord) -> Result<()> {
         self.put(ROOTS, &owner.to_string(), &encode(rec)?)
-    }
-
-    /// The epoch the owner's root moved to.
-    pub fn bump_root_epoch(&self, owner: &Owner) -> Result<RevocationEpoch> {
-        let no_root = || rejected(format!("no root key to revoke under: '{owner}'"));
-        if let Owner::Server(_) = owner {
-            let bytes = self.get(ROOTS, SERVER_ROW)?.ok_or_else(no_root)?;
-            let mut rec: ServerRecord = decode(&bytes)?;
-            rec.key.min_epoch = rec.key.min_epoch.next()?;
-            self.put(ROOTS, SERVER_ROW, &encode(&rec)?)?;
-            return Ok(rec.key.min_epoch);
-        }
-        let mut rec = self.root(owner)?.ok_or_else(no_root)?;
-        rec.min_epoch = rec.min_epoch.next()?;
-        self.put_root(owner, &rec)?;
-        Ok(rec.min_epoch)
     }
 
     pub fn put_refresh(&self, hash: &SecretHash, rec: &RefreshRecord) -> Result<()> {

@@ -23,7 +23,7 @@ impl DbIssuer {
     fn rebuild_grant(rec: &RefreshRecord) -> Grant {
         let owner = match &rec.owner {
             Owner::User(name) => name.as_str().to_string(),
-            Owner::Server(id) => id.as_str().to_string(),
+            Owner::Server => Owner::Server.to_string(),
         };
         Grant {
             owner_id: owner,

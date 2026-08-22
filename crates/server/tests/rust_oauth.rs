@@ -566,11 +566,9 @@ async fn removed_user_kills_tokens_and_refresh() {
 }
 
 #[tokio::test]
-async fn login_cannot_distinguish_unknown_names_or_key_labels() {
+async fn login_cannot_distinguish_unknown_names() {
     let dir = common::fixture_dir();
-    let (app, svc) = build(&dir, &[("real", UserSpec::new("right"))]).await;
-    // an API key label is not a username — keys are not in the user table
-    common::mint_key(&svc, "bot", PolicyFragment::default());
+    let (app, _) = build(&dir, &[("real", UserSpec::new("right"))]).await;
     let client_id = register(&app).await;
     let (_v, challenge) = pkce();
     let mut bodies = Vec::new();
@@ -642,14 +640,8 @@ fn read_only() -> PolicyFragment {
 }
 
 /// Asks the server for a credential of its own descending from `token`.
-async fn mint(
-    app: &Router,
-    token: &str,
-    policy: Option<&PolicyFragment>,
-    ttl: u64,
-    session: Option<&str>,
-) -> String {
-    let mut body = json!({"ttl": ttl, "session": session});
+async fn mint(app: &Router, token: &str, policy: Option<&PolicyFragment>, ttl: u64) -> String {
+    let mut body = json!({"ttl": ttl});
     if let Some(policy) = policy {
         body["policy"] = serde_json::to_value(policy).unwrap();
     }
@@ -674,7 +666,7 @@ async fn an_oauth_token_and_a_credential_minted_from_it_both_reach_a_tool() {
         tool(&app, &access, "SearchNotes", search.clone()).await,
         StatusCode::OK
     );
-    let minted = mint(&app, &access, None, 3600, None).await;
+    let minted = mint(&app, &access, None, 3600).await;
     assert_eq!(
         tool(&app, &minted, "SearchNotes", search).await,
         StatusCode::OK
@@ -686,7 +678,7 @@ async fn a_minted_credential_attenuates_access() {
     let dir = common::fixture_dir();
     let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
     let (access, _r, _c) = authenticate(&app, "ann", "pw").await;
-    let child = mint(&app, &access, Some(&read_only()), 3600, None).await;
+    let child = mint(&app, &access, Some(&read_only()), 3600).await;
     let search = json!({"pattern": ".", "mode": "path"});
     let write = json!({"path": "x.md", "content": "hi"});
     assert_eq!(
@@ -709,7 +701,7 @@ async fn a_minted_credential_confines_paths() {
     let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
     let (access, _r, _c) = authenticate(&app, "ann", "pw").await;
     let policy = held(r#"{"paths":{"people":{"read":false,"write":false}}}"#);
-    let child = mint(&app, &access, Some(&policy), 3600, None).await;
+    let child = mint(&app, &access, Some(&policy), 3600).await;
     assert_eq!(
         tool(
             &app,
@@ -752,7 +744,6 @@ async fn a_minted_credential_cannot_exceed_its_owners_policy() {
         &access,
         Some(&held(r#"{"access":{"read":false,"write":true}}"#)),
         3600,
-        None,
     )
     .await;
     for (name, args) in [
@@ -774,53 +765,9 @@ async fn macaroon_expiry_rejects() {
     let dir = common::fixture_dir();
     let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
     let (access, _r, _c) = authenticate(&app, "ann", "pw").await;
-    let child = mint(&app, &access, None, 0, None).await;
+    let child = mint(&app, &access, None, 0).await;
     assert_eq!(
         tool(&app, &child, "SearchNotes", json!({"pattern": "."})).await,
-        StatusCode::UNAUTHORIZED
-    );
-}
-
-#[tokio::test]
-async fn macaroon_revoke_by_session() {
-    let dir = common::fixture_dir();
-    let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
-    let (access, _r, _c) = authenticate(&app, "ann", "pw").await;
-    let search = json!({"pattern": ".", "mode": "path"});
-
-    let doomed = mint(&app, &access, Some(&read_only()), 3600, Some("run-1")).await;
-    let sibling = mint(&app, &access, Some(&read_only()), 3600, Some("run-2")).await;
-    assert_eq!(
-        tool(&app, &doomed, "SearchNotes", search.clone()).await,
-        StatusCode::OK
-    );
-
-    let answer = revoke(&app, &access, json!({"session": "run-1"})).await;
-    assert_eq!(
-        answer["revoked"].as_array().unwrap().len(),
-        2,
-        "{answer}" // the credential of that run, then the session itself
-    );
-    assert_eq!(answer["revoked"][1], "session_id=run-1");
-    assert!(
-        answer["revoked"][0]
-            .as_str()
-            .unwrap()
-            .starts_with("token_id=")
-    );
-    assert!(answer["epoch"].is_null());
-    assert_eq!(
-        tool(&app, &doomed, "SearchNotes", search.clone()).await,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        tool(&app, &sibling, "SearchNotes", search.clone()).await,
-        StatusCode::OK
-    );
-
-    revoke(&app, &access, json!({"session": "run-2"})).await;
-    assert_eq!(
-        tool(&app, &sibling, "SearchNotes", search).await,
         StatusCode::UNAUTHORIZED
     );
 }
@@ -830,19 +777,18 @@ async fn macaroon_revoke_of_an_id_the_server_never_minted_is_refused() {
     let dir = common::fixture_dir();
     let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
     let (access, _r, _c) = authenticate(&app, "ann", "pw").await;
-    for body in [json!({"id": "never-minted"}), json!({"session": "no-run"})] {
-        let (s, _b) = common::post_json(&app, "/macaroon/revoke", Some(&access), &body).await;
-        assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
-    }
+    let body = json!({"id": "never-minted"});
+    let (status, _) = common::post_json(&app, "/macaroon/revoke", Some(&access), &body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
-async fn macaroon_revoke_all_bumps_epoch() {
+async fn macaroon_revoke_all_withdraws_every_child() {
     let dir = common::fixture_dir();
     let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
     let (access, _r, _c) = authenticate(&app, "ann", "pw").await;
     let search = json!({"pattern": ".", "mode": "path"});
-    let child = mint(&app, &access, Some(&read_only()), 3600, None).await;
+    let child = mint(&app, &access, Some(&read_only()), 3600).await;
     assert_eq!(
         tool(&app, &child, "SearchNotes", search.clone()).await,
         StatusCode::OK
@@ -851,7 +797,6 @@ async fn macaroon_revoke_all_bumps_epoch() {
     let revoked = answer["revoked"].as_array().unwrap();
     assert_eq!(revoked.len(), 1, "{answer}");
     assert!(revoked[0].as_str().unwrap().starts_with("token_id="));
-    assert!(answer["epoch"].as_u64().is_some(), "{answer}");
     assert_eq!(
         tool(&app, &child, "SearchNotes", search).await,
         StatusCode::UNAUTHORIZED

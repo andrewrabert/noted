@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::credential::{Caveat, KeyRecord, Macaroon, MacaroonId};
 use crate::db::MintRecord;
 use crate::service::{AuthService, MintSummary};
-use crate::types::{CredentialPresentation, Fingerprint, Label, Owner, RevocationEpoch};
+use crate::types::{CredentialPresentation, Fingerprint, Owner};
 use noted::PolicyFragment;
 use noted::error::{Result, rejected};
 use noted::types::{Ttl, UnixEpochSeconds};
@@ -90,7 +90,6 @@ pub trait Verifier: Send + Sync + 'static {
 pub struct Mint {
     pub policy: PolicyFragment,
     pub ttl: Ttl,
-    pub label: Option<Label>,
 }
 
 #[derive(Clone, Debug)]
@@ -103,7 +102,6 @@ pub struct Minted {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Revoke {
-    Label(Label),
     Token(MacaroonId),
     All,
 }
@@ -122,19 +120,18 @@ impl Revoke {
             .ok_or_else(|| rejected("that credential carries no token id"))
     }
 
-    /// The caveat this ask names outright; a label and `All` name none.
+    /// The caveat this ask names outright; `All` names none.
     fn caveat(&self) -> Option<Caveat> {
         match self {
             Revoke::Token(id) => Some(Caveat::Token(id.clone())),
-            Revoke::Label(_) | Revoke::All => None,
+            Revoke::All => None,
         }
     }
 
     /// Whether a ledger row is one this ask names.
-    fn names(&self, id: &MacaroonId, rec: &MintRecord) -> bool {
+    fn names(&self, id: &MacaroonId, _rec: &MintRecord) -> bool {
         match self {
             Revoke::Token(token) => id == token,
-            Revoke::Label(label) => rec.label.as_ref() == Some(label),
             Revoke::All => true,
         }
     }
@@ -145,20 +142,14 @@ impl Revoke {
 pub struct Withdrawn {
     /// The caveats no credential may carry any more, in ledger order.
     pub revoked: Vec<Caveat>,
-    /// The epoch the owner's root moved to, reaching past every name the ledger
-    /// holds.
-    pub epoch: Option<RevocationEpoch>,
 }
 
 impl Withdrawn {
-    pub(crate) fn sealed(
-        revoked: Vec<Caveat>,
-        epoch: Option<RevocationEpoch>,
-    ) -> Result<Withdrawn> {
-        if revoked.is_empty() && epoch.is_none() {
+    pub(crate) fn sealed(revoked: Vec<Caveat>) -> Result<Withdrawn> {
+        if revoked.is_empty() {
             return Err(rejected("this server minted nothing of that name"));
         }
-        Ok(Withdrawn { revoked, epoch })
+        Ok(Withdrawn { revoked })
     }
 }
 
@@ -190,7 +181,7 @@ pub trait Minter: Send + Sync + 'static {
     fn own(&self) -> &Verified;
 
     /// A descendant of the caller's own credential carrying, in order:
-    /// `policy=`, `session_id=` when asked, a fresh `token_id=`, then `before=`.
+    /// `policy=`, a fresh `token_id=`, then `before=`.
     fn mint(&self, caller: &Verified, ask: &Mint) -> Result<Minted>;
 
     /// Withdraws only what this server records having minted for the caller's
@@ -216,7 +207,6 @@ fn mint_caveats(ask: &Mint, expires_at: UnixEpochSeconds, token_id: &MacaroonId)
 fn ledger_record(ask: &Mint, owner: &Owner, minted: &Minted, now: UnixEpochSeconds) -> MintRecord {
     MintRecord {
         owner: owner.clone(),
-        label: ask.label.clone(),
         policy: ask.policy.clone(),
         fingerprint: minted.fingerprint.clone(),
         created_at: now,
@@ -228,7 +218,6 @@ fn summary(token_id: MacaroonId, rec: MintRecord) -> MintSummary {
     MintSummary {
         token_id,
         owner: rec.owner,
-        label: rec.label,
         policy: rec.policy,
         fingerprint: rec.fingerprint,
         created_at: rec.created_at,
@@ -256,21 +245,21 @@ impl OriginAuthority {
     fn root_of(&self, owner: &Owner) -> Result<KeyRecord> {
         match owner {
             Owner::User(name) => self.service.user_root(name),
-            Owner::Server(_) => Ok(self.service.db().server_key()?.1),
+            Owner::Server => Ok(self.service.db().server_key()?.1),
         }
     }
 
     fn held_policy(&self, owner: &Owner) -> Result<Option<PolicyFragment>> {
         match owner {
             Owner::User(name) => Ok(self.service.db().user(name)?.map(|rec| rec.policy)),
-            Owner::Server(_) => Ok(Some(PolicyFragment::default())),
+            Owner::Server => Ok(Some(PolicyFragment::default())),
         }
     }
 }
 
 fn own_credential(service: &AuthService) -> Result<Verified> {
     let (owner, key) = service.db().server_key()?;
-    let macaroon = Macaroon::mint(&owner, &key, &[Caveat::Epoch(key.min_epoch)])?;
+    let macaroon = Macaroon::mint(&owner, &key, &[])?;
     Ok(Verified {
         owner: Some(owner),
         fragments: vec![PolicyFragment::default()],
@@ -315,9 +304,6 @@ impl Verifier for OriginAuthority {
         let mut fragments = vec![held];
         for caveat in &caveats {
             match caveat {
-                Caveat::Epoch(epoch) if !key.min_epoch.accepts(*epoch) => {
-                    return unauthorized("credential revoked");
-                }
                 Caveat::Before(deadline) if now >= *deadline => {
                     return unauthorized("credential expired");
                 }
@@ -356,9 +342,7 @@ impl Minter for OriginAuthority {
             Some(held) => held.extended(&caveats)?,
             None => {
                 let key = self.root_of(&owner)?;
-                let mut rooted = vec![Caveat::Epoch(key.min_epoch)];
-                rooted.extend(caveats);
-                Macaroon::mint(&owner, &key, &rooted)?
+                Macaroon::mint(&owner, &key, &caveats)?
             }
         };
         let minted = Minted {
@@ -380,15 +364,12 @@ impl Minter for OriginAuthority {
             .ok_or_else(|| rejected("this server holds no credential to revoke under"))?
             .clone();
         let dead = withdraw(&self.service, &owner, ask)?;
-        let epoch = match ask {
-            Revoke::All => {
-                self.root_of(&owner)?;
-                self.service.db().remove_refresh_of(&owner)?;
-                Some(self.service.db().bump_root_epoch(&owner)?)
-            }
-            _ => None,
-        };
-        Withdrawn::sealed(dead, epoch)
+        if let Revoke::All = ask {
+            self.root_of(&owner)?;
+            self.service.db().remove_refresh_of(&owner)?;
+            return Ok(Withdrawn { revoked: dead });
+        }
+        Withdrawn::sealed(dead)
     }
 
     fn minted(&self, owner: &Owner) -> Result<Vec<MintSummary>> {
@@ -454,8 +435,8 @@ pub struct RelayCredential {
 }
 
 impl RelayCredential {
-    /// `bearer`, else a bare root self-minted under `self:<random>`: the key
-    /// comes from `ledger` when there is one and is fresh per process otherwise.
+    /// `bearer`, else a bare root self-minted under `self`: the key comes from
+    /// `ledger` when there is one and is fresh per process otherwise.
     pub fn open(
         credential: Option<&CredentialPresentation>,
         policy: PolicyFragment,
@@ -466,7 +447,7 @@ impl RelayCredential {
             None => match &ledger {
                 Some(service) => {
                     let (owner, key) = service.db().server_key()?;
-                    Macaroon::mint(&owner, &key, &[Caveat::Epoch(key.min_epoch)])?
+                    Macaroon::mint(&owner, &key, &[])?
                 }
                 None => Macaroon::ephemeral()?,
             },
@@ -580,9 +561,6 @@ impl Minter for RelayCredential {
     }
 
     fn revoke(&self, caller: &Verified, ask: &Revoke) -> Result<Withdrawn> {
-        if let Revoke::All = ask {
-            return Err(rejected("a relay holds no epoch to bump"));
-        }
         let service = self
             .ledger
             .as_ref()
@@ -592,7 +570,7 @@ impl Minter for RelayCredential {
             .or_else(|| self.own.owner())
             .ok_or_else(|| rejected("this relay holds no credential to revoke under"))?
             .clone();
-        Withdrawn::sealed(withdraw(service, &owner, ask)?, None)
+        Withdrawn::sealed(withdraw(service, &owner, ask)?)
     }
 
     fn minted(&self, owner: &Owner) -> Result<Vec<MintSummary>> {

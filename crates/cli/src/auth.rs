@@ -162,13 +162,9 @@ async fn run_revoke(r: RevokeCmd, config: &Config) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Prints what the server withdrew: one dead caveat per line on stdout, the
-/// epoch it moved on stderr.
+/// Prints what the server withdrew, one dead caveat per line on stdout.
 pub(crate) fn print_withdrawn(withdrawn: &Withdrawn) {
     for caveat in &withdrawn.revoked {
         println!("{caveat}");
-    }
-    if let Some(epoch) = withdrawn.epoch {
-        eprintln!("epoch {epoch}: every credential minted before it is dead");
     }
 }

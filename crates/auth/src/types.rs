@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use noted::error::{Result, rejected};
 use noted::newtype::{secret_newtype, str_newtype, str_newtype_validated};
-use noted::util::random_token;
 
 fn valid_charset(s: &str) -> bool {
     let mut chars = s.chars();
@@ -17,14 +16,6 @@ fn validate_username(name: &str) -> Result<()> {
         Ok(())
     } else {
         Err(rejected(format!("invalid user name: '{name}'")))
-    }
-}
-
-fn validate_label(name: &str) -> Result<()> {
-    if valid_charset(name) {
-        Ok(())
-    } else {
-        Err(rejected(format!("invalid key label name: '{name}'")))
     }
 }
 
@@ -101,18 +92,6 @@ impl RedirectUri {
     }
 }
 
-fn validate_server_id(id: &str) -> Result<()> {
-    let ok = !id.is_empty()
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    if ok {
-        Ok(())
-    } else {
-        Err(rejected(format!("invalid server id: '{id}'")))
-    }
-}
-
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Username(String);
@@ -125,62 +104,9 @@ impl std::fmt::Debug for Username {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct ServerId(String);
-str_newtype_validated!(ServerId, validate_server_id);
-
-const SERVER_ID_BYTES: usize = 12;
-
-impl ServerId {
-    pub fn fresh() -> ServerId {
-        ServerId(random_token(SERVER_ID_BYTES))
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ClientId(String);
 str_newtype!(ClientId);
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Label(String);
-str_newtype_validated!(Label, validate_label);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct RevocationEpoch(u64);
-
-impl RevocationEpoch {
-    pub fn initial() -> RevocationEpoch {
-        RevocationEpoch(0)
-    }
-
-    pub fn next(self) -> Result<RevocationEpoch> {
-        self.0
-            .checked_add(1)
-            .map(RevocationEpoch)
-            .ok_or_else(|| rejected("revocation epoch exhausted"))
-    }
-
-    pub fn accepts(self, epoch: RevocationEpoch) -> bool {
-        epoch >= self
-    }
-}
-
-impl std::fmt::Display for RevocationEpoch {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl std::str::FromStr for RevocationEpoch {
-    type Err = std::num::ParseIntError;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        value.parse().map(RevocationEpoch)
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -216,16 +142,12 @@ secret_newtype!(Password);
 #[serde(try_from = "String", into = "String")]
 pub enum Owner {
     User(Username),
-    Server(ServerId),
+    Server,
 }
 
 impl Owner {
     pub fn user(name: impl Into<String>) -> Result<Owner> {
         Ok(Owner::User(Username::new(name)?))
-    }
-
-    pub fn server(id: impl Into<String>) -> Result<Owner> {
-        Ok(Owner::Server(ServerId::new(id)?))
     }
 }
 
@@ -233,7 +155,7 @@ impl std::fmt::Display for Owner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Owner::User(n) => write!(f, "user:{n}"),
-            Owner::Server(id) => write!(f, "self:{id}"),
+            Owner::Server => write!(f, "self"),
         }
     }
 }
@@ -244,8 +166,8 @@ impl std::str::FromStr for Owner {
         if let Some(name) = s.strip_prefix("user:") {
             return Owner::user(name);
         }
-        if let Some(id) = s.strip_prefix("self:") {
-            return Owner::server(id);
+        if s == "self" {
+            return Ok(Owner::Server);
         }
         Err(rejected(format!("unqualified owner: '{s}'")))
     }
@@ -268,7 +190,7 @@ impl Owner {
     fn eq_str(&self, o: &str) -> bool {
         match self {
             Owner::User(n) => o.strip_prefix("user:") == Some(n.as_str()),
-            Owner::Server(id) => o.strip_prefix("self:") == Some(id.as_str()),
+            Owner::Server => o == "self",
         }
     }
 }
@@ -420,23 +342,18 @@ mod tests {
         let u: Owner = "user:ann".parse().unwrap();
         assert_eq!(u, Owner::user("ann").unwrap());
         assert_eq!(u.to_string(), "user:ann");
-        let s: Owner = "self:abc-123".parse().unwrap();
-        assert_eq!(s.to_string(), "self:abc-123");
+        let s: Owner = "self".parse().unwrap();
+        assert_eq!(s.to_string(), "self");
         assert!("bare".parse::<Owner>().is_err());
-        assert!("self:has space".parse::<Owner>().is_err());
+        assert!("self:anything".parse::<Owner>().is_err());
         assert_eq!(serde_json::to_string(&u).unwrap(), "\"user:ann\"");
-        assert_eq!(
-            serde_json::from_str::<Owner>("\"self:abc-123\"").unwrap(),
-            s
-        );
+        assert_eq!(serde_json::from_str::<Owner>("\"self\"").unwrap(), s);
     }
 
     #[test]
-    fn a_fresh_server_id_is_its_own_owner() {
-        let id = ServerId::fresh();
-        let owner = Owner::Server(id.clone());
+    fn server_is_its_own_owner() {
+        let owner = Owner::Server;
         assert_eq!(owner.to_string().parse::<Owner>().unwrap(), owner);
-        assert_eq!(ServerId::new(id.as_str()).unwrap(), id);
     }
 
     #[test]

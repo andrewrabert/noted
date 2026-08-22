@@ -76,7 +76,7 @@ async fn client_http_invalid_pattern_maps_from_4xx() {
 async fn client_http_sends_and_checks_bearer_token() {
     let dir = common::fixture_dir();
     let svc = common::auth_service(&dir);
-    let token = common::mint_key(&svc, "test", noted::PolicyFragment::default());
+    let token = common::mint_key(&svc, noted::PolicyFragment::default());
     let authed_app = common::origin_app(common::root(&dir), &svc).await;
 
     let ok_backend = dialing(authed_app.clone(), Some(&token));

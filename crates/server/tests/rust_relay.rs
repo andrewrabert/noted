@@ -212,7 +212,7 @@ async fn a_relay_in_front_of_an_open_origin_self_mints_and_reaches_the_tree() {
     let macaroon =
         Macaroon::from_encoded(carried.strip_prefix("Bearer ").unwrap().to_string()).unwrap();
     assert!(
-        matches!(macaroon.owner().unwrap(), Owner::Server(_)),
+        matches!(macaroon.owner().unwrap(), Owner::Server),
         "a relay with no bearer mints under its own server owner"
     );
     assert!(macaroon.caveats().unwrap().iter().any(
@@ -298,7 +298,6 @@ async fn a_revoked_caller_token_id_produces_no_upstream_request() {
     let ask = Mint {
         policy: PolicyFragment::default(),
         ttl: svc.default_ttl(),
-        label: None,
     };
     let minted = Minter::mint(cred.as_ref(), &Verified::anonymous(), &ask).unwrap();
     let token = minted.macaroon.expose().to_string();
@@ -390,7 +389,6 @@ async fn a_relay_minted_credential_presented_back_composes_its_scope_once() {
     let ask = Mint {
         policy: PolicyFragment::default(),
         ttl: noted::types::Ttl::from_secs(3600),
-        label: None,
     };
     let minted = Minter::mint(cred.as_ref(), &Verified::anonymous(), &ask).unwrap();
     let token = minted.macaroon.expose().to_string();

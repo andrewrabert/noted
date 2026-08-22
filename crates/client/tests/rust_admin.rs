@@ -6,10 +6,10 @@ use std::sync::Arc;
 use noted::PolicyFragment;
 use noted::types::Ttl;
 use noted_auth::administration::{
-    AdminCommand, AdminCredentialLifetime, AdminOutcome, Administration, MintFilter,
+    AdminCommand, AdminCredentialLifetime, AdminOutcome, Administration,
 };
 use noted_auth::authority::{OriginAuthority, Revoke};
-use noted_auth::types::{Label, Password, Username};
+use noted_auth::types::{Password, Username};
 use noted_auth::{AuthService, Db};
 use noted_client::admin::AdminConnection;
 use serde_json::{Value, json};
@@ -81,7 +81,7 @@ fn every_command() -> Vec<(AdminCommand, &'static str, &'static str)> {
                 username: Username::new("alice").unwrap(),
             },
             r#"{"op":"user_revoke","name":"alice"}"#,
-            r#"{"ok":{"revoked":[],"epoch":1}}"#,
+            r#"{"ok":{"revoked":[]}}"#,
         ),
         (
             AdminCommand::RemoveUser {
@@ -92,26 +92,23 @@ fn every_command() -> Vec<(AdminCommand, &'static str, &'static str)> {
         ),
         (
             AdminCommand::CreateKey {
-                label: Label::new("agent").unwrap(),
                 policy: PolicyFragment::default(),
                 lifetime: AdminCredentialLifetime::Default,
             },
-            r#"{"op":"key_create","label":"agent","policy":{},"ttl":null}"#,
+            r#"{"op":"key_create","policy":{},"ttl":null}"#,
             r#"{"error":{"kind":"rejected","message":"fixture"}}"#,
         ),
         (
-            AdminCommand::ListKeys {
-                filter: MintFilter::Label(Label::new("agent").unwrap()),
-            },
-            r#"{"op":"key_list","label":"agent"}"#,
+            AdminCommand::ListKeys,
+            r#"{"op":"key_list"}"#,
             r#"{"ok":[]}"#,
         ),
         (
             AdminCommand::RevokeKey {
-                revocation: Revoke::Label(Label::new("agent").unwrap()),
+                revocation: Revoke::Token("token".parse().unwrap()),
             },
-            r#"{"op":"key_revoke","by":{"Label":"agent"}}"#,
-            r#"{"ok":{"revoked":[],"epoch":null}}"#,
+            r#"{"op":"key_revoke","by":{"Token":"token"}}"#,
+            r#"{"ok":{"revoked":[]}}"#,
         ),
     ]
 }
@@ -127,7 +124,6 @@ async fn minted_response(path: &Path) -> Value {
         let admin = Administration::new(service, authority);
         let AdminOutcome::Minted(minted) = admin
             .execute(AdminCommand::CreateKey {
-                label: Label::new("agent").unwrap(),
                 policy: PolicyFragment::default(),
                 lifetime: AdminCredentialLifetime::Default,
             })
@@ -183,16 +179,16 @@ async fn every_admin_response_decodes_to_the_typed_outcome() {
                 .to_string(),
         ),
         (
-            r#"{"op":"key_create","label":"agent","policy":{},"ttl":60}"#.to_string(),
+            r#"{"op":"key_create","policy":{},"ttl":60}"#.to_string(),
             minted.to_string(),
         ),
         (
-            r#"{"op":"key_list","label":null}"#.to_string(),
+            r#"{"op":"key_list"}"#.to_string(),
             r#"{"ok":[]}"#.to_string(),
         ),
         (
             r#"{"op":"user_revoke","name":"alice"}"#.to_string(),
-            r#"{"ok":{"revoked":[],"epoch":1}}"#.to_string(),
+            r#"{"ok":{"revoked":[]}}"#.to_string(),
         ),
     ];
     let (socket, peer) = scripted_peer(&dir, exchanges).await;
@@ -218,7 +214,6 @@ async fn every_admin_response_decodes_to_the_typed_outcome() {
     assert_eq!(details.user.name.as_str(), "alice");
     let AdminOutcome::Minted(minted) = connection
         .call(AdminCommand::CreateKey {
-            label: Label::new("agent").unwrap(),
             policy: PolicyFragment::default(),
             lifetime: AdminCredentialLifetime::Explicit(Ttl::from_secs(60)),
         })
@@ -229,7 +224,7 @@ async fn every_admin_response_decodes_to_the_typed_outcome() {
     };
     assert!(minted.macaroon.expose().starts_with("noted_mac_"));
     assert!(matches!(
-        connection.call(AdminCommand::ListKeys { filter: MintFilter::All }).await.unwrap(),
+        connection.call(AdminCommand::ListKeys).await.unwrap(),
         AdminOutcome::Credentials(credentials) if credentials.is_empty()
     ));
     let AdminOutcome::Withdrawn(withdrawn) = connection
@@ -243,7 +238,7 @@ async fn every_admin_response_decodes_to_the_typed_outcome() {
     };
     assert_eq!(
         serde_json::to_value(withdrawn).unwrap(),
-        json!({"revoked": [], "epoch": 1})
+        json!({"revoked": []})
     );
     peer.await.unwrap();
 }

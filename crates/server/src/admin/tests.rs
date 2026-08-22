@@ -76,27 +76,24 @@ async fn every_operation_round_trips_with_exact_request_and_response_json() {
         "{\"ok\":{}}\n"
     );
     assert!(
-        line(
-            &mut stream,
-            r#"{"op":"key_create","label":"agent","policy":{},"ttl":null}"#
-        )
-        .await
-        .contains("noted_mac_")
+        line(&mut stream, r#"{"op":"key_create","policy":{},"ttl":null}"#)
+            .await
+            .contains("noted_mac_")
     );
     assert!(
-        line(&mut stream, r#"{"op":"key_list","label":null}"#)
+        line(&mut stream, r#"{"op":"key_list"}"#)
             .await
             .starts_with("{\"ok\":[{")
     );
     assert!(
-        line(&mut stream, r#"{"op":"key_revoke","by":{"Label":"agent"}}"#)
+        line(&mut stream, r#"{"op":"key_revoke","by":"All"}"#)
             .await
             .contains("\"revoked\":")
     );
     assert!(
         line(&mut stream, r#"{"op":"user_revoke","name":"alice"}"#)
             .await
-            .contains("\"epoch\":")
+            .contains("\"revoked\":")
     );
     assert_eq!(
         line(&mut stream, r#"{"op":"user_remove","name":"alice"}"#).await,
