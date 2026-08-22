@@ -7,8 +7,7 @@ use crate::db::{Db, RefreshRecord, UserRecord};
 use crate::oauth::OAuthClient;
 use crate::password::hash_password;
 use crate::types::{
-    ClientId, Fingerprint, Label, Owner, Password, PasswordHash, RefreshToken, SecretHash,
-    SessionId, Username,
+    ClientId, Fingerprint, Label, Owner, Password, PasswordHash, RefreshToken, SecretHash, Username,
 };
 use noted::PolicyFragment;
 use noted::error::{Result, rejected};
@@ -23,7 +22,6 @@ pub const DEFAULT_CREDENTIAL_TTL: Ttl = Ttl::from_secs(30 * 24 * 3600);
 pub const DEFAULT_CREDENTIAL_TTL_HUMAN: &str = "30d";
 
 const FINGERPRINT_CHARS: usize = 8;
-const SESSION_BYTES: usize = 16;
 const SECRET_BYTES: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,7 +79,6 @@ pub struct MintSummary {
 pub struct Login {
     pub access: Macaroon,
     pub refresh: RefreshToken,
-    pub session: SessionId,
     pub expires_at: UnixEpochSeconds,
 }
 
@@ -189,12 +186,7 @@ impl AuthService {
     /// A root under the user's key carrying `epoch=`, `session_id=` and
     /// `before=` at `ACCESS_TTL`, with an opaque `noted_ref_*` refresh beside it.
     pub fn issue_login(&self, name: &Username, client: &ClientId) -> Result<Login> {
-        self.mint_login(
-            name,
-            client,
-            SessionId::new(random_token(SESSION_BYTES)),
-            None,
-        )
+        self.mint_login(name, client, None)
     }
 
     /// The same, keeping the session the old refresh record names.
@@ -205,19 +197,16 @@ impl AuthService {
         client: &ClientId,
     ) -> Result<Login> {
         let old = sha256_hex(refresh.expose());
-        let session = self
-            .db
+        self.db
             .refresh(&old)?
-            .ok_or_else(|| rejected("unknown refresh token"))?
-            .session;
-        self.mint_login(name, client, session, Some(old))
+            .ok_or_else(|| rejected("unknown refresh token"))?;
+        self.mint_login(name, client, Some(old))
     }
 
     fn mint_login(
         &self,
         name: &Username,
         client: &ClientId,
-        session: SessionId,
         rotate: Option<SecretHash>,
     ) -> Result<Login> {
         self.require_user(name)?;
@@ -228,17 +217,12 @@ impl AuthService {
         let access = Macaroon::mint(
             &owner,
             &key,
-            &[
-                Caveat::Epoch(key.min_epoch),
-                Caveat::Session(session.clone()),
-                Caveat::Before(expires_at),
-            ],
+            &[Caveat::Epoch(key.min_epoch), Caveat::Before(expires_at)],
         )?;
         let refresh = format!("{PREFIX_REF}{}", random_token(SECRET_BYTES));
         let record = RefreshRecord {
             owner,
             client_id: client.clone(),
-            session: session.clone(),
             fingerprint: fingerprint(&refresh, PREFIX_REF),
             created_at,
             expires_at: created_at + self.default_ttl,
@@ -251,7 +235,6 @@ impl AuthService {
         Ok(Login {
             access,
             refresh: RefreshToken::new(refresh),
-            session,
             expires_at,
         })
     }

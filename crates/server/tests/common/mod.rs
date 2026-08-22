@@ -91,7 +91,6 @@ pub fn mint_key(svc: &Arc<AuthService>, label: &str, policy: PolicyFragment) -> 
     let ask = Mint {
         policy,
         ttl: svc.default_ttl(),
-        session: None,
         label: Some(Label::new(label).unwrap()),
     };
     minter

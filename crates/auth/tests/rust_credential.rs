@@ -8,7 +8,7 @@ use noted_auth::authority::{
 };
 use noted_auth::credential::{Caveat, KeyRecord, Macaroon, MacaroonId};
 use noted_auth::service::AuthService;
-use noted_auth::types::{ClientId, CredentialPresentation, Owner, RevocationEpoch, SessionId};
+use noted_auth::types::{ClientId, CredentialPresentation, Owner, RevocationEpoch};
 
 const DEFAULT_TTL: Ttl = Ttl::from_secs(30 * 24 * 3600);
 
@@ -37,7 +37,6 @@ fn a_minted_credential_carries_its_caveats_in_mint_order() {
     let caveats = vec![
         Caveat::Epoch(RevocationEpoch::initial()),
         Caveat::Policy(fragment(r#"{"scope":"dev"}"#)),
-        Caveat::Session(SessionId::new("session-1")),
         Caveat::Token(MacaroonId::fresh()),
         Caveat::Before(UnixEpochSeconds::from_secs(4_000_000_000)),
     ];
@@ -119,7 +118,6 @@ fn a_relay_minted_credential_presented_back_is_confined_once() {
     let ask = Mint {
         policy: fragment(r#"{"scope":"agent"}"#),
         ttl: Ttl::from_secs(3600),
-        session: None,
         label: None,
     };
     let minted = Minter::mint(&relay, &Verified::anonymous(), &ask).unwrap();
@@ -169,7 +167,6 @@ fn an_open_authority_honors_policy_and_before_and_ignores_revocation() {
             Caveat::Epoch(RevocationEpoch::initial()),
             Caveat::Policy(fragment(r#"{"scope":"dev"}"#)),
             Caveat::Token(MacaroonId::new("revoked-elsewhere")),
-            Caveat::Session(SessionId::new("revoked-elsewhere")),
             Caveat::Before(UnixEpochSeconds::from_secs(4_000_000_000)),
         ],
     )

@@ -14,7 +14,6 @@ use noted_auth::authority::{
     Denial, Mint, Minted, Minter, OpenAuthority, OriginAuthority, Revoke, Verified, Verifier,
 };
 use noted_auth::credential::MacaroonId;
-use noted_auth::types::SessionId;
 use serde_json::{Value, json};
 
 pub(crate) async fn run_blocking<F, T>(operation: F) -> noted::error::Result<T>
@@ -178,10 +177,6 @@ async fn mint(State(state): State<AuthState>, headers: HeaderMap, body: Bytes) -
             .and_then(Value::as_u64)
             .map(Ttl::from_secs)
             .unwrap_or(noted_auth::service::DEFAULT_CREDENTIAL_TTL),
-        session: asked
-            .get("session")
-            .and_then(Value::as_str)
-            .map(SessionId::new),
         label: None,
     };
     match run_blocking(move || minter.mint(&caller, &ask)).await {
@@ -219,10 +214,8 @@ async fn revoke(State(state): State<AuthState>, headers: HeaderMap, body: Bytes)
         Revoke::All
     } else if let Some(id) = asked.get("id").and_then(Value::as_str) {
         Revoke::Token(MacaroonId::new(id))
-    } else if let Some(session) = asked.get("session").and_then(Value::as_str) {
-        Revoke::Session(SessionId::new(session))
     } else {
-        return detail(StatusCode::BAD_REQUEST, "provide id, session, or all");
+        return detail(StatusCode::BAD_REQUEST, "provide id or all");
     };
     match run_blocking(move || minter.revoke(&caller, &ask)).await {
         Ok(Ok(withdrawn)) => Json(withdrawn).into_response(),

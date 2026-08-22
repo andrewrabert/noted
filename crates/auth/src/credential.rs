@@ -10,7 +10,7 @@ use rand::Rng;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use crate::service::PREFIX_MAC;
-use crate::types::{Fingerprint, Owner, RevocationEpoch, ServerId, SessionId};
+use crate::types::{Fingerprint, Owner, RevocationEpoch, ServerId};
 use noted::PolicyFragment;
 use noted::error::{Result, rejected};
 use noted::newtype::str_newtype;
@@ -58,14 +58,12 @@ pub enum Caveat {
     Before(UnixEpochSeconds),
     Policy(PolicyFragment),
     Token(MacaroonId),
-    Session(SessionId),
 }
 
 const KEY_EPOCH: &str = "epoch";
 const KEY_BEFORE: &str = "before";
 const KEY_POLICY: &str = "policy";
 const KEY_TOKEN: &str = "token_id";
-const KEY_SESSION: &str = "session_id";
 
 impl Display for Caveat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -74,7 +72,6 @@ impl Display for Caveat {
             Caveat::Before(v) => write!(f, "{KEY_BEFORE}={v}"),
             Caveat::Policy(v) => write!(f, "{KEY_POLICY}={v}"),
             Caveat::Token(v) => write!(f, "{KEY_TOKEN}={v}"),
-            Caveat::Session(v) => write!(f, "{KEY_SESSION}={v}"),
         }
     }
 }
@@ -92,7 +89,6 @@ impl FromStr for Caveat {
             KEY_BEFORE => Ok(Caveat::Before(value.parse().map_err(|_| bad())?)),
             KEY_POLICY => Ok(Caveat::Policy(value.parse().map_err(|_| bad())?)),
             KEY_TOKEN => Ok(Caveat::Token(MacaroonId::new(value))),
-            KEY_SESSION => Ok(Caveat::Session(SessionId::new(value))),
             _ => Err(bad()),
         }
     }
