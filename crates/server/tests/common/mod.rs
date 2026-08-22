@@ -17,7 +17,7 @@ use noted::types::{Source, Ttl};
 use noted::{NotedRoot, PolicyFragment};
 use noted_auth::AuthService;
 use noted_auth::authority::{Mint, Minter, OriginAuthority, Verified};
-use noted_auth::types::{ClientId, Label, Username};
+use noted_auth::types::{ClientId, Username};
 use noted_server::auth::AuthState;
 use noted_server::http::{Served, build_app};
 use noted_server::serve::{Bind, Bound};
@@ -84,14 +84,12 @@ pub fn auth_service(dir: &tempfile::TempDir) -> Arc<AuthService> {
     ))
 }
 
-/// A credential the server minted from its own, labelled so an admin can name
-/// it: what an agent carries.
-pub fn mint_key(svc: &Arc<AuthService>, label: &str, policy: PolicyFragment) -> String {
+/// A credential the server minted from its own: what an agent carries.
+pub fn mint_key(svc: &Arc<AuthService>, policy: PolicyFragment) -> String {
     let minter = OriginAuthority::new(svc.clone());
     let ask = Mint {
         policy,
         ttl: svc.default_ttl(),
-        label: Some(Label::new(label).unwrap()),
     };
     minter
         .mint(&Verified::anonymous(), &ask)
@@ -128,7 +126,7 @@ pub async fn origin_app(root: NotedRoot, svc: &Arc<AuthService>) -> Router {
 
 pub async fn app_with_key(dir: &tempfile::TempDir) -> (Router, String) {
     let svc = auth_service(dir);
-    let token = mint_key(&svc, "test", PolicyFragment::default());
+    let token = mint_key(&svc, PolicyFragment::default());
     (origin_app(root(dir), &svc).await, token)
 }
 

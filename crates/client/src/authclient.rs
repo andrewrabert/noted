@@ -252,11 +252,6 @@ impl Session {
         let body = match &selector {
             Revoke::All => json!({ "all": true }),
             Revoke::Token(id) => json!({ "id": id.as_str() }),
-            Revoke::Label(_) => {
-                return Err(rejected(
-                    "a label names a credential only to its own server",
-                ));
-            }
         };
         let endpoint = self.url.join("macaroon/revoke");
         let answer = post_json(&endpoint, credential.expose(), &body).await?;

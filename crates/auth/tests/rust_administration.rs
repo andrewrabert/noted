@@ -3,11 +3,11 @@ use std::sync::Arc;
 use noted::PolicyFragment;
 use noted::types::Ttl;
 use noted_auth::administration::{
-    AdminCommand, AdminCredentialLifetime, AdminOutcome, Administration, MintFilter,
+    AdminCommand, AdminCredentialLifetime, AdminOutcome, Administration,
 };
 use noted_auth::authority::{OriginAuthority, Revoke};
 use noted_auth::credential::MacaroonId;
-use noted_auth::types::{Label, Password, Username};
+use noted_auth::types::{Password, Username};
 use noted_auth::{AuthService, Db};
 
 fn fixture() -> (tempfile::TempDir, Administration) {
@@ -66,7 +66,6 @@ fn every_admin_command_returns_its_matching_closed_outcome() {
     ));
     let minted = admin
         .execute(AdminCommand::CreateKey {
-            label: Label::new("agent").unwrap(),
             policy: PolicyFragment::default(),
             lifetime: AdminCredentialLifetime::Default,
         })
@@ -75,11 +74,7 @@ fn every_admin_command_returns_its_matching_closed_outcome() {
         panic!("minted outcome expected")
     };
     assert!(matches!(
-        admin
-            .execute(AdminCommand::ListKeys {
-                filter: MintFilter::All
-            })
-            .unwrap(),
+        admin.execute(AdminCommand::ListKeys).unwrap(),
         AdminOutcome::Credentials(_)
     ));
     assert!(matches!(
@@ -134,14 +129,12 @@ fn default_and_explicit_key_lifetimes_preserve_existing_minting() {
     let (_dir, admin) = fixture();
     let default = admin
         .execute(AdminCommand::CreateKey {
-            label: Label::new("default").unwrap(),
             policy: PolicyFragment::default(),
             lifetime: AdminCredentialLifetime::Default,
         })
         .unwrap();
     let explicit = admin
         .execute(AdminCommand::CreateKey {
-            label: Label::new("short").unwrap(),
             policy: PolicyFragment::default(),
             lifetime: AdminCredentialLifetime::Explicit(Ttl::from_secs(10)),
         })

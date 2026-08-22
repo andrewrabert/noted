@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::authority::{Mint, Minter, Revoke, Verified};
 use crate::service::{AuthService, MintSummary, UserSummary};
-use crate::types::{Label, Owner, Password, Username};
+use crate::types::{Owner, Password, Username};
 use noted::PolicyFragment;
 use noted::error::{Result, rejected};
 use noted::types::Ttl;
@@ -11,12 +11,6 @@ use noted::types::Ttl;
 pub enum AdminCredentialLifetime {
     Default,
     Explicit(Ttl),
-}
-
-#[derive(Clone, Debug)]
-pub enum MintFilter {
-    All,
-    Label(Label),
 }
 
 #[derive(Clone, Debug)]
@@ -44,13 +38,10 @@ pub enum AdminCommand {
         username: Username,
     },
     CreateKey {
-        label: Label,
         policy: PolicyFragment,
         lifetime: AdminCredentialLifetime,
     },
-    ListKeys {
-        filter: MintFilter,
-    },
+    ListKeys,
     RevokeKey {
         revocation: Revoke,
     },
@@ -126,36 +117,18 @@ impl Administration {
                 self.service.user_remove(&username)?;
                 Ok(AdminOutcome::Completed)
             }
-            AdminCommand::CreateKey {
-                label,
-                policy,
-                lifetime,
-            } => {
+            AdminCommand::CreateKey { policy, lifetime } => {
                 let ttl = match lifetime {
                     AdminCredentialLifetime::Default => self.service.default_ttl(),
                     AdminCredentialLifetime::Explicit(ttl) => ttl,
                 };
-                Ok(AdminOutcome::Minted(self.minter.mint(
-                    self.minter.own(),
-                    &Mint {
-                        policy,
-                        ttl,
-                        label: Some(label),
-                    },
-                )?))
+                Ok(AdminOutcome::Minted(
+                    self.minter.mint(self.minter.own(), &Mint { policy, ttl })?,
+                ))
             }
-            AdminCommand::ListKeys { filter } => {
-                let credentials = self
-                    .minter
-                    .minted(&self.owner()?)?
-                    .into_iter()
-                    .filter(|mint| match &filter {
-                        MintFilter::All => true,
-                        MintFilter::Label(label) => mint.label.as_ref() == Some(label),
-                    })
-                    .collect();
-                Ok(AdminOutcome::Credentials(credentials))
-            }
+            AdminCommand::ListKeys => Ok(AdminOutcome::Credentials(
+                self.minter.minted(&self.owner()?)?,
+            )),
             AdminCommand::RevokeKey { revocation } => Ok(AdminOutcome::Withdrawn(
                 self.minter.revoke(self.minter.own(), &revocation)?,
             )),

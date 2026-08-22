@@ -8,7 +8,7 @@ use common::{json_body, post_json, post_mcp, post_mcp_at};
 
 async fn keyed_app(dir: &tempfile::TempDir, policy: PolicyFragment) -> (axum::Router, String) {
     let svc = common::auth_service(dir);
-    let token = common::mint_key(&svc, "t", policy);
+    let token = common::mint_key(&svc, policy);
     (common::origin_app(common::root(dir), &svc).await, token)
 }
 
@@ -199,8 +199,8 @@ async fn mcp_refuses_a_write_the_policy_denies() {
 async fn only_a_live_macaroon_of_this_server_reaches_a_tool() {
     let dir = common::fixture_dir();
     let svc = common::auth_service(&dir);
-    let live = common::mint_key(&svc, "live", PolicyFragment::default());
-    let doomed = common::mint_key(&svc, "dead", PolicyFragment::default());
+    let live = common::mint_key(&svc, PolicyFragment::default());
+    let doomed = common::mint_key(&svc, PolicyFragment::default());
     let app = common::origin_app(common::root(&dir), &svc).await;
 
     let probe = |tok: Option<String>| {

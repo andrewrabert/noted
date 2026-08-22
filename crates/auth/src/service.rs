@@ -7,7 +7,7 @@ use crate::db::{Db, RefreshRecord, UserRecord};
 use crate::oauth::OAuthClient;
 use crate::password::hash_password;
 use crate::types::{
-    ClientId, Fingerprint, Label, Owner, Password, PasswordHash, RefreshToken, SecretHash, Username,
+    ClientId, Fingerprint, Owner, Password, PasswordHash, RefreshToken, SecretHash, Username,
 };
 use noted::PolicyFragment;
 use noted::error::{Result, rejected};
@@ -69,7 +69,6 @@ pub struct UserSummary {
 pub struct MintSummary {
     pub token_id: MacaroonId,
     pub owner: Owner,
-    pub label: Option<Label>,
     pub policy: PolicyFragment,
     pub fingerprint: Fingerprint,
     pub created_at: UnixEpochSeconds,
@@ -183,13 +182,13 @@ impl AuthService {
         Ok(rec)
     }
 
-    /// A root under the user's key carrying `epoch=`, `session_id=` and
-    /// `before=` at `ACCESS_TTL`, with an opaque `noted_ref_*` refresh beside it.
+    /// A root under the user's key carrying `before=` at `ACCESS_TTL`, with an
+    /// opaque `noted_ref_*` refresh beside it.
     pub fn issue_login(&self, name: &Username, client: &ClientId) -> Result<Login> {
         self.mint_login(name, client, None)
     }
 
-    /// The same, keeping the session the old refresh record names.
+    /// The same, atomically replacing the old refresh record.
     pub fn rotate_login(
         &self,
         refresh: &RefreshToken,
@@ -214,11 +213,7 @@ impl AuthService {
         let owner = Owner::User(name.clone());
         let created_at = UnixEpochSeconds::now()?;
         let expires_at = created_at + ACCESS_TTL;
-        let access = Macaroon::mint(
-            &owner,
-            &key,
-            &[Caveat::Epoch(key.min_epoch), Caveat::Before(expires_at)],
-        )?;
+        let access = Macaroon::mint(&owner, &key, &[Caveat::Before(expires_at)])?;
         let refresh = format!("{PREFIX_REF}{}", random_token(SECRET_BYTES));
         let record = RefreshRecord {
             owner,

@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use noted::error::{Result, json_error};
 use noted_auth::administration::{
-    AdminCommand, AdminCredentialLifetime, AdminOutcome, Administration, MintFilter,
+    AdminCommand, AdminCredentialLifetime, AdminOutcome, Administration,
 };
-use noted_auth::types::{Label, Password, Username};
+use noted_auth::types::{Password, Username};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 #[cfg(unix)]
@@ -41,13 +41,10 @@ enum AdminRequest {
         name: String,
     },
     KeyCreate {
-        label: String,
         policy: noted::PolicyFragment,
         ttl: Option<noted::types::Ttl>,
     },
-    KeyList {
-        label: Option<String>,
-    },
+    KeyList,
     KeyRevoke {
         by: noted_auth::authority::Revoke,
     },
@@ -96,20 +93,13 @@ impl AdminRequest {
             AdminRequest::UserRemove { name } => AdminCommand::RemoveUser {
                 username: Username::new(name)?,
             },
-            AdminRequest::KeyCreate { label, policy, ttl } => AdminCommand::CreateKey {
-                label: Label::new(label)?,
+            AdminRequest::KeyCreate { policy, ttl } => AdminCommand::CreateKey {
                 policy,
                 lifetime: ttl
                     .map(AdminCredentialLifetime::Explicit)
                     .unwrap_or(AdminCredentialLifetime::Default),
             },
-            AdminRequest::KeyList { label } => AdminCommand::ListKeys {
-                filter: label
-                    .map(Label::new)
-                    .transpose()?
-                    .map(MintFilter::Label)
-                    .unwrap_or(MintFilter::All),
-            },
+            AdminRequest::KeyList => AdminCommand::ListKeys,
             AdminRequest::KeyRevoke { by } => AdminCommand::RevokeKey { revocation: by },
         })
     }

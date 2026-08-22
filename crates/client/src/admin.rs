@@ -4,7 +4,7 @@ use std::sync::Arc;
 use noted::error::{Result, rejected, unavailable};
 use noted_auth::Db;
 use noted_auth::administration::{
-    AdminCommand, AdminCredentialLifetime, AdminOutcome, Administration, MintFilter, UserDetails,
+    AdminCommand, AdminCredentialLifetime, AdminOutcome, Administration, UserDetails,
 };
 use noted_auth::authority::{Minted, OriginAuthority};
 use noted_auth::service::{AuthService, DEFAULT_CREDENTIAL_TTL};
@@ -41,13 +41,10 @@ enum AdminRequest {
         name: String,
     },
     KeyCreate {
-        label: String,
         policy: noted::PolicyFragment,
         ttl: Option<noted::types::Ttl>,
     },
-    KeyList {
-        label: Option<String>,
-    },
+    KeyList,
     KeyRevoke {
         by: noted_auth::authority::Revoke,
     },
@@ -104,24 +101,14 @@ impl AdminRequest {
             AdminCommand::RemoveUser { username } => AdminRequest::UserRemove {
                 name: username.as_str().to_string(),
             },
-            AdminCommand::CreateKey {
-                label,
-                policy,
-                lifetime,
-            } => AdminRequest::KeyCreate {
-                label: label.as_str().to_string(),
+            AdminCommand::CreateKey { policy, lifetime } => AdminRequest::KeyCreate {
                 policy: policy.clone(),
                 ttl: match lifetime {
                     AdminCredentialLifetime::Default => None,
                     AdminCredentialLifetime::Explicit(ttl) => Some(*ttl),
                 },
             },
-            AdminCommand::ListKeys { filter } => AdminRequest::KeyList {
-                label: match filter {
-                    MintFilter::All => None,
-                    MintFilter::Label(label) => Some(label.as_str().to_string()),
-                },
-            },
+            AdminCommand::ListKeys => AdminRequest::KeyList,
             AdminCommand::RevokeKey { revocation } => AdminRequest::KeyRevoke {
                 by: revocation.clone(),
             },
@@ -160,7 +147,7 @@ impl AdminResponse {
                     expires_at: minted.expires_at,
                 })
             }
-            AdminCommand::ListKeys { .. } => AdminOutcome::Credentials(decode(value)?),
+            AdminCommand::ListKeys => AdminOutcome::Credentials(decode(value)?),
             AdminCommand::RevokeUser { .. } | AdminCommand::RevokeKey { .. } => {
                 AdminOutcome::Withdrawn(decode(value)?)
             }

@@ -55,7 +55,7 @@ async fn mint_and_revoke_keep_success_and_domain_error_responses_after_blocking_
 async fn revoke_preserves_selector_precedence_errors_denials_and_success_shape() {
     let dir = common::fixture_dir();
     let service = common::auth_service(&dir);
-    let token = common::mint_key(&service, "agent", PolicyFragment::default());
+    let token = common::mint_key(&service, PolicyFragment::default());
     let app = common::origin_app(common::root(&dir), &service).await;
     let (status, body) = common::post_json(
         &app,
@@ -65,7 +65,13 @@ async fn revoke_preserves_selector_precedence_errors_denials_and_success_shape()
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(common::json_body(&body)["epoch"].is_number());
+    assert_eq!(
+        common::json_body(&body)["revoked"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     let (status, body) =
         common::post_json(&app, "/macaroon/revoke", Some(&token), &json!({})).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);

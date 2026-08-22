@@ -10,7 +10,7 @@ use rand::Rng;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use crate::service::PREFIX_MAC;
-use crate::types::{Fingerprint, Owner, RevocationEpoch, ServerId};
+use crate::types::{Fingerprint, Owner};
 use noted::PolicyFragment;
 use noted::error::{Result, rejected};
 use noted::newtype::str_newtype;
@@ -37,30 +37,24 @@ impl MacaroonId {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct KeyRecord {
     pub secret: Vec<u8>,
-    pub min_epoch: RevocationEpoch,
 }
 
 impl KeyRecord {
     pub fn fresh() -> KeyRecord {
         let mut secret = vec![0u8; KEY_BYTES];
         rand::rng().fill_bytes(&mut secret);
-        KeyRecord {
-            secret,
-            min_epoch: RevocationEpoch::initial(),
-        }
+        KeyRecord { secret }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum Caveat {
-    Epoch(RevocationEpoch),
     Before(UnixEpochSeconds),
     Policy(PolicyFragment),
     Token(MacaroonId),
 }
 
-const KEY_EPOCH: &str = "epoch";
 const KEY_BEFORE: &str = "before";
 const KEY_POLICY: &str = "policy";
 const KEY_TOKEN: &str = "token_id";
@@ -68,7 +62,6 @@ const KEY_TOKEN: &str = "token_id";
 impl Display for Caveat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Caveat::Epoch(v) => write!(f, "{KEY_EPOCH}={v}"),
             Caveat::Before(v) => write!(f, "{KEY_BEFORE}={v}"),
             Caveat::Policy(v) => write!(f, "{KEY_POLICY}={v}"),
             Caveat::Token(v) => write!(f, "{KEY_TOKEN}={v}"),
@@ -85,7 +78,6 @@ impl FromStr for Caveat {
             .ok_or_else(|| rejected(format!("unqualified macaroon caveat: '{s}'")))?;
         let bad = || rejected(format!("invalid macaroon caveat: '{s}'"));
         match key {
-            KEY_EPOCH => Ok(Caveat::Epoch(value.parse().map_err(|_| bad())?)),
             KEY_BEFORE => Ok(Caveat::Before(value.parse().map_err(|_| bad())?)),
             KEY_POLICY => Ok(Caveat::Policy(value.parse().map_err(|_| bad())?)),
             KEY_TOKEN => Ok(Caveat::Token(MacaroonId::new(value))),
@@ -188,7 +180,7 @@ impl Macaroon {
 
     /// A bare root under a key nothing keeps.
     pub fn ephemeral() -> Result<Macaroon> {
-        Macaroon::mint(&Owner::Server(ServerId::fresh()), &KeyRecord::fresh(), &[])
+        Macaroon::mint(&Owner::Server, &KeyRecord::fresh(), &[])
     }
 
     pub fn extended(&self, caveats: &[Caveat]) -> Result<Macaroon> {

@@ -4,11 +4,11 @@ use noted::PolicyFragment;
 use noted::types::{Ttl, UnixEpochSeconds};
 use noted_auth::Db;
 use noted_auth::authority::{
-    Mint, Minter, OpenAuthority, OriginAuthority, RelayCredential, Revoke, Verified, Verifier,
+    Mint, Minter, OpenAuthority, OriginAuthority, RelayCredential, Verified, Verifier,
 };
 use noted_auth::credential::{Caveat, KeyRecord, Macaroon, MacaroonId};
 use noted_auth::service::AuthService;
-use noted_auth::types::{ClientId, CredentialPresentation, Owner, RevocationEpoch};
+use noted_auth::types::{ClientId, CredentialPresentation, Owner};
 
 const DEFAULT_TTL: Ttl = Ttl::from_secs(30 * 24 * 3600);
 
@@ -35,7 +35,6 @@ fn caller_of(relay: &RelayCredential, caveats: &[Caveat]) -> Verified {
 #[test]
 fn a_minted_credential_carries_its_caveats_in_mint_order() {
     let caveats = vec![
-        Caveat::Epoch(RevocationEpoch::initial()),
         Caveat::Policy(fragment(r#"{"scope":"dev"}"#)),
         Caveat::Token(MacaroonId::fresh()),
         Caveat::Before(UnixEpochSeconds::from_secs(4_000_000_000)),
@@ -48,8 +47,7 @@ fn a_minted_credential_carries_its_caveats_in_mint_order() {
 #[test]
 fn a_descendant_rebuilds_from_its_ancestor_and_a_stranger_does_not() {
     let key = KeyRecord::fresh();
-    let root =
-        Macaroon::mint(&owner(), &key, &[Caveat::Epoch(RevocationEpoch::initial())]).unwrap();
+    let root = Macaroon::mint(&owner(), &key, &[]).unwrap();
     let child = root
         .extended(&[Caveat::Policy(fragment(r#"{"scope":"dev"}"#))])
         .unwrap();
@@ -72,12 +70,7 @@ fn a_descendant_rebuilds_from_its_ancestor_and_a_stranger_does_not() {
 
 #[test]
 fn beyond_yields_only_the_caveats_past_the_ancestor() {
-    let root = Macaroon::mint(
-        &owner(),
-        &KeyRecord::fresh(),
-        &[Caveat::Epoch(RevocationEpoch::initial())],
-    )
-    .unwrap();
+    let root = Macaroon::mint(&owner(), &KeyRecord::fresh(), &[]).unwrap();
     let added = vec![
         Caveat::Policy(fragment(r#"{"scope":"dev"}"#)),
         Caveat::Before(UnixEpochSeconds::from_secs(4_000_000_000)),
@@ -118,7 +111,6 @@ fn a_relay_minted_credential_presented_back_is_confined_once() {
     let ask = Mint {
         policy: fragment(r#"{"scope":"agent"}"#),
         ttl: Ttl::from_secs(3600),
-        label: None,
     };
     let minted = Minter::mint(&relay, &Verified::anonymous(), &ask).unwrap();
 
@@ -164,7 +156,6 @@ fn an_open_authority_honors_policy_and_before_and_ignores_revocation() {
         &owner(),
         &KeyRecord::fresh(),
         &[
-            Caveat::Epoch(RevocationEpoch::initial()),
             Caveat::Policy(fragment(r#"{"scope":"dev"}"#)),
             Caveat::Token(MacaroonId::new("revoked-elsewhere")),
             Caveat::Before(UnixEpochSeconds::from_secs(4_000_000_000)),
@@ -192,7 +183,7 @@ fn an_open_authority_honors_policy_and_before_and_ignores_revocation() {
 }
 
 #[test]
-fn an_origin_authority_refuses_a_forged_signature_and_a_bumped_epoch() {
+fn an_origin_authority_refuses_a_forged_signature() {
     let dir = tempfile::tempdir().unwrap();
     let db = Arc::new(Db::open(&dir.path().join("auth.redb")).unwrap());
     let service = Arc::new(AuthService::new(db, DEFAULT_TTL));
@@ -219,22 +210,6 @@ fn an_origin_authority_refuses_a_forged_signature_and_a_bumped_epoch() {
     assert!(
         authority
             .verify(Some(&CredentialPresentation::submitted(forged.expose())))
-            .is_err()
-    );
-
-    let withdrawn = authority
-        .revoke(
-            &Verified::as_owner(Owner::user("alice").unwrap()),
-            &Revoke::All,
-        )
-        .unwrap();
-    assert!(withdrawn.epoch.is_some());
-    let authority = OriginAuthority::new(service.clone());
-    assert!(
-        authority
-            .verify(Some(&CredentialPresentation::submitted(
-                login.access.expose()
-            )))
             .is_err()
     );
 }
