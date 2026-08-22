@@ -5,7 +5,7 @@ use noted_auth::Db;
 use noted_auth::authority::{Mint, Minter, OriginAuthority, Revoke, Verified, Verifier};
 use noted_auth::credential::{Caveat, Macaroon, MacaroonId};
 use noted_auth::service::{AuthService, PREFIX_MAC, PREFIX_REF, sha256_hex};
-use noted_auth::types::{ClientId, CredentialPresentation, Owner, SessionId};
+use noted_auth::types::{ClientId, CredentialPresentation, Owner};
 
 const DEFAULT_TTL: noted::types::Ttl = noted::types::Ttl::from_secs(30 * 24 * 3600);
 
@@ -141,20 +141,6 @@ fn revoking_all_of_a_user_kills_its_sessions_but_passwd_does_not() {
 }
 
 #[test]
-fn a_rotation_keeps_the_session_and_retires_the_old_refresh() {
-    let (_d, svc) = service();
-    svc.user_add(&un("alice"), &pw("pw")).unwrap();
-    let first = svc.issue_login(&un("alice"), &client()).unwrap();
-    let second = svc
-        .rotate_login(&first.refresh, &un("alice"), &client())
-        .unwrap();
-    assert_eq!(first.session, second.session);
-    assert_ne!(first.refresh.expose(), second.refresh.expose());
-    assert!(svc.refresh_owner(&first.refresh).unwrap().is_none());
-    assert!(svc.refresh_owner(&second.refresh).unwrap().is_some());
-}
-
-#[test]
 fn a_refresh_token_is_no_access_credential() {
     let (_d, svc) = service();
     svc.user_add(&un("alice"), &pw("pw")).unwrap();
@@ -234,7 +220,6 @@ fn a_minted_credential_is_ledgered_and_revocable() {
     let ask = Mint {
         policy: held(r#"{"scope":"dev"}"#),
         ttl: DEFAULT_TTL,
-        session: None,
         label: Some(lb("backup")),
     };
     let minted = authority.mint(authority.own(), &ask).unwrap();
@@ -272,7 +257,6 @@ fn a_bearer_names_the_token_it_revokes() {
     let ask = Mint {
         policy: PolicyFragment::default(),
         ttl: DEFAULT_TTL,
-        session: None,
         label: None,
     };
     let minted = authority.mint(authority.own(), &ask).unwrap();
@@ -290,38 +274,9 @@ fn a_revocation_the_ledger_cannot_name_is_refused() {
     for ask in [
         Revoke::Token(MacaroonId::new("never-minted")),
         Revoke::Label(lb("unused")),
-        Revoke::Session(SessionId::new("no-such-run")),
     ] {
         assert!(authority.revoke(authority.own(), &ask).is_err());
     }
-}
-
-#[test]
-fn revoking_a_session_withdraws_the_session_and_every_credential_of_that_run() {
-    let (_d, svc) = service();
-    let authority = OriginAuthority::new(svc.clone());
-    let ask = |session: &str| Mint {
-        policy: PolicyFragment::default(),
-        ttl: DEFAULT_TTL,
-        session: Some(SessionId::new(session)),
-        label: None,
-    };
-    let doomed = authority.mint(authority.own(), &ask("run-1")).unwrap();
-    let sibling = authority.mint(authority.own(), &ask("run-2")).unwrap();
-
-    let withdrawn = authority
-        .revoke(authority.own(), &Revoke::Session(SessionId::new("run-1")))
-        .unwrap();
-    assert_eq!(
-        withdrawn.revoked,
-        vec![
-            Caveat::Token(doomed.token_id.clone()),
-            Caveat::Session(SessionId::new("run-1")),
-        ]
-    );
-    assert!(withdrawn.epoch.is_none());
-    assert!(policy_of(&authority, doomed.macaroon.expose()).is_none());
-    assert!(policy_of(&authority, sibling.macaroon.expose()).is_some());
 }
 
 #[test]
@@ -331,7 +286,6 @@ fn revoking_all_withdraws_every_ledger_row_and_moves_the_epoch() {
     let ask = Mint {
         policy: PolicyFragment::default(),
         ttl: DEFAULT_TTL,
-        session: None,
         label: None,
     };
     let child = authority.mint(authority.own(), &ask).unwrap();
@@ -343,36 +297,6 @@ fn revoking_all_withdraws_every_ledger_row_and_moves_the_epoch() {
     assert!(authority.minted(&owner).unwrap().is_empty());
     let authority = OriginAuthority::new(svc.clone());
     assert!(policy_of(&authority, child.macaroon.expose()).is_none());
-}
-
-#[test]
-fn a_session_id_and_a_token_id_spelled_alike_cannot_revoke_one_another() {
-    let (_d, svc) = service();
-    let authority = OriginAuthority::new(svc.clone());
-    let minted = authority
-        .mint(
-            authority.own(),
-            &Mint {
-                policy: PolicyFragment::default(),
-                ttl: DEFAULT_TTL,
-                session: Some(SessionId::new("shared")),
-                label: None,
-            },
-        )
-        .unwrap();
-    authority
-        .revoke(authority.own(), &Revoke::Session(SessionId::new("shared")))
-        .unwrap();
-    assert!(
-        !svc.db()
-            .is_revoked(&Caveat::Token(MacaroonId::new("shared")))
-            .unwrap()
-    );
-    assert!(
-        svc.db()
-            .is_revoked(&Caveat::Token(minted.token_id))
-            .unwrap()
-    );
 }
 
 #[test]

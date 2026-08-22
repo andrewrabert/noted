@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::credential::{Caveat, KeyRecord, Macaroon, MacaroonId};
 use crate::db::MintRecord;
 use crate::service::{AuthService, MintSummary};
-use crate::types::{CredentialPresentation, Fingerprint, Label, Owner, RevocationEpoch, SessionId};
+use crate::types::{CredentialPresentation, Fingerprint, Label, Owner, RevocationEpoch};
 use noted::PolicyFragment;
 use noted::error::{Result, rejected};
 use noted::types::{Ttl, UnixEpochSeconds};
@@ -90,7 +90,6 @@ pub trait Verifier: Send + Sync + 'static {
 pub struct Mint {
     pub policy: PolicyFragment,
     pub ttl: Ttl,
-    pub session: Option<SessionId>,
     pub label: Option<Label>,
 }
 
@@ -106,7 +105,6 @@ pub struct Minted {
 pub enum Revoke {
     Label(Label),
     Token(MacaroonId),
-    Session(SessionId),
     All,
 }
 
@@ -128,7 +126,6 @@ impl Revoke {
     fn caveat(&self) -> Option<Caveat> {
         match self {
             Revoke::Token(id) => Some(Caveat::Token(id.clone())),
-            Revoke::Session(id) => Some(Caveat::Session(id.clone())),
             Revoke::Label(_) | Revoke::All => None,
         }
     }
@@ -138,7 +135,6 @@ impl Revoke {
         match self {
             Revoke::Token(token) => id == token,
             Revoke::Label(label) => rec.label.as_ref() == Some(label),
-            Revoke::Session(session) => rec.session.as_ref() == Some(session),
             Revoke::All => true,
         }
     }
@@ -206,10 +202,7 @@ pub trait Minter: Send + Sync + 'static {
 
 /// What an ask puts ahead of the `token_id=` and `before=` of the mint it asks for.
 fn ask_caveats(ask: &Mint) -> Vec<Caveat> {
-    let mut caveats = vec![Caveat::Policy(ask.policy.clone())];
-    if let Some(session) = &ask.session {
-        caveats.push(Caveat::Session(session.clone()));
-    }
+    let caveats = vec![Caveat::Policy(ask.policy.clone())];
     caveats
 }
 
@@ -224,7 +217,6 @@ fn ledger_record(ask: &Mint, owner: &Owner, minted: &Minted, now: UnixEpochSecon
     MintRecord {
         owner: owner.clone(),
         label: ask.label.clone(),
-        session: ask.session.clone(),
         policy: ask.policy.clone(),
         fingerprint: minted.fingerprint.clone(),
         created_at: now,
@@ -330,9 +322,7 @@ impl Verifier for OriginAuthority {
                     return unauthorized("credential expired");
                 }
                 Caveat::Policy(fragment) => fragments.push(fragment.clone()),
-                Caveat::Token(_) | Caveat::Session(_)
-                    if self.service.db().is_revoked(caveat).unwrap_or(true) =>
-                {
+                Caveat::Token(_) if self.service.db().is_revoked(caveat).unwrap_or(true) => {
                     return unauthorized("credential revoked");
                 }
                 _ => {}
@@ -553,7 +543,7 @@ impl Verifier for RelayCredential {
                     return unauthorized("credential expired");
                 }
                 Caveat::Policy(fragment) => fragments.push(fragment.clone()),
-                Caveat::Token(_) | Caveat::Session(_) if self.is_revoked(caveat) => {
+                Caveat::Token(_) if self.is_revoked(caveat) => {
                     return unauthorized("credential revoked");
                 }
                 _ => {}

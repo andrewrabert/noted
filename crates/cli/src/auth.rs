@@ -6,7 +6,6 @@ use serde_json::json;
 use noted::error::{Result, rejected};
 use noted::types::Ttl;
 use noted_auth::authority::{Revoke, Withdrawn};
-use noted_auth::types::SessionId;
 use noted_client::authclient::{self, Ask, Granted, Session};
 
 use crate::args::{EntryFlags, parse_ttl};
@@ -55,8 +54,6 @@ struct MintCmd {
     #[arg(long, value_parser = parse_ttl, default_value = "1h")]
     ttl: Ttl,
     #[arg(long)]
-    session: Option<String>,
-    #[arg(long)]
     json: bool,
 }
 
@@ -65,8 +62,6 @@ struct RevokeCmd {
     #[arg(long)]
     url: Option<String>,
     id: Option<String>,
-    #[arg(long)]
-    session: Option<String>,
     #[arg(long)]
     all: bool,
 }
@@ -143,7 +138,6 @@ async fn run_mint(m: MintCmd, config: &Config) -> Result<ExitCode> {
         .mint(&Ask {
             policy: config.policy_fragment(&m.entries)?,
             ttl: m.ttl,
-            session: m.session.map(SessionId::new),
         })
         .await?;
     print_minted(&granted, m.json);
@@ -154,12 +148,10 @@ async fn run_revoke(r: RevokeCmd, config: &Config) -> Result<ExitCode> {
     let url = config.login_url()?;
     let selector = if r.all {
         Revoke::All
-    } else if let Some(s) = r.session {
-        Revoke::Session(SessionId::new(s))
     } else if let Some(id) = r.id {
         Revoke::Token(id.parse()?)
     } else {
-        return Err(rejected("provide an id, --session, or --all"));
+        return Err(rejected("provide an id or --all"));
     };
     let session = Session::open(
         &url,

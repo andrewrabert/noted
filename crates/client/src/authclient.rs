@@ -14,7 +14,7 @@ use noted::util::random_token;
 use noted::{Bearer, PolicyFragment};
 use noted_auth::authority::{Revoke, Withdrawn};
 use noted_auth::credential::{Macaroon, MacaroonId};
-use noted_auth::types::{ClientId, Fingerprint, RefreshToken, SessionId};
+use noted_auth::types::{ClientId, Fingerprint, RefreshToken};
 
 async fn get_json(client: &reqwest::Client, url: &HttpUrl) -> Result<Value> {
     let resp = client
@@ -163,7 +163,6 @@ pub async fn login(url: &HttpUrl) -> Result<Credential> {
 pub struct Ask {
     pub policy: PolicyFragment,
     pub ttl: Ttl,
-    pub session: Option<SessionId>,
 }
 
 /// What the server minted in answer.
@@ -239,7 +238,6 @@ impl Session {
         let body = json!({
             "policy": ask.policy,
             "ttl": ask.ttl.as_secs(),
-            "session": ask.session.as_ref().map(|s| s.as_str()),
         });
         let answer = post_json(&endpoint, credential.expose(), &body).await?;
         serde_json::from_value(answer)
@@ -253,7 +251,6 @@ impl Session {
             .ok_or_else(|| rejected("not logged in; run `noted auth login`"))?;
         let body = match &selector {
             Revoke::All => json!({ "all": true }),
-            Revoke::Session(s) => json!({ "session": s.as_str() }),
             Revoke::Token(id) => json!({ "id": id.as_str() }),
             Revoke::Label(_) => {
                 return Err(rejected(

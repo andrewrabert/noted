@@ -73,7 +73,6 @@ fn populate(service: &Arc<AuthService>) {
             &Mint {
                 policy: PolicyFragment::default(),
                 ttl: Ttl::from_secs(3600),
-                session: None,
                 label: Some(Label::new("agent").unwrap()),
             },
         )

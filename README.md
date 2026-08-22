@@ -230,9 +230,8 @@ names it withdrew — one that names nothing the server minted is an error.
 ```sh
 noted auth login --url https://notes.example.com         # browser OAuth; stores the login
 noted auth status                                        # who the stored login is, and until when
-noted auth mint --ttl 1h --session claude:session123 --scope /dev/myproject --in /=read --in /Tasks=read,write
+noted auth mint --ttl 1h --scope /dev/myproject --in /=read --in /Tasks=read,write
 noted auth revoke <token-id>                             # withdraws one minted credential
-noted auth revoke --session claude:session123            # withdraws every credential of that run
 noted auth revoke --all                                  # withdraws every child and moves the epoch
 noted auth logout                                        # drops the stored login
 ```

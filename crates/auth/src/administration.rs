@@ -140,7 +140,6 @@ impl Administration {
                     &Mint {
                         policy,
                         ttl,
-                        session: None,
                         label: Some(label),
                     },
                 )?))
