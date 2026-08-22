@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
 
@@ -31,11 +32,15 @@ use admin::{KeyCmd, UserCmd};
 use auth::AuthCmd;
 use dispatch::{LogCmd, TaskCmd};
 
+fn error_output(error: &noted::error::NotedError) -> String {
+    format!("error: {error}")
+}
+
 pub fn main() -> ExitCode {
     match start() {
         Ok(code) => code,
-        Err(e) => {
-            eprintln!("error: {e}");
+        Err(error) => {
+            eprintln!("{}", error_output(&error));
             ExitCode::FAILURE
         }
     }
@@ -151,6 +156,25 @@ impl Flags for ServerArgs {
     }
 }
 
+async fn initialized_auth(config: &Config) -> Result<Option<Arc<noted_auth::AuthService>>> {
+    let default_ttl = config.ttl(Variable::DefaultTtl, DEFAULT_CREDENTIAL_TTL)?;
+    match config.setting(Variable::AuthDb).map(PathBuf::from) {
+        Some(path) => Ok(Some(
+            tokio::task::spawn_blocking(move || -> Result<Arc<noted_auth::AuthService>> {
+                let service = Arc::new(noted_auth::AuthService::new(
+                    Arc::new(noted_auth::Db::open(&path)?),
+                    default_ttl,
+                ));
+                service.sweep()?;
+                Ok(service)
+            })
+            .await
+            .map_err(|error| unavailable(format!("cannot open auth database: {error}")))??,
+        )),
+        None => Ok(None),
+    }
+}
+
 impl ServerArgs {
     /// The sole adapter from settings to the server's own config.
     /// Validations whose messages name CLI flags belong here.
@@ -160,21 +184,20 @@ impl ServerArgs {
         bind: Bind,
         public_url: Option<String>,
     ) -> Result<HttpConfig> {
-        let auth_db = config.setting(Variable::AuthDb).map(PathBuf::from);
+        let authentication = initialized_auth(config).await?;
         #[cfg(unix)]
         let admin_socket = config.setting(Variable::AdminSocket).map(PathBuf::from);
         #[cfg(unix)]
-        if admin_socket.is_some() && auth_db.is_none() {
+        if admin_socket.is_some() && authentication.is_none() {
             return Err(rejected("--admin-socket requires --auth-db"));
         }
         Ok(HttpConfig {
             served: config.served(&self.entries).await?,
             bind,
             public_url,
-            auth_db,
+            authentication,
             #[cfg(unix)]
             admin_socket,
-            default_ttl: config.ttl(Variable::DefaultTtl, DEFAULT_CREDENTIAL_TTL)?,
         })
     }
 }
@@ -311,5 +334,111 @@ async fn run_server(cmd: ServerCmd, config: &Config) -> Result<ExitCode> {
             .map(|()| ExitCode::SUCCESS),
         ServerSub::User(c) => admin::run_user(c, config).await.map(|()| ExitCode::SUCCESS),
         ServerSub::Key(c) => admin::run_key(c, config).await.map(|()| ExitCode::SUCCESS),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(bindings: &[(Variable, &str)]) -> Config {
+        let mut layer = Layer::flags();
+        for (variable, value) in bindings {
+            layer.set(*variable, Some(value));
+        }
+        Config::new(Settings::resolve(vec![layer]).unwrap(), None)
+    }
+
+    fn serve_command() -> ServeCmd {
+        ServeCmd {
+            host: None,
+            port: None,
+            public_url: None,
+            server: ServerArgs {
+                auth: AuthPaths {
+                    auth_db: None,
+                    #[cfg(unix)]
+                    admin_socket: None,
+                },
+                default_ttl: None,
+                entries: EntryFlags::default(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn http_config_contains_initialized_authentication_with_the_resolved_lifetime() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.redb");
+        let http = serve_command()
+            .into_config(&config(&[
+                (Variable::Dir, dir.path().to_str().unwrap()),
+                (Variable::AuthDb, path.to_str().unwrap()),
+                (Variable::DefaultTtl, "17m"),
+            ]))
+            .await
+            .unwrap();
+        let authentication = http.authentication.unwrap();
+
+        assert_eq!(authentication.default_ttl().as_secs(), 17 * 60);
+        assert!(path.is_file());
+    }
+
+    #[tokio::test]
+    async fn http_port_zero_remains_a_bind_allocation_instruction() {
+        let dir = tempfile::tempdir().unwrap();
+        let http = serve_command()
+            .into_config(&config(&[
+                (Variable::Dir, dir.path().to_str().unwrap()),
+                (Variable::Port, "0"),
+            ]))
+            .await
+            .unwrap();
+
+        let Bind::Tcp { port, .. } = http.bind else {
+            panic!("HTTP configuration produced a Unix bind");
+        };
+        assert_eq!(port, 0);
+    }
+
+    #[tokio::test]
+    async fn http_config_without_authentication_contains_no_capability() {
+        let dir = tempfile::tempdir().unwrap();
+        let http = serve_command()
+            .into_config(&config(&[(Variable::Dir, dir.path().to_str().unwrap())]))
+            .await
+            .unwrap();
+
+        assert!(http.authentication.is_none());
+    }
+
+    #[tokio::test]
+    async fn invalid_auth_database_fails_before_http_server_construction() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.redb");
+        std::fs::write(&path, b"not an authentication database").unwrap();
+
+        assert!(
+            serve_command()
+                .into_config(&config(&[
+                    (Variable::Dir, dir.path().to_str().unwrap()),
+                    (Variable::AuthDb, path.to_str().unwrap()),
+                ]))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn authentication_initialization_does_not_create_a_missing_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("missing");
+        let path = parent.join("auth.redb");
+        assert!(
+            initialized_auth(&config(&[(Variable::AuthDb, path.to_str().unwrap())]))
+                .await
+                .is_err()
+        );
+        assert!(!parent.exists());
     }
 }

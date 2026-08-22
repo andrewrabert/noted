@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 use serde::{Deserialize, Serialize};
 
 use noted::error::{Result, rejected};
@@ -23,6 +25,79 @@ fn validate_label(name: &str) -> Result<()> {
         Ok(())
     } else {
         Err(rejected(format!("invalid key label name: '{name}'")))
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct CredentialPresentation(String);
+
+impl CredentialPresentation {
+    pub fn submitted(value: impl Into<String>) -> CredentialPresentation {
+        CredentialPresentation(value.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LoginName(String);
+
+impl LoginName {
+    pub fn submitted(value: impl Into<String>) -> LoginName {
+        LoginName(value.into())
+    }
+
+    pub fn candidate_username(&self) -> Result<Username> {
+        Username::new(self.0.clone())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LoginPeerIp(IpAddr);
+
+impl LoginPeerIp {
+    pub const fn accepted(value: IpAddr) -> LoginPeerIp {
+        LoginPeerIp(value)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LoginSourceId(String);
+
+impl LoginSourceId {
+    pub fn new(value: impl Into<String>) -> LoginSourceId {
+        LoginSourceId(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum LoginSource {
+    AcceptedTcpPeer(LoginPeerIp),
+    NonTcpAdapter(LoginSourceId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RedirectUri(url::Url);
+
+impl RedirectUri {
+    pub fn new(value: impl AsRef<str>) -> Result<RedirectUri> {
+        url::Url::parse(value.as_ref())
+            .map(RedirectUri)
+            .map_err(|error| rejected(format!("invalid redirect URI: {error}")))
+    }
+
+    pub fn as_url(&self) -> &url::Url {
+        &self.0
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
     }
 }
 
@@ -218,6 +293,117 @@ impl PartialEq<&str> for Owner {
 impl PartialEq<String> for Owner {
     fn eq(&self, o: &String) -> bool {
         self.eq_str(o)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AuthorizationTransactionId(String);
+
+impl AuthorizationTransactionId {
+    pub fn submitted(value: impl Into<String>) -> AuthorizationTransactionId {
+        AuthorizationTransactionId(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+macro_rules! submitted_oauth_fact {
+    ($name:ident) => {
+        #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+        pub struct $name(String);
+
+        impl $name {
+            pub fn submitted(value: impl Into<String>) -> $name {
+                $name(value.into())
+            }
+
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+    };
+}
+
+submitted_oauth_fact!(AuthorizationCode);
+submitted_oauth_fact!(CodeChallenge);
+submitted_oauth_fact!(CodeVerifier);
+submitted_oauth_fact!(ClientState);
+submitted_oauth_fact!(RequestedScope);
+submitted_oauth_fact!(SubmittedRedirectUri);
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GrantedScope(String);
+
+impl GrantedScope {
+    pub(crate) fn new(value: impl Into<String>) -> GrantedScope {
+        GrantedScope(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthorizationResponseType {
+    Code,
+    Unsupported,
+}
+
+impl AuthorizationResponseType {
+    pub fn submitted(value: &str) -> AuthorizationResponseType {
+        match value {
+            "code" => AuthorizationResponseType::Code,
+            _ => AuthorizationResponseType::Unsupported,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CodeChallengeMethod {
+    S256,
+    Unsupported,
+}
+
+impl CodeChallengeMethod {
+    pub fn submitted(value: &str) -> CodeChallengeMethod {
+        match value {
+            "S256" => CodeChallengeMethod::S256,
+            _ => CodeChallengeMethod::Unsupported,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OAuthTokenType {
+    Bearer,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct OAuthAccessToken(String);
+
+impl OAuthAccessToken {
+    pub(crate) fn issued(value: impl Into<String>) -> OAuthAccessToken {
+        OAuthAccessToken(value.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TokenLifetimeSeconds(i64);
+
+impl TokenLifetimeSeconds {
+    pub(crate) fn new(value: i64) -> TokenLifetimeSeconds {
+        TokenLifetimeSeconds(value)
+    }
+
+    pub fn as_secs(self) -> i64 {
+        self.0
     }
 }
 

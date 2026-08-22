@@ -11,25 +11,20 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-noted-core = { workspace = true }
-axum = "0.8"
 chrono = { workspace = true }
+noted-core = { workspace = true }
+oxide-auth = "0.6"
 governor = "0.10"
 macaroon = "0.3"
-maud = "0.27"
-oxide-auth = "0.6"
-phf = { version = "0.13", features = ["macros"] }
 rand = "0.10"
 redb = "4"
 scrypt = { version = "0.12", features = ["phc", "getrandom"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.11"
-tokio = { version = "1", features = ["io-util", "net", "rt"] }
 tracing = { workspace = true }
 url = "2"
 
 [dev-dependencies]
 humantime = { workspace = true }
 tempfile = { workspace = true }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

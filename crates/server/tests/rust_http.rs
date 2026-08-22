@@ -6,10 +6,10 @@ use serde_json::json;
 
 use common::{json_body, post_json, post_mcp, post_mcp_at};
 
-fn keyed_app(dir: &tempfile::TempDir, policy: PolicyFragment) -> (axum::Router, String) {
+async fn keyed_app(dir: &tempfile::TempDir, policy: PolicyFragment) -> (axum::Router, String) {
     let svc = common::auth_service(dir);
     let token = common::mint_key(&svc, "t", policy);
-    (common::origin_app(common::root(dir), &svc), token)
+    (common::origin_app(common::root(dir), &svc).await, token)
 }
 
 fn held(text: &str) -> PolicyFragment {
@@ -24,7 +24,7 @@ fn mcp_call(name: &str, args: serde_json::Value) -> serde_json::Value {
 #[tokio::test]
 async fn tool_search_fixed_glob_and_hidden_flags() {
     let dir = common::fixture_dir();
-    let (app, t) = keyed_app(&dir, PolicyFragment::default());
+    let (app, t) = keyed_app(&dir, PolicyFragment::default()).await;
 
     let (s, b) = post_json(
         &app,
@@ -76,7 +76,7 @@ fn search_schema_is_lean_and_surface_clean() {
 #[tokio::test]
 async fn a_read_only_policy_refuses_the_mutators() {
     let dir = common::fixture_dir();
-    let (app, ro) = keyed_app(&dir, held(r#"{"access":{"read":true,"write":false}}"#));
+    let (app, ro) = keyed_app(&dir, held(r#"{"access":{"read":true,"write":false}}"#)).await;
     let (s, _) = post_json(
         &app,
         "/tool/ReadNote",
@@ -101,7 +101,8 @@ async fn a_denied_folder_confines_paths() {
     let (app, f) = keyed_app(
         &dir,
         held(r#"{"paths":{"people":{"read":false,"write":false}}}"#),
-    );
+    )
+    .await;
     let (s, _) = post_json(
         &app,
         "/tool/ReadNote",
@@ -134,7 +135,8 @@ async fn a_log_only_policy_reaches_nothing_else() {
         held(
             r#"{"access":{"read":false,"write":false},"paths":{"Log":{"read":true,"write":true}}}"#,
         ),
-    );
+    )
+    .await;
     let (s, _) = post_json(
         &app,
         "/tool/LogNote",
@@ -156,7 +158,7 @@ async fn a_log_only_policy_reaches_nothing_else() {
 #[tokio::test]
 async fn mcp_policy_confines_search() {
     let dir = common::fixture_dir();
-    let (app, f) = keyed_app(&dir, held(r#"{"scope":"projects"}"#));
+    let (app, f) = keyed_app(&dir, held(r#"{"scope":"projects"}"#)).await;
     let (s, _h, b) = post_mcp(
         &app,
         Some(&f),
@@ -175,7 +177,7 @@ async fn mcp_policy_confines_search() {
 #[tokio::test]
 async fn mcp_refuses_a_write_the_policy_denies() {
     let dir = common::fixture_dir();
-    let (app, ro) = keyed_app(&dir, held(r#"{"access":{"read":true,"write":false}}"#));
+    let (app, ro) = keyed_app(&dir, held(r#"{"access":{"read":true,"write":false}}"#)).await;
     let (s, _h, b) = post_mcp(
         &app,
         Some(&ro),
@@ -199,7 +201,7 @@ async fn only_a_live_macaroon_of_this_server_reaches_a_tool() {
     let svc = common::auth_service(&dir);
     let live = common::mint_key(&svc, "live", PolicyFragment::default());
     let doomed = common::mint_key(&svc, "dead", PolicyFragment::default());
-    let app = common::origin_app(common::root(&dir), &svc);
+    let app = common::origin_app(common::root(&dir), &svc).await;
 
     let probe = |tok: Option<String>| {
         let app = app.clone();
@@ -258,7 +260,7 @@ fn token_id(bearer: &str) -> String {
 #[tokio::test]
 async fn a_tools_call_posted_under_a_public_path_is_unauthorized() {
     let dir = common::fixture_dir();
-    let (app, _t) = keyed_app(&dir, PolicyFragment::default());
+    let (app, _t) = keyed_app(&dir, PolicyFragment::default()).await;
     let (s, _h, _b) = post_mcp_at(
         &app,
         "/mcp/token",
@@ -275,7 +277,8 @@ async fn a_read_only_task_region_lists_but_never_writes() {
     let (app, t) = keyed_app(
         &dir,
         held(r#"{"paths":{"Tasks":{"read":true,"write":false}}}"#),
-    );
+    )
+    .await;
     common::root(&dir)
         .task_create(
             &"seed".parse().unwrap(),
@@ -307,7 +310,8 @@ async fn a_write_only_folder_leaves_the_task_region_open() {
         held(
             r#"{"access":{"read":false,"write":false},"paths":{"Tasks":{"read":true,"write":true},"projects":{"read":false,"write":true}}}"#,
         ),
-    );
+    )
+    .await;
 
     let (s, _) = post_json(
         &app,
@@ -360,7 +364,7 @@ async fn a_live_policy_edit_is_visible_to_the_next_request() {
     )
     .unwrap();
     let token = common::login_token(&svc, "agent");
-    let app = common::origin_app(common::root(&dir), &svc);
+    let app = common::origin_app(common::root(&dir), &svc).await;
 
     let (s, _) = post_json(
         &app,
@@ -424,7 +428,7 @@ async fn mcp_stateless_needs_no_session() {
 #[tokio::test]
 async fn conditional_write_over_http() {
     let dir = common::fixture_dir();
-    let (app, t) = keyed_app(&dir, PolicyFragment::default());
+    let (app, t) = keyed_app(&dir, PolicyFragment::default()).await;
 
     let (s, _) = post_json(
         &app,
@@ -457,7 +461,7 @@ async fn conditional_write_over_http() {
 #[tokio::test]
 async fn write_schema_hides_when_via_mcp() {
     let dir = common::fixture_dir();
-    let (app, t) = keyed_app(&dir, PolicyFragment::default());
+    let (app, t) = keyed_app(&dir, PolicyFragment::default()).await;
     let (s, _h, b) = post_mcp(
         &app,
         Some(&t),

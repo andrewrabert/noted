@@ -8,7 +8,7 @@ use noted_auth::authority::{
 };
 use noted_auth::credential::{Caveat, KeyRecord, Macaroon, MacaroonId};
 use noted_auth::service::AuthService;
-use noted_auth::types::{ClientId, Owner, RevocationEpoch, SessionId};
+use noted_auth::types::{ClientId, CredentialPresentation, Owner, RevocationEpoch, SessionId};
 
 const DEFAULT_TTL: Ttl = Ttl::from_secs(30 * 24 * 3600);
 
@@ -21,13 +21,15 @@ fn owner() -> Owner {
 }
 
 fn relay(policy: &str) -> RelayCredential {
-    RelayCredential::open(None, fragment(policy), None, "test relay".to_string()).unwrap()
+    RelayCredential::open(None, fragment(policy), None).unwrap()
 }
 
 fn caller_of(relay: &RelayCredential, caveats: &[Caveat]) -> Verified {
     let root = relay.own().macaroon().unwrap();
     let bearer = root.extended(caveats).unwrap();
-    relay.verify(Some(bearer.expose())).unwrap()
+    relay
+        .verify(Some(&CredentialPresentation::submitted(bearer.expose())))
+        .unwrap()
 }
 
 #[test]
@@ -122,7 +124,11 @@ fn a_relay_minted_credential_presented_back_is_confined_once() {
     };
     let minted = Minter::mint(&relay, &Verified::anonymous(), &ask).unwrap();
 
-    let back = relay.verify(Some(minted.macaroon.expose())).unwrap();
+    let back = relay
+        .verify(Some(&CredentialPresentation::submitted(
+            minted.macaroon.expose(),
+        )))
+        .unwrap();
     assert_eq!(
         back.fragments(),
         [
@@ -168,7 +174,9 @@ fn an_open_authority_honors_policy_and_before_and_ignores_revocation() {
         ],
     )
     .unwrap();
-    let verified = OpenAuthority.verify(Some(live.expose())).unwrap();
+    let verified = OpenAuthority
+        .verify(Some(&CredentialPresentation::submitted(live.expose())))
+        .unwrap();
     assert_eq!(verified.owner(), Some(&owner()));
     assert_eq!(verified.fragments(), [fragment(r#"{"scope":"dev"}"#)]);
 
@@ -178,7 +186,11 @@ fn an_open_authority_honors_policy_and_before_and_ignores_revocation() {
         &[Caveat::Before(UnixEpochSeconds::from_secs(1))],
     )
     .unwrap();
-    assert!(OpenAuthority.verify(Some(expired.expose())).is_err());
+    assert!(
+        OpenAuthority
+            .verify(Some(&CredentialPresentation::submitted(expired.expose())))
+            .is_err()
+    );
     assert!(OpenAuthority.verify(None).unwrap().owner().is_none());
 }
 
@@ -198,10 +210,20 @@ fn an_origin_authority_refuses_a_forged_signature_and_a_bumped_epoch() {
         .unwrap();
 
     let authority = OriginAuthority::new(service.clone());
-    assert!(authority.verify(Some(login.access.expose())).is_ok());
+    assert!(
+        authority
+            .verify(Some(&CredentialPresentation::submitted(
+                login.access.expose()
+            )))
+            .is_ok()
+    );
 
     let forged = Macaroon::mint(&owner(), &KeyRecord::fresh(), &[]).unwrap();
-    assert!(authority.verify(Some(forged.expose())).is_err());
+    assert!(
+        authority
+            .verify(Some(&CredentialPresentation::submitted(forged.expose())))
+            .is_err()
+    );
 
     let withdrawn = authority
         .revoke(
@@ -211,15 +233,29 @@ fn an_origin_authority_refuses_a_forged_signature_and_a_bumped_epoch() {
         .unwrap();
     assert!(withdrawn.epoch.is_some());
     let authority = OriginAuthority::new(service.clone());
-    assert!(authority.verify(Some(login.access.expose())).is_err());
+    assert!(
+        authority
+            .verify(Some(&CredentialPresentation::submitted(
+                login.access.expose()
+            )))
+            .is_err()
+    );
 }
 
 #[test]
 fn a_relay_refuses_a_bearer_that_is_no_descendant() {
     let relay = relay(r#"{"scope":"relay"}"#);
     let stranger = Macaroon::ephemeral().unwrap();
-    assert!(relay.verify(Some(stranger.expose())).is_err());
-    assert!(relay.verify(Some("not-a-macaroon")).is_err());
+    assert!(
+        relay
+            .verify(Some(&CredentialPresentation::submitted(stranger.expose())))
+            .is_err()
+    );
+    assert!(
+        relay
+            .verify(Some(&CredentialPresentation::submitted("not-a-macaroon")))
+            .is_err()
+    );
 
     let bearer_less = relay.verify(None).unwrap();
     assert_eq!(bearer_less.fragments(), [fragment(r#"{"scope":"relay"}"#)]);

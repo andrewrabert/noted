@@ -5,7 +5,7 @@ use noted_auth::Db;
 use noted_auth::authority::{Mint, Minter, OriginAuthority, Revoke, Verified, Verifier};
 use noted_auth::credential::{Caveat, Macaroon, MacaroonId};
 use noted_auth::service::{AuthService, PREFIX_MAC, PREFIX_REF, sha256_hex};
-use noted_auth::types::{ClientId, Owner, SessionId};
+use noted_auth::types::{ClientId, CredentialPresentation, Owner, SessionId};
 
 const DEFAULT_TTL: noted::types::Ttl = noted::types::Ttl::from_secs(30 * 24 * 3600);
 
@@ -30,7 +30,7 @@ fn client() -> ClientId {
 
 fn policy_of(authority: &OriginAuthority, bearer: &str) -> Option<Vec<PolicyFragment>> {
     authority
-        .verify(Some(bearer))
+        .verify(Some(&CredentialPresentation::submitted(bearer)))
         .ok()
         .map(|v| v.fragments().to_vec())
 }
@@ -91,7 +91,11 @@ fn a_login_is_a_macaroon_beside_an_opaque_refresh() {
     assert_eq!(login.access.owner().unwrap(), Owner::user("alice").unwrap());
 
     let authority = OriginAuthority::new(svc.clone());
-    let verified = authority.verify(Some(login.access.expose())).unwrap();
+    let verified = authority
+        .verify(Some(&CredentialPresentation::submitted(
+            login.access.expose(),
+        )))
+        .unwrap();
     assert_eq!(verified.owner(), Some(&Owner::user("alice").unwrap()));
 }
 
@@ -109,7 +113,7 @@ fn user_remove_is_transactional_and_total() {
     let authority = OriginAuthority::new(svc.clone());
     svc.user_remove(&un("alice")).unwrap();
     assert!(policy_of(&authority, login.access.expose()).is_none());
-    assert!(svc.refresh_owner(login.refresh.expose()).unwrap().is_none());
+    assert!(svc.refresh_owner(&login.refresh).unwrap().is_none());
     assert!(svc.user_get(&un("alice")).unwrap().is_none());
     assert!(svc.user_remove(&un("alice")).is_err());
 }
@@ -130,7 +134,7 @@ fn revoking_all_of_a_user_kills_its_sessions_but_passwd_does_not() {
         )
         .unwrap();
     assert!(withdrawn.epoch.is_some());
-    assert!(svc.refresh_owner(login.refresh.expose()).unwrap().is_none());
+    assert!(svc.refresh_owner(&login.refresh).unwrap().is_none());
     // the epoch moved, so every credential minted under the old one is dead
     let authority = OriginAuthority::new(svc.clone());
     assert!(policy_of(&authority, login.access.expose()).is_none());
@@ -142,16 +146,12 @@ fn a_rotation_keeps_the_session_and_retires_the_old_refresh() {
     svc.user_add(&un("alice"), &pw("pw")).unwrap();
     let first = svc.issue_login(&un("alice"), &client()).unwrap();
     let second = svc
-        .rotate_login(first.refresh.expose(), &un("alice"), &client())
+        .rotate_login(&first.refresh, &un("alice"), &client())
         .unwrap();
     assert_eq!(first.session, second.session);
     assert_ne!(first.refresh.expose(), second.refresh.expose());
-    assert!(svc.refresh_owner(first.refresh.expose()).unwrap().is_none());
-    assert!(
-        svc.refresh_owner(second.refresh.expose())
-            .unwrap()
-            .is_some()
-    );
+    assert!(svc.refresh_owner(&first.refresh).unwrap().is_none());
+    assert!(svc.refresh_owner(&second.refresh).unwrap().is_some());
 }
 
 #[test]
@@ -160,10 +160,32 @@ fn a_refresh_token_is_no_access_credential() {
     svc.user_add(&un("alice"), &pw("pw")).unwrap();
     let login = svc.issue_login(&un("alice"), &client()).unwrap();
     let authority = OriginAuthority::new(svc.clone());
-    assert!(authority.verify(Some(login.refresh.expose())).is_err());
-    assert!(authority.verify(Some("noted_acc_whatever")).is_err());
-    assert!(authority.verify(Some("noted_key_whatever")).is_err());
-    assert!(authority.verify(Some("ghp_notours")).is_err());
+    assert!(
+        authority
+            .verify(Some(&CredentialPresentation::submitted(
+                login.refresh.expose()
+            )))
+            .is_err()
+    );
+    assert!(
+        authority
+            .verify(Some(&CredentialPresentation::submitted(
+                "noted_acc_whatever"
+            )))
+            .is_err()
+    );
+    assert!(
+        authority
+            .verify(Some(&CredentialPresentation::submitted(
+                "noted_key_whatever"
+            )))
+            .is_err()
+    );
+    assert!(
+        authority
+            .verify(Some(&CredentialPresentation::submitted("ghp_notours")))
+            .is_err()
+    );
     assert!(authority.verify(None).unwrap().owner().is_none());
 }
 
@@ -198,7 +220,11 @@ fn a_forged_signature_verifies_nowhere() {
         &[],
     )
     .unwrap();
-    assert!(authority.verify(Some(stranger.expose())).is_err());
+    assert!(
+        authority
+            .verify(Some(&CredentialPresentation::submitted(stranger.expose())))
+            .is_err()
+    );
 }
 
 #[test]
@@ -355,11 +381,11 @@ fn a_sweep_drops_what_has_expired() {
     svc.user_add(&un("alice"), &pw("pw")).unwrap();
     let login = svc.issue_login(&un("alice"), &client()).unwrap();
     svc.sweep().unwrap();
-    assert!(svc.refresh_owner(login.refresh.expose()).unwrap().is_some());
+    assert!(svc.refresh_owner(&login.refresh).unwrap().is_some());
 
     let far = noted::types::UnixEpochSeconds::now().unwrap() + DEFAULT_TTL + DEFAULT_TTL;
     svc.db().sweep(far).unwrap();
-    assert!(svc.refresh_owner(login.refresh.expose()).unwrap().is_none());
+    assert!(svc.refresh_owner(&login.refresh).unwrap().is_none());
 }
 
 #[test]
