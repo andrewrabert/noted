@@ -144,7 +144,7 @@ Four variables read differently by what the process is:
 | `NOTED_URL`          | `--url`          | -                     | The server to reach instead of local files, and what makes a served process a relay: `http(s)://host[:port]` or `unix:///path.sock`. |
 | `NOTED_TOKEN`        | `--token`        | *(stored login)*      | The credential carried upstream: a client's bearer, a relay's own. |
 | `NOTED_HOST`         | `--host`         | `127.0.0.1`           | `server http` bind address.                          |
-| `NOTED_PORT`         | `--port`         | `8000`                | `server http` port.                                  |
+| `NOTED_PORT`         | `--port`         | `8000`                | `server http` bind port; `0` asks the operating system to allocate one. |
 | `NOTED_AUTH_DB`      | `--auth-db`      | -                     | Auth database; setting it enables auth.              |
 | `NOTED_ADMIN_SOCKET` | `--admin-socket` | -                     | Unix socket for live user/key admin (mode 0600).     |
 | `NOTED_PUBLIC_URL`   | `--public-url`   | -                     | External `https` base URL; enables the OAuth server. |

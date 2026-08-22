@@ -308,10 +308,10 @@ async fn mcp_read_only_hides_and_refuses_mutators() {
     let dir = fixture_dir();
     let policy =
         r#"{"access":{"read":true,"write":false}}"#.parse::<noted::PolicyFragment>().unwrap();
-    let app = noted_server::http::build_app(
-        noted_server::http::Served::Origin(common::policed_root(&dir, policy)),
-        noted_auth::AuthState::open(),
-    );
+    let app = noted_server::http::build_app(noted_server::http::Served::origin(
+        common::policed_root(&dir, policy),
+        noted_server::auth::AuthState::open(),
+    ));
 
     let list = mcp_post(
         &app,
@@ -401,7 +401,7 @@ async fn http_tool_route_and_errors() {
 #[tokio::test]
 async fn http_bearer_auth_gates_requests() {
     let dir = fixture_dir();
-    let (app, token) = common::app_with_key(&dir);
+    let (app, token) = common::app_with_key(&dir).await;
 
     let unauth = app
         .clone()

@@ -8,7 +8,7 @@ mod root;
 mod timerange;
 mod upstream;
 
-pub mod endpoint;
+mod endpoint;
 pub mod error;
 pub mod front_matter;
 pub mod httpurl;

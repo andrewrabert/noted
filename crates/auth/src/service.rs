@@ -4,10 +4,11 @@ use sha2::{Digest, Sha256};
 
 use crate::credential::{Caveat, KeyRecord, Macaroon, MacaroonId};
 use crate::db::{Db, RefreshRecord, UserRecord};
+use crate::oauth::OAuthClient;
 use crate::password::hash_password;
 use crate::types::{
-    ClientId, Fingerprint, Label, Owner, Password, PasswordHash, Secret, SecretHash, SessionId,
-    Username,
+    ClientId, Fingerprint, Label, Owner, Password, PasswordHash, RefreshToken, SecretHash,
+    SessionId, Username,
 };
 use noted::PolicyFragment;
 use noted::error::{Result, rejected};
@@ -79,7 +80,7 @@ pub struct MintSummary {
 
 pub struct Login {
     pub access: Macaroon,
-    pub refresh: Secret,
+    pub refresh: RefreshToken,
     pub session: SessionId,
     pub expires_at: UnixEpochSeconds,
 }
@@ -100,6 +101,14 @@ impl AuthService {
 
     pub fn default_ttl(&self) -> Ttl {
         self.default_ttl
+    }
+
+    pub(crate) fn register_oauth_client(&self, client: &OAuthClient) -> Result<()> {
+        self.db.put_oauth_client(client)
+    }
+
+    pub(crate) fn oauth_clients(&self) -> Result<Vec<OAuthClient>> {
+        self.db.oauth_clients()
     }
 
     pub fn user_add(&self, name: &Username, password: &Password) -> Result<()> {
@@ -160,13 +169,6 @@ impl AuthService {
         self.db.remove_user_txn(name)
     }
 
-    pub fn login_user(&self, name: &str) -> Result<Option<UserRecord>> {
-        match name.parse::<Username>() {
-            Ok(name) => self.db.user(&name),
-            Err(_) => Ok(None),
-        }
-    }
-
     fn require_user(&self, name: &Username) -> Result<UserRecord> {
         self.db
             .user(name)?
@@ -196,8 +198,13 @@ impl AuthService {
     }
 
     /// The same, keeping the session the old refresh record names.
-    pub fn rotate_login(&self, refresh: &str, name: &Username, client: &ClientId) -> Result<Login> {
-        let old = sha256_hex(refresh);
+    pub fn rotate_login(
+        &self,
+        refresh: &RefreshToken,
+        name: &Username,
+        client: &ClientId,
+    ) -> Result<Login> {
+        let old = sha256_hex(refresh.expose());
         let session = self
             .db
             .refresh(&old)?
@@ -243,17 +250,17 @@ impl AuthService {
         }
         Ok(Login {
             access,
-            refresh: Secret::new(refresh),
+            refresh: RefreshToken::new(refresh),
             session,
             expires_at,
         })
     }
 
-    pub fn refresh_owner(&self, refresh: &str) -> Result<Option<RefreshRecord>> {
-        if BearerKind::from_secret(refresh) != Some(BearerKind::Refresh) {
+    pub fn refresh_owner(&self, refresh: &RefreshToken) -> Result<Option<RefreshRecord>> {
+        if BearerKind::from_secret(refresh.expose()) != Some(BearerKind::Refresh) {
             return Ok(None);
         }
-        let Some(rec) = self.db.refresh(&sha256_hex(refresh))? else {
+        let Some(rec) = self.db.refresh(&sha256_hex(refresh.expose()))? else {
             return Ok(None);
         };
         if UnixEpochSeconds::now()? >= rec.expires_at {

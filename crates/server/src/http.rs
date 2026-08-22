@@ -13,11 +13,12 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
 use serde_json::{Value, json};
 
+use crate::auth::AuthState;
 use crate::mcp::McpContext;
 use crate::relay::Relay;
 use noted::error::NotedError;
 use noted::{NotedRoot, ToolCall};
-use noted_auth::{AuthState, Denial, Verified};
+use noted_auth::{Denial, Verified};
 
 const APP_JS: &str = "/noted_ui.js";
 const GLUE: &str = include_str!(concat!(env!("OUT_DIR"), "/noted_ui.js"));
@@ -72,17 +73,44 @@ fn detail(status: StatusCode, message: String) -> Response {
     (status, Json(json!({ "detail": message }))).into_response()
 }
 
-/// What the app answers from: the notes tree on this host, or another server
-/// reached through a relay.
+/// What the app answers from and the authentication derived for that same
+/// source.
 #[derive(Clone)]
-pub enum Served {
+pub struct Served {
+    kind: ServedKind,
+    auth: AuthState,
+}
+
+#[derive(Clone)]
+enum ServedKind {
     Origin(NotedRoot),
     Relay(Arc<Relay>),
 }
 
+impl Served {
+    pub fn origin(root: NotedRoot, auth: AuthState) -> Served {
+        Served {
+            kind: ServedKind::Origin(root),
+            auth,
+        }
+    }
+
+    pub fn relay(relay: Arc<Relay>) -> Served {
+        let auth = AuthState::relay(relay.clone());
+        Served {
+            kind: ServedKind::Relay(relay),
+            auth,
+        }
+    }
+
+    pub(crate) fn auth(&self) -> &AuthState {
+        &self.auth
+    }
+}
+
 #[derive(Clone)]
 struct AppState {
-    served: Served,
+    kind: ServedKind,
     auth: AuthState,
 }
 
@@ -90,29 +118,29 @@ impl AppState {
     /// An origin that holds an auth database admits nobody without a bearer.
     /// An open origin and a relay both answer a caller that presents none.
     fn requires_bearer(&self) -> bool {
-        matches!(self.served, Served::Origin(_)) && self.auth.minter().is_some()
+        matches!(self.kind, ServedKind::Origin(_)) && self.auth.minter().is_some()
     }
 }
 
-pub fn build_app(served: Served, auth: AuthState) -> Router {
+pub fn build_app(served: Served) -> Router {
     let state = AppState {
-        served: served.clone(),
-        auth: auth.clone(),
+        kind: served.kind.clone(),
+        auth: served.auth.clone(),
     };
 
-    let inner = match &served {
-        Served::Origin(root) => Router::new()
+    let inner = match &served.kind {
+        ServedKind::Origin(root) => Router::new()
             .route("/tool/{name}", post(origin_tool))
             .with_state(root.clone())
             .nest_service("/mcp", mcp_service(root.clone())),
-        Served::Relay(relay) => Router::new()
+        ServedKind::Relay(relay) => Router::new()
             .route("/tool/{name}", post(relay_forward))
             .route("/mcp", post(relay_forward))
             .with_state(relay.clone()),
     };
 
     inner
-        .merge(noted_auth::routes(auth))
+        .merge(crate::auth::routes(served.auth))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             |State(state): State<AppState>, request, next| auth_middleware(state, request, next),
@@ -171,16 +199,22 @@ async fn auth_middleware(
         request.extensions_mut().insert(Verified::anonymous());
         return next.run(request).await;
     }
-    let presented = bearer(request.headers());
+    let presented =
+        bearer(request.headers()).map(noted_auth::types::CredentialPresentation::submitted);
     if presented.is_none() && state.requires_bearer() {
         return denial_response(&Denial::Unauthorized("unauthorized".into()), &state);
     }
-    match state.auth.verifier().verify(presented) {
-        Ok(caller) => {
+    let verifier = state.auth.verifier().clone();
+    match crate::auth::run_blocking(move || verifier.verify(presented.as_ref())).await {
+        Ok(Ok(caller)) => {
             request.extensions_mut().insert(caller);
             next.run(request).await
         }
-        Err(denial) => denial_response(&denial, &state),
+        Ok(Err(denial)) => denial_response(&denial, &state),
+        Err(error) => detail(
+            StatusCode::SERVICE_UNAVAILABLE,
+            state.auth.relay_self_error(error).to_string(),
+        ),
     }
 }
 
@@ -242,4 +276,53 @@ async fn relay_forward(
     relay
         .forward(uri.path(), accept(&headers), &caller, body)
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use noted::Transport;
+    use noted_auth::authority::RelayCredential;
+
+    #[tokio::test]
+    async fn relay_middleware_blocking_failure_names_the_relays_listener_endpoint() {
+        let bound = crate::serve::Bind::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        }
+        .bind()
+        .await
+        .unwrap();
+        let relay = Arc::new(
+            Relay::open(
+                Arc::new(
+                    RelayCredential::open(None, noted::PolicyFragment::default(), None).unwrap(),
+                ),
+                "http://upstream.test/internal".parse().unwrap(),
+                &bound,
+                Transport::Router(Router::new()),
+            )
+            .unwrap(),
+        );
+        let auth = AuthState::relay(relay);
+        let error = crate::auth::run_blocking(|| panic!("verification failed"))
+            .await
+            .unwrap_err();
+
+        let detail = auth.relay_self_error(error).to_string();
+        assert!(detail.starts_with(&format!("{}: ", bound.endpoint())));
+        assert!(detail.contains("blocking authentication task failed"));
+    }
+
+    #[tokio::test]
+    async fn origin_middleware_blocking_failure_claims_no_listener_endpoint() {
+        let auth = AuthState::open();
+        let error = crate::auth::run_blocking(|| panic!("verification failed"))
+            .await
+            .unwrap_err();
+
+        let detail = auth.relay_self_error(error).to_string();
+        assert!(!detail.contains("http://"));
+        assert!(detail.starts_with("blocking authentication task failed"));
+    }
 }

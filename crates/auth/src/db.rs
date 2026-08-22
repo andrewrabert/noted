@@ -1,22 +1,24 @@
-use std::path::Path as StdPath;
+use std::path::Path;
+use std::sync::Arc;
 
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
 use crate::credential::{Caveat, KeyRecord, MacaroonId};
+use crate::oauth::{OAuthClient, RegisterOAuthClient};
 use crate::types::{
-    ClientId, Fingerprint, Label, Owner, PasswordHash, RevocationEpoch, SecretHash, ServerId,
-    SessionId, Username,
+    ClientId, Fingerprint, Label, Owner, PasswordHash, RedirectUri, RevocationEpoch, SecretHash,
+    ServerId, SessionId, Username,
 };
-use noted::error::{NotedError, Result, db_error, io_error, json_error, rejected};
+use noted::error::{NotedError, Result, db_error, json_error, rejected};
 use noted::types::UnixEpochSeconds;
 
 const USERS: TableDefinition<&str, &[u8]> = TableDefinition::new("users");
-const CLIENTS: TableDefinition<&str, &str> = TableDefinition::new("clients");
 const REFRESH: TableDefinition<&str, &[u8]> = TableDefinition::new("refresh");
 const MINTED: TableDefinition<&str, &[u8]> = TableDefinition::new("minted");
 const ROOTS: TableDefinition<&str, &[u8]> = TableDefinition::new("roots");
 const REVOKED: TableDefinition<&str, u64> = TableDefinition::new("revoked");
+const OAUTH_CLIENTS: TableDefinition<&str, &str> = TableDefinition::new("clients");
 
 /// The `roots` row holding the server's own identity. No owner spelling can
 /// collide with it: every other key is `user:…` or `self:…`.
@@ -68,29 +70,35 @@ struct ServerRecord {
     key: KeyRecord,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OAuthClientRecord {
+    client_id: ClientId,
+    redirect_uris: Vec<String>,
+    client_id_issued_at: UnixEpochSeconds,
+}
+
 pub struct Db {
-    inner: Database,
+    inner: Arc<Database>,
 }
 
 impl Db {
-    pub fn open(path: &StdPath) -> Result<Db> {
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent).map_err(|e| io_error("auth db: mkdir", e))?;
-        }
-        let inner = Database::create(path).map_err(|e| db_error("auth db: open", e))?;
-        let w = inner.begin_write().map_err(db_err)?;
+    pub fn open(path: &Path) -> Result<Db> {
+        let database =
+            Arc::new(Database::create(path).map_err(|error| db_error("auth db: open", error))?);
+        let w = database.begin_write().map_err(db_err)?;
         {
             w.open_table(USERS).map_err(db_err)?;
-            w.open_table(CLIENTS).map_err(db_err)?;
             w.open_table(REFRESH).map_err(db_err)?;
             w.open_table(MINTED).map_err(db_err)?;
             w.open_table(ROOTS).map_err(db_err)?;
             w.open_table(REVOKED).map_err(db_err)?;
+            w.open_table(OAUTH_CLIENTS).map_err(db_err)?;
         }
         w.commit().map_err(db_err)?;
-        Ok(Db { inner })
+        let database = Db { inner: database };
+        database.oauth_clients()?;
+        Ok(database)
     }
 
     fn get(&self, table: TableDefinition<&str, &[u8]>, key: &str) -> Result<Option<Vec<u8>>> {
@@ -123,25 +131,55 @@ impl Db {
         Ok(out)
     }
 
-    pub fn put_client(&self, client_id: &str, json: &str) -> Result<()> {
-        let w = self.inner.begin_write().map_err(db_err)?;
+    pub(crate) fn put_oauth_client(&self, client: &OAuthClient) -> Result<()> {
+        let record = OAuthClientRecord {
+            client_id: client.client_id().clone(),
+            redirect_uris: client
+                .redirect_uris()
+                .iter()
+                .map(|redirect| redirect.as_str().to_owned())
+                .collect(),
+            client_id_issued_at: client.issued_at(),
+        };
+        let contents = serde_json::to_string(&record)
+            .map_err(|error| json_error("encode OAuth client record", error))?;
+        let write = self.inner.begin_write().map_err(db_err)?;
         {
-            let mut t = w.open_table(CLIENTS).map_err(db_err)?;
-            t.insert(client_id, json).map_err(db_err)?;
+            let mut table = write.open_table(OAUTH_CLIENTS).map_err(db_err)?;
+            table
+                .insert(client.client_id().as_str(), contents.as_str())
+                .map_err(db_err)?;
         }
-        w.commit().map_err(db_err)?;
+        write.commit().map_err(db_err)?;
         Ok(())
     }
 
-    pub fn all_clients(&self) -> Result<Vec<(String, String)>> {
-        let r = self.inner.begin_read().map_err(db_err)?;
-        let t = r.open_table(CLIENTS).map_err(db_err)?;
-        let mut out = Vec::new();
-        for row in t.iter().map_err(db_err)? {
-            let (k, v) = row.map_err(db_err)?;
-            out.push((k.value().to_string(), v.value().to_string()));
+    pub(crate) fn oauth_clients(&self) -> Result<Vec<OAuthClient>> {
+        let read = self.inner.begin_read().map_err(db_err)?;
+        let table = read.open_table(OAUTH_CLIENTS).map_err(db_err)?;
+        let mut clients = Vec::new();
+        for row in table.iter().map_err(db_err)? {
+            let (storage_id, contents) = row.map_err(db_err)?;
+            let record: OAuthClientRecord = serde_json::from_str(contents.value())
+                .map_err(|error| json_error("decode OAuth client record", error))?;
+            if storage_id.value() != record.client_id.as_str() {
+                return Err(rejected(
+                    "OAuth client storage key does not match client id",
+                ));
+            }
+            let redirects = record
+                .redirect_uris
+                .iter()
+                .map(RedirectUri::new)
+                .collect::<Result<Vec<_>>>()?;
+            let request = RegisterOAuthClient::new(redirects)?;
+            clients.push(OAuthClient::from_persisted(
+                record.client_id,
+                record.client_id_issued_at,
+                request,
+            )?);
         }
-        Ok(out)
+        Ok(clients)
     }
 
     /// The server's own owner and key, written on first call.

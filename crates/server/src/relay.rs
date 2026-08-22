@@ -7,9 +7,12 @@ use axum::{Json, http::HeaderValue};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use noted::error::{Result, io_error};
+use noted::error::{NotedError, Result, io_error};
 use noted::{Bearer, Endpoint, Transport, Upstream};
 use noted_auth::authority::{Minter, RelayCredential, Verified};
+
+use crate::auth::run_blocking;
+use crate::serve::{Bound, ListenerEndpoint};
 
 /// The MCP endpoint every relayed JSON-RPC message is posted to.
 const MCP_PATH: &str = "mcp";
@@ -22,22 +25,52 @@ const MCP_ACCEPT: &str = "application/json, text/event-stream";
 pub struct Relay {
     credential: Arc<RelayCredential>,
     upstream: Upstream,
+    listener_endpoint: Option<Arc<ListenerEndpoint>>,
 }
 
 impl Relay {
     pub fn open(
         credential: Arc<RelayCredential>,
-        endpoint: Endpoint,
+        upstream_endpoint: Endpoint,
+        bound: &Bound,
         transport: Transport,
     ) -> Result<Relay> {
         Ok(Relay {
             credential,
-            upstream: Upstream::open(endpoint, transport)?,
+            upstream: Upstream::open(upstream_endpoint, transport)?,
+            listener_endpoint: Some(bound.endpoint().clone()),
+        })
+    }
+
+    pub fn open_stdio(
+        credential: Arc<RelayCredential>,
+        upstream_endpoint: Endpoint,
+        transport: Transport,
+    ) -> Result<Relay> {
+        Ok(Relay {
+            credential,
+            upstream: Upstream::open(upstream_endpoint, transport)?,
+            listener_endpoint: None,
         })
     }
 
     pub fn credential(&self) -> &Arc<RelayCredential> {
         &self.credential
+    }
+
+    pub(crate) fn listener_endpoint(&self) -> Option<&ListenerEndpoint> {
+        self.listener_endpoint.as_deref()
+    }
+
+    pub(crate) fn self_error(&self, error: NotedError) -> NotedError {
+        match self.listener_endpoint() {
+            Some(endpoint) => crate::serve::listener_endpoint_error(endpoint, error),
+            None => error,
+        }
+    }
+
+    fn remint_result<T>(&self, result: Result<T>) -> Result<T> {
+        result.map_err(|error| self.self_error(error))
     }
 
     /// POSTs `body` byte for byte to `path` upstream under a credential minted
@@ -49,13 +82,15 @@ impl Relay {
         caller: &Verified,
         body: Bytes,
     ) -> Response {
-        let bearer = match self.credential.remint(caller) {
+        let credential = self.credential.clone();
+        let caller = caller.clone();
+        let reminted = self
+            .remint_result(run_blocking(move || credential.remint(&caller)).await)
+            .and_then(|result| self.remint_result(result));
+        let bearer = match reminted {
             Ok(minted) => Bearer::new(minted.macaroon.expose()),
-            Err(e) => {
-                return refused(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("{}: {}", self.credential.at(), e.message()),
-                );
+            Err(error) => {
+                return refused(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
             }
         };
         match self
@@ -96,7 +131,11 @@ impl Relay {
             if line.trim().is_empty() {
                 continue;
             }
-            let minted = self.credential.remint(&caller)?;
+            let credential = self.credential.clone();
+            let caller = caller.clone();
+            let reminted =
+                self.remint_result(run_blocking(move || credential.remint(&caller)).await)?;
+            let minted = self.remint_result(reminted)?;
             let bearer = Bearer::new(minted.macaroon.expose());
             let reply = self
                 .upstream
@@ -119,4 +158,48 @@ impl Relay {
 
 fn refused(status: StatusCode, detail: String) -> Response {
     (status, Json(json!({ "detail": detail }))).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn blocking_remint_errors_name_the_relays_listener_endpoint() {
+        let bound = crate::serve::Bind::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        }
+        .bind()
+        .await
+        .unwrap();
+        let relay = Relay::open(
+            Arc::new(RelayCredential::open(None, noted::PolicyFragment::default(), None).unwrap()),
+            "http://upstream.test/internal".parse().unwrap(),
+            &bound,
+            Transport::Router(axum::Router::new()),
+        )
+        .unwrap();
+        let error = noted::error::rejected("remint failed");
+
+        let error = relay.remint_result::<()>(Err(error)).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("{}: remint failed", bound.endpoint())
+        );
+    }
+
+    #[test]
+    fn stdio_remint_errors_claim_no_listener_endpoint() {
+        let relay = Relay::open_stdio(
+            Arc::new(RelayCredential::open(None, noted::PolicyFragment::default(), None).unwrap()),
+            "http://upstream.test/internal".parse().unwrap(),
+            Transport::Router(axum::Router::new()),
+        )
+        .unwrap();
+        let error = noted::error::rejected("remint failed");
+
+        let error = relay.remint_result::<()>(Err(error)).unwrap_err();
+        assert_eq!(error.to_string(), "remint failed");
+    }
 }

@@ -2,7 +2,6 @@ mod common;
 
 use common::rp;
 use noted::path::{Path, Segment};
-
 #[test]
 fn escapes_are_unrepresentable() {
     for escape in ["../evil.md", "../../etc/passwd", "a/../b.md"] {
