@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+pub const TEST_PEER: std::net::SocketAddr =
+    std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 41000);
+
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::Arc;
 
@@ -12,12 +15,24 @@ use noted::search::{Hit, SearchMode, SearchQuery};
 use noted::store::NotedDir;
 use noted::types::{Source, Ttl};
 use noted::{NotedRoot, PolicyFragment};
+use noted_auth::AuthService;
 use noted_auth::authority::{Mint, Minter, OriginAuthority, Verified};
 use noted_auth::types::{ClientId, Label, Username};
-use noted_auth::{AuthService, AuthState, Db};
+use noted_server::auth::AuthState;
 use noted_server::http::{Served, build_app};
+use noted_server::serve::{Bind, Bound};
 use serde_json::Value;
 use tower::ServiceExt;
+
+pub async fn bound_listener() -> Bound {
+    Bind::Tcp {
+        host: std::net::Ipv4Addr::LOCALHOST.to_string(),
+        port: 0,
+    }
+    .bind()
+    .await
+    .unwrap()
+}
 
 pub fn rp(s: &str) -> Path {
     s.parse().unwrap()
@@ -63,8 +78,10 @@ pub async fn found(root: &NotedRoot, pattern: &str) -> noted::Result<Vec<String>
 }
 
 pub fn auth_service(dir: &tempfile::TempDir) -> Arc<AuthService> {
-    let db = Arc::new(Db::open(&dir.path().join("auth.redb")).unwrap());
-    Arc::new(AuthService::new(db, Ttl::from_secs(30 * 24 * 3600)))
+    Arc::new(AuthService::new(
+        Arc::new(noted_auth::Db::open(&dir.path().join("auth.redb")).unwrap()),
+        Ttl::from_secs(30 * 24 * 3600),
+    ))
 }
 
 /// A credential the server minted from its own, labelled so an admin can name
@@ -100,17 +117,20 @@ pub fn un(s: &str) -> Username {
 }
 
 pub fn open_app(dir: &tempfile::TempDir) -> Router {
-    build_app(Served::Origin(root(dir)), AuthState::open())
+    build_app(Served::origin(root(dir), AuthState::open()))
 }
 
-pub fn origin_app(root: NotedRoot, svc: &Arc<AuthService>) -> Router {
-    build_app(Served::Origin(root), AuthState::origin(svc.clone(), None))
+pub async fn origin_app(root: NotedRoot, svc: &Arc<AuthService>) -> Router {
+    build_app(Served::origin(
+        root,
+        AuthState::origin(svc.clone(), None).await.unwrap(),
+    ))
 }
 
-pub fn app_with_key(dir: &tempfile::TempDir) -> (Router, String) {
+pub async fn app_with_key(dir: &tempfile::TempDir) -> (Router, String) {
     let svc = auth_service(dir);
     let token = mint_key(&svc, "test", PolicyFragment::default());
-    (origin_app(root(dir), &svc), token)
+    (origin_app(root(dir), &svc).await, token)
 }
 
 pub fn copy_tree(src: &StdPath, dst: &StdPath) {

@@ -148,6 +148,12 @@ pub fn socket_base_dir(env: &SocketEnv) -> Result<PathBuf> {
 
 /// The one line a socket server writes to stdout.
 pub fn write_endpoint_line(out: &mut dyn std::io::Write, path: &Path) -> Result<()> {
+    if !path.is_absolute() {
+        return Err(rejected(format!(
+            "a bound unix socket is named by an absolute path: {}",
+            path.display()
+        )));
+    }
     let mut line = b"unix://".to_vec();
     line.extend_from_slice(path.as_os_str().as_bytes());
     line.push(b'\n');

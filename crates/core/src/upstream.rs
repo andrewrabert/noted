@@ -43,18 +43,30 @@ impl Reply {
 impl Upstream {
     pub fn open(endpoint: Endpoint, transport: Transport) -> Result<Upstream> {
         #[cfg(unix)]
-        if matches!(endpoint, Endpoint::Unix(_)) && matches!(transport, Transport::Router(_)) {
+        if endpoint.unix_path().is_some() && matches!(transport, Transport::Router(_)) {
             return Err(crate::error::rejected(
                 "a socket is dialed by a real client: it takes no in-process router",
             ));
         }
-        let client = match &endpoint {
-            Endpoint::Tcp(_) => reqwest::Client::builder(),
-            #[cfg(unix)]
-            Endpoint::Unix(path) => reqwest::Client::builder().unix_socket(path.clone()),
-        }
-        .build()
-        .map_err(|e| unavailable(format!("cannot build an HTTP client: {e}")))?;
+        let builder = reqwest::Client::builder();
+        #[cfg(unix)]
+        let builder = match endpoint.tcp() {
+            Some(_) => builder,
+            None => {
+                let Some(path) = endpoint.unix_path() else {
+                    return Err(crate::error::rejected("endpoint has no dialable transport"));
+                };
+                builder.unix_socket(path.to_path_buf())
+            }
+        };
+        #[cfg(not(unix))]
+        let builder = {
+            let _ = endpoint.tcp();
+            builder
+        };
+        let client = builder
+            .build()
+            .map_err(|e| unavailable(format!("cannot build an HTTP client: {e}")))?;
         Ok(Upstream {
             base: endpoint.base_url()?,
             endpoint,

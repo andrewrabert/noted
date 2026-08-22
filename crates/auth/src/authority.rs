@@ -6,10 +6,10 @@ use serde::{Deserialize, Serialize};
 use crate::credential::{Caveat, KeyRecord, Macaroon, MacaroonId};
 use crate::db::MintRecord;
 use crate::service::{AuthService, MintSummary};
-use crate::types::{Fingerprint, Label, Owner, RevocationEpoch, SessionId};
+use crate::types::{CredentialPresentation, Fingerprint, Label, Owner, RevocationEpoch, SessionId};
+use noted::PolicyFragment;
 use noted::error::{Result, rejected};
 use noted::types::{Ttl, UnixEpochSeconds};
-use noted::{Bearer, PolicyFragment};
 
 /// Sixty seconds is all a re-minted hop credential needs: it is spent on the
 /// one request that produced it.
@@ -81,7 +81,10 @@ impl fmt::Display for Denial {
 }
 
 pub trait Verifier: Send + Sync + 'static {
-    fn verify(&self, bearer: Option<&str>) -> std::result::Result<Verified, Denial>;
+    fn verify(
+        &self,
+        credential: Option<&CredentialPresentation>,
+    ) -> std::result::Result<Verified, Denial>;
 }
 
 pub struct Mint {
@@ -91,6 +94,7 @@ pub struct Mint {
     pub label: Option<Label>,
 }
 
+#[derive(Clone, Debug)]
 pub struct Minted {
     pub macaroon: Macaroon,
     pub token_id: MacaroonId,
@@ -288,10 +292,14 @@ fn unauthorized<T>(message: impl Into<String>) -> std::result::Result<T, Denial>
 }
 
 impl Verifier for OriginAuthority {
-    fn verify(&self, bearer: Option<&str>) -> std::result::Result<Verified, Denial> {
-        let Some(bearer) = bearer else {
+    fn verify(
+        &self,
+        credential: Option<&CredentialPresentation>,
+    ) -> std::result::Result<Verified, Denial> {
+        let Some(credential) = credential else {
             return Ok(Verified::anonymous());
         };
+        let bearer = credential.expose();
         let macaroon = Macaroon::from_encoded(bearer.to_string())
             .map_err(|e| Denial::Malformed(e.to_string()))?;
         let owner = macaroon
@@ -410,10 +418,14 @@ impl Minter for OriginAuthority {
 pub struct OpenAuthority;
 
 impl Verifier for OpenAuthority {
-    fn verify(&self, bearer: Option<&str>) -> std::result::Result<Verified, Denial> {
-        let Some(bearer) = bearer else {
+    fn verify(
+        &self,
+        credential: Option<&CredentialPresentation>,
+    ) -> std::result::Result<Verified, Denial> {
+        let Some(credential) = credential else {
             return Ok(Verified::anonymous());
         };
+        let bearer = credential.expose();
         let macaroon = Macaroon::from_encoded(bearer.to_string())
             .map_err(|e| Denial::Malformed(e.to_string()))?;
         let owner = macaroon
@@ -449,21 +461,18 @@ pub struct RelayCredential {
     own: Verified,
     confined: Macaroon,
     ledger: Option<Arc<AuthService>>,
-    at: String,
 }
 
 impl RelayCredential {
     /// `bearer`, else a bare root self-minted under `self:<random>`: the key
     /// comes from `ledger` when there is one and is fresh per process otherwise.
     pub fn open(
-        bearer: Option<&Bearer>,
+        credential: Option<&CredentialPresentation>,
         policy: PolicyFragment,
         ledger: Option<Arc<AuthService>>,
-        at: String,
     ) -> Result<RelayCredential> {
-        let held = match bearer {
-            Some(bearer) => Macaroon::from_encoded(bearer.expose().to_string())
-                .map_err(|e| rejected(format!("{at}: {e}")))?,
+        let held = match credential {
+            Some(credential) => Macaroon::from_encoded(credential.expose().to_string())?,
             None => match &ledger {
                 Some(service) => {
                     let (owner, key) = service.db().server_key()?;
@@ -483,7 +492,6 @@ impl RelayCredential {
             own,
             confined,
             ledger,
-            at,
         })
     }
 
@@ -511,10 +519,6 @@ impl RelayCredential {
         })
     }
 
-    pub fn at(&self) -> &str {
-        &self.at
-    }
-
     fn is_revoked(&self, caveat: &Caveat) -> bool {
         match &self.ledger {
             Some(service) => service.db().is_revoked(caveat).unwrap_or(true),
@@ -524,10 +528,14 @@ impl RelayCredential {
 }
 
 impl Verifier for RelayCredential {
-    fn verify(&self, bearer: Option<&str>) -> std::result::Result<Verified, Denial> {
-        let Some(bearer) = bearer else {
+    fn verify(
+        &self,
+        credential: Option<&CredentialPresentation>,
+    ) -> std::result::Result<Verified, Denial> {
+        let Some(credential) = credential else {
             return Ok(self.own.clone());
         };
+        let bearer = credential.expose();
         Macaroon::from_encoded(bearer.to_string()).map_err(|e| Denial::Malformed(e.to_string()))?;
         let macaroon = self.confined.from_descendant(bearer).map_err(|_| {
             Denial::Forbidden("that credential is no descendant of this relay's".into())
@@ -582,20 +590,19 @@ impl Minter for RelayCredential {
     }
 
     fn revoke(&self, caller: &Verified, ask: &Revoke) -> Result<Withdrawn> {
-        let named = |m: &str| rejected(format!("{}: {m}", self.at));
         if let Revoke::All = ask {
-            return Err(named("a relay holds no epoch to bump"));
+            return Err(rejected("a relay holds no epoch to bump"));
         }
         let service = self
             .ledger
             .as_ref()
-            .ok_or_else(|| named("this relay records nothing it mints"))?;
+            .ok_or_else(|| rejected("this relay records nothing it mints"))?;
         let owner = caller
             .owner()
             .or_else(|| self.own.owner())
-            .ok_or_else(|| named("this relay holds no credential to revoke under"))?
+            .ok_or_else(|| rejected("this relay holds no credential to revoke under"))?
             .clone();
-        Withdrawn::sealed(withdraw(service, &owner, ask)?, None).map_err(|e| named(&e.message()))
+        Withdrawn::sealed(withdraw(service, &owner, ask)?, None)
     }
 
     fn minted(&self, owner: &Owner) -> Result<Vec<MintSummary>> {

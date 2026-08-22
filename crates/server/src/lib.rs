@@ -1,5 +1,8 @@
+mod admin;
+pub mod auth;
 pub mod http;
 pub mod mcp;
+pub mod oauth;
 pub mod relay;
 pub mod serve;
 #[cfg(unix)]

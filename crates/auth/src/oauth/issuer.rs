@@ -5,19 +5,19 @@ use oxide_auth::primitives::grant::Grant;
 use oxide_auth::primitives::issuer::{IssuedToken, Issuer, RefreshedToken, TokenType};
 use oxide_auth::primitives::scope::Scope;
 
-use super::DEFAULT_SCOPE;
+use super::engine::DEFAULT_SCOPE;
 use crate::db::RefreshRecord;
 use crate::service::{AuthService, Login};
-use crate::types::{ClientId, Owner, Username};
+use crate::types::{ClientId, Owner, RefreshToken, Username};
 use noted::error::Result;
 
-pub struct DbIssuer {
-    auth: Arc<AuthService>,
+pub(super) struct DbIssuer {
+    service: Arc<AuthService>,
 }
 
 impl DbIssuer {
-    pub fn new(auth: Arc<AuthService>) -> DbIssuer {
-        DbIssuer { auth }
+    pub(super) fn new(service: Arc<AuthService>) -> DbIssuer {
+        DbIssuer { service }
     }
 
     fn rebuild_grant(rec: &RefreshRecord) -> Grant {
@@ -59,15 +59,15 @@ fn unix_to_utc(secs: u64) -> chrono::DateTime<chrono::Utc> {
 impl Issuer for DbIssuer {
     fn issue(&mut self, grant: Grant) -> std::result::Result<IssuedToken, ()> {
         let (name, client) = Self::grant_parts(&grant).map_err(|_| ())?;
-        let login = self.auth.issue_login(&name, &client).map_err(|_| ())?;
+        let login = self.service.issue_login(&name, &client).map_err(|_| ())?;
         Ok(Self::issued(login))
     }
 
     fn refresh(&mut self, refresh: &str, grant: Grant) -> std::result::Result<RefreshedToken, ()> {
         let (name, client) = Self::grant_parts(&grant).map_err(|_| ())?;
         let login = self
-            .auth
-            .rotate_login(refresh, &name, &client)
+            .service
+            .rotate_login(&RefreshToken::new(refresh), &name, &client)
             .map_err(|_| ())?;
         let issued = Self::issued(login);
         Ok(RefreshedToken {
@@ -84,7 +84,7 @@ impl Issuer for DbIssuer {
     }
 
     fn recover_refresh(&self, token: &str) -> std::result::Result<Option<Grant>, ()> {
-        match self.auth.refresh_owner(token) {
+        match self.service.refresh_owner(&RefreshToken::new(token)) {
             Ok(Some(rec)) => Ok(Some(Self::rebuild_grant(&rec))),
             Ok(None) => Ok(None),
             Err(_) => Err(()),
