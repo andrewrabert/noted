@@ -298,7 +298,6 @@ async fn a_revoked_caller_token_id_produces_no_upstream_request() {
     let ask = Mint {
         policy: PolicyFragment::default(),
         ttl: svc.default_ttl(),
-        session: None,
         label: None,
     };
     let minted = Minter::mint(cred.as_ref(), &Verified::anonymous(), &ask).unwrap();
@@ -391,7 +390,6 @@ async fn a_relay_minted_credential_presented_back_composes_its_scope_once() {
     let ask = Mint {
         policy: PolicyFragment::default(),
         ttl: noted::types::Ttl::from_secs(3600),
-        session: None,
         label: None,
     };
     let minted = Minter::mint(cred.as_ref(), &Verified::anonymous(), &ask).unwrap();

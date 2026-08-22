@@ -8,7 +8,7 @@ use crate::credential::{Caveat, KeyRecord, MacaroonId};
 use crate::oauth::{OAuthClient, RegisterOAuthClient};
 use crate::types::{
     ClientId, Fingerprint, Label, Owner, PasswordHash, RedirectUri, RevocationEpoch, SecretHash,
-    ServerId, SessionId, Username,
+    ServerId, Username,
 };
 use noted::error::{NotedError, Result, db_error, json_error, rejected};
 use noted::types::UnixEpochSeconds;
@@ -47,7 +47,6 @@ pub struct UserRecord {
 pub struct RefreshRecord {
     pub owner: Owner,
     pub client_id: ClientId,
-    pub session: SessionId,
     pub fingerprint: Fingerprint,
     pub created_at: UnixEpochSeconds,
     pub expires_at: UnixEpochSeconds,
@@ -57,7 +56,6 @@ pub struct RefreshRecord {
 pub struct MintRecord {
     pub owner: Owner,
     pub label: Option<Label>,
-    pub session: Option<SessionId>,
     pub policy: noted::PolicyFragment,
     pub fingerprint: Fingerprint,
     pub created_at: UnixEpochSeconds,

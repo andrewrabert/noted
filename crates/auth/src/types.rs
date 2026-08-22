@@ -147,11 +147,6 @@ str_newtype!(ClientId);
 pub struct Label(String);
 str_newtype_validated!(Label, validate_label);
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SessionId(String);
-str_newtype!(SessionId);
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct RevocationEpoch(u64);
