@@ -186,32 +186,6 @@ impl Macaroon {
         Macaroon::from_decoded(decoded)
     }
 
-    /// The candidate rebuilt from this macaroon. Refuses one whose identifier,
-    /// caveat prefix or signature does not descend from this one.
-    pub fn from_descendant(&self, candidate: &str) -> Result<Macaroon> {
-        let candidate = Macaroon::from_encoded(candidate.to_string())?;
-        let caveats = self.decoded.caveats();
-        let candidate_caveats = candidate.decoded.caveats();
-        let is_descendant = self.decoded.identifier() == candidate.decoded.identifier()
-            && candidate_caveats.len() >= caveats.len()
-            && candidate_caveats.starts_with(&caveats);
-        if !is_descendant {
-            return Err(rejected("macaroon is not a descendant"));
-        }
-
-        let mut descendant = self.decoded.clone();
-        for caveat in &candidate_caveats[caveats.len()..] {
-            let DependencyCaveat::FirstParty(first_party) = caveat else {
-                return Err(rejected("macaroon is not a descendant"));
-            };
-            descendant.add_first_party_caveat(first_party.predicate());
-        }
-        if descendant.signature() != candidate.decoded.signature() {
-            return Err(rejected("macaroon is not a descendant"));
-        }
-        Macaroon::from_decoded(descendant)
-    }
-
     pub fn caveats(&self) -> Result<Vec<Caveat>> {
         self.decoded
             .caveats()
@@ -225,16 +199,6 @@ impl Macaroon {
                 predicate.parse()
             })
             .collect()
-    }
-
-    /// The caveats this macaroon carries past `ancestor`, in order.
-    pub fn beyond(&self, ancestor: &Macaroon) -> Result<Vec<Caveat>> {
-        let held = ancestor.decoded.caveats().len();
-        let mine = self.caveats()?;
-        if mine.len() < held {
-            return Err(rejected("macaroon is not a descendant"));
-        }
-        Ok(mine[held..].to_vec())
     }
 
     pub fn owner(&self) -> Result<Owner> {

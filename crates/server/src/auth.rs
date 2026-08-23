@@ -58,10 +58,9 @@ impl AuthState {
     }
 
     pub(crate) fn relay(relay: Arc<crate::relay::Relay>) -> AuthState {
-        let credential = relay.credential().clone();
         AuthState {
-            verifier: credential.clone(),
-            minter: Some(credential),
+            verifier: Arc::new(OpenAuthority),
+            minter: None,
             oauth: None,
             relay: Some(relay),
         }
@@ -189,7 +188,6 @@ async fn mint(State(state): State<AuthState>, headers: HeaderMap, body: Bytes) -
 mod tests {
     use super::*;
     use noted::Transport;
-    use noted_auth::authority::RelayCredential;
 
     async fn relay_state() -> (crate::serve::Bound, AuthState) {
         let bound = crate::serve::Bind::Tcp {
@@ -201,9 +199,8 @@ mod tests {
         .unwrap();
         let relay = Arc::new(
             crate::relay::Relay::open(
-                Arc::new(
-                    RelayCredential::open(None, noted::PolicyFragment::default(), None).unwrap(),
-                ),
+                None,
+                noted::PolicyFragment::default(),
                 "http://upstream.test/internal".parse().unwrap(),
                 &bound,
                 Transport::Router(axum::Router::new()),

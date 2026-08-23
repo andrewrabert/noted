@@ -82,11 +82,12 @@ impl Upstream {
     pub async fn post(
         &self,
         path: &str,
+        query: &[(&str, String)],
         bearer: Option<&Bearer>,
         accept: Option<&str>,
         body: Vec<u8>,
     ) -> Result<Reply> {
-        let target = self.base.join(path);
+        let target = self.base.join_query(path, query);
         let authorization = bearer.map(|b| format!("Bearer {}", b.expose()));
         let mut headers: Vec<(&str, &str)> = vec![("content-type", "application/json")];
         if let Some(authorization) = &authorization {

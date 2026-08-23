@@ -8,10 +8,8 @@ use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use noted::error::{NotedError, Result, io_error};
-use noted::{Bearer, Endpoint, Transport, Upstream};
-use noted_auth::authority::{Minter, RelayCredential, Verified};
+use noted::{Bearer, Endpoint, PolicyFragment, Transport, Upstream};
 
-use crate::auth::run_blocking;
 use crate::serve::{Bound, ListenerEndpoint};
 
 /// The MCP endpoint every relayed JSON-RPC message is posted to.
@@ -20,42 +18,43 @@ const MCP_PATH: &str = "mcp";
 /// rmcp answers a stateless call only when both content types are acceptable.
 const MCP_ACCEPT: &str = "application/json, text/event-stream";
 
-/// A domain-blind pipe: it re-mints the caller's credential from its own and
-/// copies bodies through.
+/// A domain-blind pipe: it carries the credential it was configured with,
+/// imposes its own confinement as a `policy=` query, and copies bodies through.
 pub struct Relay {
-    credential: Arc<RelayCredential>,
+    bearer: Option<Bearer>,
+    policy: PolicyFragment,
     upstream: Upstream,
     listener_endpoint: Option<Arc<ListenerEndpoint>>,
 }
 
 impl Relay {
     pub fn open(
-        credential: Arc<RelayCredential>,
+        bearer: Option<Bearer>,
+        policy: PolicyFragment,
         upstream_endpoint: Endpoint,
         bound: &Bound,
         transport: Transport,
     ) -> Result<Relay> {
         Ok(Relay {
-            credential,
+            bearer,
+            policy,
             upstream: Upstream::open(upstream_endpoint, transport)?,
             listener_endpoint: Some(bound.endpoint().clone()),
         })
     }
 
     pub fn open_stdio(
-        credential: Arc<RelayCredential>,
+        bearer: Option<Bearer>,
+        policy: PolicyFragment,
         upstream_endpoint: Endpoint,
         transport: Transport,
     ) -> Result<Relay> {
         Ok(Relay {
-            credential,
+            bearer,
+            policy,
             upstream: Upstream::open(upstream_endpoint, transport)?,
             listener_endpoint: None,
         })
-    }
-
-    pub fn credential(&self) -> &Arc<RelayCredential> {
-        &self.credential
     }
 
     pub(crate) fn listener_endpoint(&self) -> Option<&ListenerEndpoint> {
@@ -69,35 +68,31 @@ impl Relay {
         }
     }
 
-    fn remint_result<T>(&self, result: Result<T>) -> Result<T> {
-        result.map_err(|error| self.self_error(error))
+    /// The confinement every proxied call is held to: this relay's own, then
+    /// whatever the caller asked to be narrowed to.
+    fn query(&self, asked: &[PolicyFragment]) -> Vec<(&'static str, String)> {
+        std::iter::once(&self.policy)
+            .chain(asked)
+            .filter(|fragment| **fragment != PolicyFragment::default())
+            .map(|fragment| ("policy", fragment.to_string()))
+            .collect()
     }
 
-    /// POSTs `body` byte for byte to `path` upstream under a credential minted
-    /// for `caller`, answering with the upstream's status and body untouched.
+    /// POSTs `body` byte for byte to `path` upstream under the credential this
+    /// relay holds, answering with the upstream's status and body untouched.
     pub async fn forward(
         &self,
         path: &str,
         accept: Option<&str>,
-        caller: &Verified,
+        asked: &[PolicyFragment],
         body: Bytes,
     ) -> Response {
-        let credential = self.credential.clone();
-        let caller = caller.clone();
-        let reminted = self
-            .remint_result(run_blocking(move || credential.remint(&caller)).await)
-            .and_then(|result| self.remint_result(result));
-        let bearer = match reminted {
-            Ok(minted) => Bearer::new(minted.macaroon.expose()),
-            Err(error) => {
-                return refused(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
-            }
-        };
         match self
             .upstream
             .post(
                 path.trim_start_matches('/'),
-                Some(&bearer),
+                &self.query(asked),
+                self.bearer.as_ref(),
                 accept,
                 body.to_vec(),
             )
@@ -120,7 +115,6 @@ impl Relay {
     /// One JSON-RPC message per line from stdin to the upstream `/mcp`, each
     /// reply written back as one line.
     pub async fn pipe_stdio(&self) -> Result<()> {
-        let caller = self.credential.own().clone();
         let mut lines = BufReader::new(tokio::io::stdin()).lines();
         let mut out = tokio::io::stdout();
         while let Some(line) = lines
@@ -131,15 +125,15 @@ impl Relay {
             if line.trim().is_empty() {
                 continue;
             }
-            let credential = self.credential.clone();
-            let caller = caller.clone();
-            let reminted =
-                self.remint_result(run_blocking(move || credential.remint(&caller)).await)?;
-            let minted = self.remint_result(reminted)?;
-            let bearer = Bearer::new(minted.macaroon.expose());
             let reply = self
                 .upstream
-                .post(MCP_PATH, Some(&bearer), Some(MCP_ACCEPT), line.into_bytes())
+                .post(
+                    MCP_PATH,
+                    &self.query(&[]),
+                    self.bearer.as_ref(),
+                    Some(MCP_ACCEPT),
+                    line.into_bytes(),
+                )
                 .await?;
             if reply.body.is_empty() {
                 continue;
@@ -164,8 +158,12 @@ fn refused(status: StatusCode, detail: String) -> Response {
 mod tests {
     use super::*;
 
+    fn fragment(text: &str) -> PolicyFragment {
+        text.parse().unwrap()
+    }
+
     #[tokio::test]
-    async fn blocking_remint_errors_name_the_relays_listener_endpoint() {
+    async fn relay_errors_name_the_relays_listener_endpoint() {
         let bound = crate::serve::Bind::Tcp {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -174,32 +172,64 @@ mod tests {
         .await
         .unwrap();
         let relay = Relay::open(
-            Arc::new(RelayCredential::open(None, noted::PolicyFragment::default(), None).unwrap()),
+            None,
+            PolicyFragment::default(),
             "http://upstream.test/internal".parse().unwrap(),
             &bound,
             Transport::Router(axum::Router::new()),
         )
         .unwrap();
-        let error = noted::error::rejected("remint failed");
 
-        let error = relay.remint_result::<()>(Err(error)).unwrap_err();
+        let error = relay.self_error(noted::error::rejected("forward failed"));
         assert_eq!(
             error.to_string(),
-            format!("{}: remint failed", bound.endpoint())
+            format!("{}: forward failed", bound.endpoint())
         );
     }
 
     #[test]
-    fn stdio_remint_errors_claim_no_listener_endpoint() {
+    fn stdio_relay_errors_claim_no_listener_endpoint() {
         let relay = Relay::open_stdio(
-            Arc::new(RelayCredential::open(None, noted::PolicyFragment::default(), None).unwrap()),
+            None,
+            PolicyFragment::default(),
             "http://upstream.test/internal".parse().unwrap(),
             Transport::Router(axum::Router::new()),
         )
         .unwrap();
-        let error = noted::error::rejected("remint failed");
 
-        let error = relay.remint_result::<()>(Err(error)).unwrap_err();
-        assert_eq!(error.to_string(), "remint failed");
+        let error = relay.self_error(noted::error::rejected("forward failed"));
+        assert_eq!(error.to_string(), "forward failed");
+    }
+
+    #[test]
+    fn a_query_carries_the_relays_confinement_ahead_of_the_callers() {
+        let relay = Relay::open_stdio(
+            None,
+            fragment(r#"{"scope":"a"}"#),
+            "http://upstream.test".parse().unwrap(),
+            Transport::Router(axum::Router::new()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            relay.query(&[fragment(r#"{"scope":"b"}"#)]),
+            vec![
+                ("policy", r#"{"scope":"a"}"#.to_string()),
+                ("policy", r#"{"scope":"b"}"#.to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_query_that_narrows_nothing_is_left_off_entirely() {
+        let relay = Relay::open_stdio(
+            None,
+            PolicyFragment::default(),
+            "http://upstream.test".parse().unwrap(),
+            Transport::Router(axum::Router::new()),
+        )
+        .unwrap();
+
+        assert!(relay.query(&[PolicyFragment::default()]).is_empty());
     }
 }

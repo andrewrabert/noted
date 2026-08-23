@@ -111,21 +111,17 @@ impl Served {
 
 #[derive(Clone)]
 struct AppState {
-    kind: ServedKind,
     auth: AuthState,
 }
 
 impl AppState {
-    /// An origin that holds an auth database admits nobody without a bearer.
-    /// An open origin and a relay both answer a caller that presents none.
     fn requires_bearer(&self) -> bool {
-        matches!(self.kind, ServedKind::Origin(_)) && self.auth.minter().is_some()
+        self.auth.minter().is_some()
     }
 }
 
 pub fn build_app(served: Served) -> Router {
     let state = AppState {
-        kind: served.kind.clone(),
         auth: served.auth.clone(),
     };
 
@@ -288,12 +284,12 @@ async fn run(
 async fn relay_forward(
     State(relay): State<Arc<Relay>>,
     OriginalUri(uri): OriginalUri,
-    Extension(caller): Extension<Verified>,
+    Extension(asked): Extension<Vec<PolicyFragment>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     relay
-        .forward(uri.path(), accept(&headers), &caller, body)
+        .forward(uri.path(), accept(&headers), &asked, body)
         .await
 }
 
@@ -301,7 +297,6 @@ async fn relay_forward(
 mod tests {
     use super::*;
     use noted::Transport;
-    use noted_auth::authority::RelayCredential;
 
     #[tokio::test]
     async fn relay_middleware_blocking_failure_names_the_relays_listener_endpoint() {
@@ -314,9 +309,8 @@ mod tests {
         .unwrap();
         let relay = Arc::new(
             Relay::open(
-                Arc::new(
-                    RelayCredential::open(None, noted::PolicyFragment::default(), None).unwrap(),
-                ),
+                None,
+                PolicyFragment::default(),
                 "http://upstream.test/internal".parse().unwrap(),
                 &bound,
                 Transport::Router(Router::new()),

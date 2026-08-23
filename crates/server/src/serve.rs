@@ -15,9 +15,8 @@ use crate::relay::Relay;
 use noted::error::{Result, rejected, unavailable};
 use noted::store::NotedDir;
 use noted::types::Source;
-use noted::{Bearer, Endpoint, NotedRoot, PolicyArgs, Transport};
+use noted::{Bearer, Endpoint, NotedRoot, PolicyArgs, PolicyFragment, Transport};
 use noted_auth::AuthService;
-use noted_auth::authority::RelayCredential;
 
 /// What a served process stands on: its own notes tree, or another server.
 pub enum ServedConfig {
@@ -93,28 +92,21 @@ async fn origin(
     Ok(Served::origin(root, state))
 }
 
+fn confinement(policy: PolicyArgs) -> Result<PolicyFragment> {
+    Ok(policy.fragments()?.into_iter().next().unwrap_or_default())
+}
+
 async fn relay(
     upstream_endpoint: Endpoint,
     bound: &Bound,
     bearer: Option<Bearer>,
     policy: PolicyArgs,
     transport: Transport,
-    ledger: Option<Arc<AuthService>>,
 ) -> Result<Served> {
-    let presentation = bearer
-        .as_ref()
-        .map(|bearer| noted_auth::types::CredentialPresentation::submitted(bearer.expose()));
-    let opened = listener_endpoint_result(
-        bound.endpoint(),
-        run_blocking(move || {
-            let fragment = policy.fragments()?.into_iter().next().unwrap_or_default();
-            RelayCredential::open(presentation.as_ref(), fragment, ledger)
-        })
-        .await,
-    )?;
-    let credential = Arc::new(listener_endpoint_result(bound.endpoint(), opened)?);
+    let policy = listener_endpoint_result(bound.endpoint(), confinement(policy))?;
     let relay = Arc::new(Relay::open(
-        credential,
+        bearer,
+        policy,
         upstream_endpoint,
         bound,
         transport,
@@ -122,22 +114,13 @@ async fn relay(
     Ok(Served::relay(relay))
 }
 
-async fn stdio_relay(
+fn stdio_relay(
     upstream_endpoint: Endpoint,
     bearer: Option<Bearer>,
     policy: PolicyArgs,
     transport: Transport,
 ) -> Result<Relay> {
-    let presentation = bearer
-        .as_ref()
-        .map(|bearer| noted_auth::types::CredentialPresentation::submitted(bearer.expose()));
-    let opened = run_blocking(move || {
-        let fragment = policy.fragments()?.into_iter().next().unwrap_or_default();
-        RelayCredential::open(presentation.as_ref(), fragment, None)
-    })
-    .await?;
-    let credential = Arc::new(opened?);
-    Relay::open_stdio(credential, upstream_endpoint, transport)
+    Relay::open_stdio(bearer, confinement(policy)?, upstream_endpoint, transport)
 }
 
 pub(crate) fn listener_endpoint_error(
@@ -297,7 +280,7 @@ pub async fn serve_http(cfg: HttpConfig) -> Result<()> {
             bearer,
             policy,
             transport,
-        } => relay(upstream, &bound, bearer, policy, transport, auth.cloned()).await?,
+        } => relay(upstream, &bound, bearer, policy, transport).await?,
     };
     let auth_state = served.auth().clone();
     let app = crate::http::build_app(served);
@@ -435,8 +418,7 @@ pub async fn serve_stdio(cfg: StdioConfig) -> Result<()> {
             policy,
             transport,
         } => {
-            stdio_relay(endpoint, bearer, policy, transport)
-                .await?
+            stdio_relay(endpoint, bearer, policy, transport)?
                 .pipe_stdio()
                 .await
         }
@@ -506,8 +488,8 @@ mod tests {
         assert!(!failure.is_rejection());
     }
 
-    #[tokio::test]
-    async fn stdio_relay_policy_errors_name_no_upstream_endpoint() {
+    #[test]
+    fn stdio_relay_policy_errors_name_no_upstream_endpoint() {
         let endpoint: Endpoint = "http://upstream.test/presented".parse().unwrap();
         let result = stdio_relay(
             endpoint,
@@ -517,8 +499,7 @@ mod tests {
                 ..PolicyArgs::default()
             },
             Transport::Router(axum::Router::new()),
-        )
-        .await;
+        );
         let Err(error) = result else {
             panic!("invalid relay policy was accepted");
         };
@@ -527,21 +508,18 @@ mod tests {
         assert!(!error.to_string().contains("upstream.test"));
     }
 
-    #[tokio::test]
-    async fn stdio_relay_credential_errors_name_no_upstream_endpoint() {
+    #[test]
+    fn a_stdio_relay_carries_whatever_bearer_it_was_configured_with() {
         let endpoint: Endpoint = "http://upstream.test/presented".parse().unwrap();
-        let result = stdio_relay(
-            endpoint,
-            Some(Bearer::new("not-a-macaroon")),
-            PolicyArgs::default(),
-            Transport::Router(axum::Router::new()),
-        )
-        .await;
-        let Err(error) = result else {
-            panic!("malformed relay credential was accepted");
-        };
-
-        assert!(!error.to_string().contains("upstream.test"));
+        assert!(
+            stdio_relay(
+                endpoint,
+                Some(Bearer::new("not-a-macaroon")),
+                PolicyArgs::default(),
+                Transport::Router(axum::Router::new()),
+            )
+            .is_ok()
+        );
     }
 
     #[cfg(unix)]

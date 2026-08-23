@@ -26,6 +26,17 @@ impl HttpUrl {
         HttpUrl(url)
     }
 
+    pub fn join_query(&self, path: &str, query: &[(&str, String)]) -> HttpUrl {
+        let mut url = self.join(path).0;
+        if !query.is_empty() {
+            let mut pairs = url.query_pairs_mut();
+            for (name, value) in query {
+                pairs.append_pair(name, value);
+            }
+        }
+        HttpUrl(url)
+    }
+
     // the url's path, with '?' and the query appended when the url carries one
     // always begins with '/'
     pub fn path_and_query(&self) -> String {
