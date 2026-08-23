@@ -1,8 +1,8 @@
 use crate::types::{
     AuthorizationCode, AuthorizationResponseType, AuthorizationTransactionId, ClientId,
     ClientState, CodeChallenge, CodeChallengeMethod, CodeVerifier, GrantedScope, LoginName,
-    OAuthAccessToken, OAuthTokenType, Password, RedirectUri, RefreshToken,
-    RequestedScope, SubmittedRedirectUri,
+    OAuthAccessToken, OAuthTokenType, Password, RedirectUri, RefreshToken, RequestedScope,
+    SubmittedRedirectUri,
 };
 use noted::error::{Result, rejected};
 use noted::types::UnixEpochSeconds;
