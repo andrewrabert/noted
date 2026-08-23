@@ -17,8 +17,9 @@ use crate::auth::AuthState;
 use crate::mcp::McpContext;
 use crate::relay::Relay;
 use noted::error::NotedError;
-use noted::{NotedRoot, ToolCall};
+use noted::{NotedRoot, PolicyFragment, ToolCall};
 use noted_auth::{Denial, Verified};
+use url::form_urlencoded;
 
 const APP_JS: &str = "/noted_ui.js";
 const GLUE: &str = include_str!(concat!(env!("OUT_DIR"), "/noted_ui.js"));
@@ -174,6 +175,15 @@ fn accept(headers: &HeaderMap) -> Option<&str> {
     headers.get(header::ACCEPT)?.to_str().ok()
 }
 
+/// The policy the request asks to be held to, outermost first. No `policy=`
+/// is an empty ask, which narrows nothing.
+fn query_policy(request: &axum::extract::Request) -> noted::error::Result<Vec<PolicyFragment>> {
+    form_urlencoded::parse(request.uri().query().unwrap_or_default().as_bytes())
+        .filter(|(key, _)| key == "policy")
+        .map(|(_, value)| value.parse())
+        .collect()
+}
+
 /// The path the caller asked for, before any nested service stripped its
 /// prefix: `/mcp/token` is no more public than `/mcp` itself.
 fn requested_path(request: &axum::extract::Request) -> String {
@@ -206,10 +216,14 @@ async fn auth_middleware(
     }
     let verifier = state.auth.verifier().clone();
     match crate::auth::run_blocking(move || verifier.verify(presented.as_ref())).await {
-        Ok(Ok(caller)) => {
-            request.extensions_mut().insert(caller);
-            next.run(request).await
-        }
+        Ok(Ok(caller)) => match query_policy(&request) {
+            Ok(query) => {
+                request.extensions_mut().insert(query);
+                request.extensions_mut().insert(caller);
+                next.run(request).await
+            }
+            Err(error) => error_response(error),
+        },
         Ok(Err(denial)) => denial_response(&denial, &state),
         Err(error) => detail(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -240,6 +254,7 @@ async fn origin_tool(
     State(root): State<NotedRoot>,
     Path(name): Path<String>,
     Extension(caller): Extension<Verified>,
+    Extension(query): Extension<Vec<PolicyFragment>>,
     body: Bytes,
 ) -> Response {
     let args = if body.is_empty() {
@@ -250,7 +265,7 @@ async fn origin_tool(
             Err(e) => return detail(StatusCode::BAD_REQUEST, e.to_string()),
         }
     };
-    match run(&root, &name, args, &caller).await {
+    match run(&root, &name, args, &caller, &query).await {
         Ok(output) => Json(json!({ "ok": output })).into_response(),
         Err(e) => error_response(e),
     }
@@ -261,9 +276,13 @@ async fn run(
     name: &str,
     args: Value,
     caller: &Verified,
+    query: &[PolicyFragment],
 ) -> noted::Result<noted::tools::ToolOutput> {
     let call = ToolCall::raw(name, args)?;
-    root.with_authority(caller.fragments())?.invoke(&call).await
+    root.with_authority(caller.fragments())?
+        .with_authority(query)?
+        .invoke(&call)
+        .await
 }
 
 async fn relay_forward(
