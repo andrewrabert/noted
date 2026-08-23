@@ -50,8 +50,11 @@ async fn a_bound_unix_listener_endpoint_names_the_absolute_placed_socket() {
     let error = serve_http(HttpConfig {
         served: ServedConfig::Relay {
             endpoint: upstream,
-            bearer: Some(Bearer::new("not-a-macaroon")),
-            policy: noted::PolicyArgs::default(),
+            bearer: Some(Bearer::new("carried-verbatim")),
+            policy: noted::PolicyArgs {
+                policy: Some("not json".to_string()),
+                ..noted::PolicyArgs::default()
+            },
             transport: Transport::Router(axum::Router::new()),
         },
         bind: Bind::Socket(SocketBind::Explicit(socket.clone())),

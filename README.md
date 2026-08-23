@@ -8,7 +8,8 @@ A tree of `.md` notes exposed three ways over one set of file operations:
 
 A served process is an **origin** when it holds the notes directory, and a **relay**
 when it holds a `NOTED_URL` instead: a relay carries every call through to its upstream
-untouched, under a credential it minted from its own.
+untouched, under the credential it was configured with. It mints nothing and takes no
+credential from its callers; its own confinement rides upstream as a `policy=` query.
 
 Features: regex search across the tree, timestamped log entries named by the instant they
 were written, and a scoped task tracker.
@@ -130,8 +131,8 @@ Four variables read differently by what the process is:
 | Variable | Origin | Relay | Local CLI | Remote CLI |
 | --- | --- | --- | --- | --- |
 | `NOTED_URL` | - | the upstream it dials | - | the server it drives |
-| `NOTED_TOKEN` | - | the relay's own credential | - | the bearer it carries |
-| `NOTED_POLICY` | the tree the origin serves | the confinement every proxied call carries | the tree the process sees | a `policy=` caveat on the bearer |
+| `NOTED_TOKEN` | - | the bearer every proxied call carries upstream, verbatim | - | the bearer it carries |
+| `NOTED_POLICY` | the tree the origin serves | the confinement every proxied call carries, as a `policy=` query | the tree the process sees | a `policy=` caveat on the bearer |
 | `NOTED_SCOPE` | the same, as a scope alone | the same, as a scope alone | the same, as a scope alone | the same, as a scope alone |
 
 | Variable             | Flag             | Default               | Description                                          |
@@ -142,7 +143,7 @@ Four variables read differently by what the process is:
 | `NOTED_POLICY`       | `--policy`       | *(everything)*        | A policy fragment as JSON, or `@<path>` to a file holding one; see the four-mode table. |
 | `NOTED_SCOPE`        | `--scope`        | *(whole tree)*        | The scope the process is anchored at.                |
 | `NOTED_URL`          | `--url`          | -                     | The server to reach instead of local files, and what makes a served process a relay: `http(s)://host[:port]` or `unix:///path.sock`. |
-| `NOTED_TOKEN`        | `--token`        | *(stored login)*      | The credential carried upstream: a client's bearer, a relay's own. |
+| `NOTED_TOKEN`        | `--token`        | *(stored login)*      | The credential carried upstream, verbatim: a client's bearer, a relay's configured one. |
 | `NOTED_HOST`         | `--host`         | `127.0.0.1`           | `server http` bind address.                          |
 | `NOTED_PORT`         | `--port`         | `8000`                | `server http` bind port; `0` asks the operating system to allocate one. |
 | `NOTED_AUTH_DB`      | `--auth-db`      | -                     | Auth database; setting it enables auth.              |

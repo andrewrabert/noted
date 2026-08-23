@@ -130,7 +130,13 @@ impl RemoteBackend {
         let body = serde_json::to_vec(args).unwrap_or_default();
         let reply = self
             .upstream
-            .post(&format!("tool/{name}"), self.bearer.as_ref(), None, body)
+            .post(
+                &format!("tool/{name}"),
+                &[],
+                self.bearer.as_ref(),
+                None,
+                body,
+            )
             .await?;
         if reply.status >= 500 {
             return Err(unavailable(
