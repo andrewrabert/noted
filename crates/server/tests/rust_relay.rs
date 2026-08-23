@@ -22,8 +22,11 @@ use common::{json_body, post_json, post_mcp};
 /// Every request the upstream saw, as the bearer it carried.
 type Seen = Arc<Mutex<Vec<String>>>;
 
-fn upstream(dir: &tempfile::TempDir) -> (Router, Seen) {
-    recording(common::open_app(dir))
+async fn upstream(dir: &tempfile::TempDir) -> (Router, Seen, Bearer) {
+    let svc = common::auth_service(dir);
+    let held = Bearer::new(common::mint_key(&svc, PolicyFragment::default()));
+    let (app, seen) = recording(common::origin_app(common::root(dir), &svc).await);
+    (app, seen, held)
 }
 
 fn recording(app: Router) -> (Router, Seen) {
@@ -130,9 +133,9 @@ async fn relay_app_derives_routing_and_authentication_from_one_relay() {
 async fn a_three_hop_chain_composes_scopes_in_hop_order() {
     let dir = common::fixture_dir();
     seed(&dir, "a/b/x.md", "innermost").await;
-    let (origin, _seen) = upstream(&dir);
+    let (origin, _seen, held) = upstream(&dir).await;
 
-    let outer = credential(r#"{"scope":"a"}"#, None);
+    let outer = credential(r#"{"scope":"a"}"#, Some(&held));
     let outer_app = in_front_of(outer.clone(), origin).await;
 
     let inner = credential(r#"{"scope":"b"}"#, Some(&own_bearer(&outer)));
@@ -153,8 +156,8 @@ async fn a_three_hop_chain_composes_scopes_in_hop_order() {
 #[tokio::test]
 async fn a_caller_bearer_that_is_no_descendant_is_forbidden() {
     let dir = common::fixture_dir();
-    let (origin, seen) = upstream(&dir);
-    let app = in_front_of(credential("{}", None), origin).await;
+    let (origin, seen, held) = upstream(&dir).await;
+    let app = in_front_of(credential("{}", Some(&held)), origin).await;
 
     let stranger = Macaroon::ephemeral().unwrap();
     let (status, body) = read(&app, Some(stranger.expose()), "Inbox.md").await;
@@ -177,7 +180,7 @@ async fn a_bearer_less_caller_over_a_socket_relay_runs_at_the_relays_policy() {
     seed(&dir, "a/x.md", "scoped").await;
     let sock = dir.path().join("noted.sock");
     let (listener, guard) = bind_unix_socket(&sock, None).unwrap();
-    let origin = common::open_app(&dir);
+    let (origin, _seen, held) = upstream(&dir).await;
     tokio::spawn(async move {
         let _guard = guard;
         let _ = axum::serve(listener, origin).await;
@@ -186,7 +189,7 @@ async fn a_bearer_less_caller_over_a_socket_relay_runs_at_the_relays_policy() {
     let endpoint: Endpoint = format!("unix://{}", sock.display()).parse().unwrap();
     let bound = common::bound_listener().await;
     let app = relay_app(
-        credential(r#"{"scope":"a"}"#, None),
+        credential(r#"{"scope":"a"}"#, Some(&held)),
         endpoint,
         &bound,
         Transport::Real,
@@ -199,10 +202,10 @@ async fn a_bearer_less_caller_over_a_socket_relay_runs_at_the_relays_policy() {
 }
 
 #[tokio::test]
-async fn a_relay_in_front_of_an_open_origin_self_mints_and_reaches_the_tree() {
+async fn a_relay_re_mints_its_upstream_credential_and_reaches_the_tree() {
     let dir = common::fixture_dir();
-    let (origin, seen) = upstream(&dir);
-    let app = in_front_of(credential(r#"{"scope":"projects"}"#, None), origin).await;
+    let (origin, seen, held) = upstream(&dir).await;
+    let app = in_front_of(credential(r#"{"scope":"projects"}"#, Some(&held)), origin).await;
 
     let (status, body) = read(&app, None, "ideas.md").await;
     assert_eq!(status, StatusCode::OK);
@@ -213,7 +216,7 @@ async fn a_relay_in_front_of_an_open_origin_self_mints_and_reaches_the_tree() {
         Macaroon::from_encoded(carried.strip_prefix("Bearer ").unwrap().to_string()).unwrap();
     assert!(
         matches!(macaroon.owner().unwrap(), Owner::Server),
-        "a relay with no bearer mints under its own server owner"
+        "a re-mint keeps the owner of the credential the relay carries"
     );
     assert!(macaroon.caveats().unwrap().iter().any(
         |caveat| matches!(caveat, Caveat::Policy(fragment) if *fragment == common::held(r#"{"scope":"projects"}"#))
@@ -231,10 +234,10 @@ async fn a_relay_in_front_of_an_open_origin_self_mints_and_reaches_the_tree() {
 async fn a_relay_confinement_dominates_the_callers() {
     let dir = common::fixture_dir();
     seed(&dir, "a/b/x.md", "confined").await;
-    let (origin, _seen) = upstream(&dir);
+    let (origin, _seen, held_upstream) = upstream(&dir).await;
     let cred = credential(
         r#"{"scope":"a","access":{"read":true,"write":false}}"#,
-        None,
+        Some(&held_upstream),
     );
     let held = own_bearer(&cred);
     let app = in_front_of(cred, origin).await;
@@ -261,10 +264,10 @@ async fn a_relay_confinement_dominates_the_callers() {
 #[tokio::test]
 async fn an_upstream_status_and_detail_reach_the_caller_unchanged() {
     let dir = common::fixture_dir();
-    let origin = common::open_app(&dir);
-    let app = in_front_of(credential("{}", None), origin.clone()).await;
+    let (origin, _seen, held) = upstream(&dir).await;
+    let app = in_front_of(credential("{}", Some(&held)), origin.clone()).await;
 
-    let (direct_status, direct_body) = read(&origin, None, "nope.md").await;
+    let (direct_status, direct_body) = read(&origin, Some(held.expose()), "nope.md").await;
     let (status, body) = read(&app, None, "nope.md").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(status, direct_status);
@@ -291,8 +294,8 @@ async fn an_unreachable_upstream_names_only_the_dialable_endpoint_attempted() {
 async fn a_relay_minted_credential_presented_back_composes_its_scope_once() {
     let dir = common::fixture_dir();
     seed(&dir, "a/x.md", "once").await;
-    let (origin, seen) = upstream(&dir);
-    let cred = credential(r#"{"scope":"a"}"#, None);
+    let (origin, seen, held) = upstream(&dir).await;
+    let cred = credential(r#"{"scope":"a"}"#, Some(&held));
     let ask = Mint {
         policy: PolicyFragment::default(),
     };
@@ -310,16 +313,21 @@ async fn a_relay_minted_credential_presented_back_composes_its_scope_once() {
     let caveats = macaroon.caveats().unwrap();
     let scope = Caveat::Policy(common::held(r#"{"scope":"a"}"#));
     assert_eq!(caveats.iter().filter(|c| **c == scope).count(), 1);
-    assert_eq!(caveats[0], scope);
+    let carried_upstream = Macaroon::from_encoded(held.expose().to_string())
+        .unwrap()
+        .caveats()
+        .unwrap();
+    assert_eq!(caveats[carried_upstream.len()], scope);
 }
 
 #[tokio::test]
 async fn mcp_bodies_cross_a_relay_byte_for_byte() {
     let dir = common::fixture_dir();
-    let origin = common::open_app(&dir);
-    let app = in_front_of(credential("{}", None), origin.clone()).await;
+    let (origin, _seen, held) = upstream(&dir).await;
+    let app = in_front_of(credential("{}", Some(&held)), origin.clone()).await;
 
-    let (direct_status, _h, direct_body) = post_mcp(&origin, None, &mcp_read("Inbox.md")).await;
+    let (direct_status, _h, direct_body) =
+        post_mcp(&origin, Some(held.expose()), &mcp_read("Inbox.md")).await;
     let (status, _h, body) = post_mcp(&app, None, &mcp_read("Inbox.md")).await;
     assert_eq!(status, direct_status);
     assert_eq!(status, StatusCode::OK);

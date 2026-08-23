@@ -602,6 +602,45 @@ async fn a_query_with_no_policy_narrows_nothing() {
 }
 
 #[tokio::test]
+async fn an_open_origin_refuses_every_call_that_carries_a_credential() {
+    let dir = common::fixture_dir();
+    let app = common::open_app(&dir);
+    let svc = common::auth_service(&dir);
+    let token = common::mint_key(&svc, PolicyFragment::default());
+
+    for bearer in [token.as_str(), "not-a-macaroon"] {
+        let (s, b) = post_json(
+            &app,
+            "/tool/ReadNote",
+            Some(bearer),
+            &json!({"path": "Inbox.md"}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        assert!(
+            json_body(&b)["detail"]
+                .as_str()
+                .unwrap()
+                .contains("takes no credential"),
+            "{}",
+            String::from_utf8_lossy(&b)
+        );
+    }
+
+    let (s, _h, b) = post_mcp(&app, Some(&token), &mcp_call("SearchNotes", json!({}))).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert!(
+        json_body(&b)["detail"]
+            .as_str()
+            .unwrap()
+            .contains("takes no credential")
+    );
+
+    let (s, _) = post_json(&app, "/tool/ReadNote", None, &json!({"path": "Inbox.md"})).await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn an_open_origin_holds_a_bearerless_call_to_its_query_policy() {
     let dir = common::fixture_dir();
     let app = common::open_app(&dir);
