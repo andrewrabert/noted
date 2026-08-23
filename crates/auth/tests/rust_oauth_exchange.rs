@@ -7,8 +7,7 @@ use noted_auth::oauth::{
 };
 use noted_auth::types::{
     AuthorizationCode, AuthorizationResponseType, ClientId, CodeChallenge, CodeChallengeMethod,
-    CodeVerifier, LoginName, Password, RedirectUri, RequestedScope,
-    SubmittedRedirectUri, Username,
+    CodeVerifier, LoginName, Password, RedirectUri, RequestedScope, SubmittedRedirectUri, Username,
 };
 use noted_auth::{AuthService, Db};
 

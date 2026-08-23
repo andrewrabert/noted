@@ -276,10 +276,7 @@ async fn login_get(State(state): State<AuthState>, RawQuery(raw): RawQuery) -> R
     }
 }
 
-async fn login_post(
-    State(state): State<AuthState>,
-    body: Bytes,
-) -> Response {
+async fn login_post(State(state): State<AuthState>, body: Bytes) -> Response {
     let p = provider(&state);
     let form = parse_form(&body);
     let txn = form.get("txn").cloned().unwrap_or_default();
