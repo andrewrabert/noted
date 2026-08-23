@@ -2,8 +2,6 @@ use std::path::PathBuf;
 
 use clap::Args;
 
-use noted::types::Ttl;
-
 use crate::settings::{Flags, Layer, Variable};
 
 /// Every setting arrives through a layer, so no argument here reads the
@@ -80,10 +78,4 @@ impl Flags for AuthPaths {
             path_of(&self.admin_socket).as_deref(),
         );
     }
-}
-
-pub fn parse_ttl(s: &str) -> std::result::Result<Ttl, String> {
-    humantime::parse_duration(s)
-        .map(|d| Ttl::from_secs(d.as_secs()))
-        .map_err(|e| e.to_string())
 }

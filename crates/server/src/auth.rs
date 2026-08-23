@@ -9,11 +9,9 @@ use axum::{
     routing::post,
 };
 use noted::PolicyFragment;
-use noted::types::Ttl;
 use noted_auth::authority::{
-    Denial, Mint, Minted, Minter, OpenAuthority, OriginAuthority, Revoke, Verified, Verifier,
+    Denial, Mint, Minted, Minter, OpenAuthority, OriginAuthority, Verified, Verifier,
 };
-use noted_auth::credential::MacaroonId;
 use serde_json::{Value, json};
 
 pub(crate) async fn run_blocking<F, T>(operation: F) -> noted::error::Result<T>
@@ -97,10 +95,7 @@ pub(crate) fn routes(state: AuthState) -> Router {
     if state.oauth().is_some() {
         router = crate::oauth::mount_routes(router);
     }
-    router
-        .route("/macaroon/mint", post(mint))
-        .route("/macaroon/revoke", post(revoke))
-        .with_state(state)
+    router.route("/macaroon/mint", post(mint)).with_state(state)
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
@@ -170,54 +165,18 @@ async fn mint(State(state): State<AuthState>, headers: HeaderMap, body: Bytes) -
         },
         None => PolicyFragment::default(),
     };
-    let ask = Mint {
-        policy,
-        ttl: asked
-            .get("ttl")
-            .and_then(Value::as_u64)
-            .map(Ttl::from_secs)
-            .unwrap_or(noted_auth::service::DEFAULT_CREDENTIAL_TTL),
-    };
+    let ask = Mint { policy };
     match run_blocking(move || minter.mint(&caller, &ask)).await {
         Ok(Ok(Minted {
             macaroon,
             token_id,
             fingerprint,
-            expires_at,
         })) => Json(json!({
             "macaroon": macaroon.expose(),
             "token_id": token_id,
             "fingerprint": fingerprint,
-            "expires_at": expires_at,
         }))
         .into_response(),
-        Ok(Err(error)) => operation_error(&state, error),
-        Err(error) => detail(
-            StatusCode::SERVICE_UNAVAILABLE,
-            &state.relay_self_error(error).to_string(),
-        ),
-    }
-}
-
-async fn revoke(State(state): State<AuthState>, headers: HeaderMap, body: Bytes) -> Response {
-    let minter = match minter(&state) {
-        Ok(minter) => minter,
-        Err(response) => return *response,
-    };
-    let caller = match caller(&state, &headers).await {
-        Ok(caller) => caller,
-        Err(response) => return *response,
-    };
-    let asked: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-    let ask = if asked.get("all").and_then(Value::as_bool) == Some(true) {
-        Revoke::All
-    } else if let Some(id) = asked.get("id").and_then(Value::as_str) {
-        Revoke::Token(MacaroonId::new(id))
-    } else {
-        return detail(StatusCode::BAD_REQUEST, "provide id or all");
-    };
-    match run_blocking(move || minter.revoke(&caller, &ask)).await {
-        Ok(Ok(withdrawn)) => Json(withdrawn).into_response(),
         Ok(Err(error)) => operation_error(&state, error),
         Err(error) => detail(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -305,16 +264,6 @@ mod tests {
         assert_eq!(
             body["detail"],
             format!("{}: mint refused", bound.endpoint())
-        );
-    }
-
-    #[tokio::test]
-    async fn relay_revoke_failures_name_the_relays_listener_endpoint() {
-        let (bound, state) = relay_state().await;
-        let error = state.relay_self_error(noted::error::rejected("revoke failed"));
-        assert_eq!(
-            error.to_string(),
-            format!("{}: revoke failed", bound.endpoint())
         );
     }
 }

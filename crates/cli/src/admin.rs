@@ -1,14 +1,12 @@
 use clap::{Args, Subcommand};
 use noted::error::{Result, rejected};
-use noted::types::Ttl;
-use noted_auth::administration::{AdminCommand, AdminCredentialLifetime, AdminOutcome};
-use noted_auth::authority::Revoke;
+use noted_auth::administration::{AdminCommand, AdminOutcome};
 use noted_auth::service::MintSummary;
 use noted_auth::types::{Password, Username};
 use noted_client::admin::AdminConnection;
 use noted_client::authclient::Granted;
 
-use crate::args::{AuthPaths, EntryFlags, parse_ttl};
+use crate::args::{AuthPaths, EntryFlags};
 use crate::config::Config;
 use crate::settings::{Flags, Layer, Variable};
 
@@ -54,7 +52,6 @@ enum UserSub {
     Policy(UserPolicyCmd),
     #[command(alias = "ls")]
     List(UserListCmd),
-    Revoke(UserNameArg),
     #[command(alias = "rm")]
     Remove(UserNameArg),
 }
@@ -95,27 +92,18 @@ enum KeySub {
     Create(KeyCreateCmd),
     #[command(alias = "ls")]
     List(KeyListCmd),
-    Revoke(KeyRevokeCmd),
 }
 
 #[derive(Args)]
 struct KeyCreateCmd {
     #[command(flatten)]
     entries: EntryFlags,
-    #[arg(long, value_parser = parse_ttl)]
-    ttl: Option<Ttl>,
     #[arg(long)]
     json: bool,
 }
 
 #[derive(Args)]
 struct KeyListCmd {}
-
-#[derive(Args)]
-struct KeyRevokeCmd {
-    #[arg(long)]
-    id: Option<String>,
-}
 
 enum PreparedAdminCommand {
     AddUser {
@@ -134,20 +122,13 @@ enum PreparedAdminCommand {
     GetUser {
         username: String,
     },
-    RevokeUser {
-        username: String,
-    },
     RemoveUser {
         username: String,
     },
     CreateKey {
         policy: noted::PolicyFragment,
-        lifetime: AdminCredentialLifetime,
     },
     ListKeys,
-    RevokeKey {
-        revocation: Revoke,
-    },
 }
 
 impl UserPolicyCmd {
@@ -163,10 +144,6 @@ impl KeyCreateCmd {
     fn prepare(&self, config: &Config) -> Result<PreparedAdminCommand> {
         Ok(PreparedAdminCommand::CreateKey {
             policy: config.policy_fragment(&self.entries)?,
-            lifetime: self
-                .ttl
-                .map(AdminCredentialLifetime::Explicit)
-                .unwrap_or(AdminCredentialLifetime::Default),
         })
     }
 }
@@ -194,19 +171,11 @@ impl PreparedAdminCommand {
             PreparedAdminCommand::GetUser { username } => AdminCommand::GetUser {
                 username: Username::new(username)?,
             },
-            PreparedAdminCommand::RevokeUser { username } => AdminCommand::RevokeUser {
-                username: Username::new(username)?,
-            },
             PreparedAdminCommand::RemoveUser { username } => AdminCommand::RemoveUser {
                 username: Username::new(username)?,
             },
-            PreparedAdminCommand::CreateKey { policy, lifetime } => {
-                AdminCommand::CreateKey { policy, lifetime }
-            }
+            PreparedAdminCommand::CreateKey { policy } => AdminCommand::CreateKey { policy },
             PreparedAdminCommand::ListKeys => AdminCommand::ListKeys,
-            PreparedAdminCommand::RevokeKey { revocation } => {
-                AdminCommand::RevokeKey { revocation }
-            }
         })
     }
 }
@@ -219,10 +188,9 @@ async fn admin_one(config: &Config, prepared: PreparedAdminCommand) -> Result<Ad
 fn print_minted_keys(keys: &[MintSummary]) {
     for k in keys {
         println!(
-            "{}  {}  expires {}  {}",
+            "{}  {}  {}",
             k.token_id.as_str(),
             k.fingerprint.as_str(),
-            k.expires_at.format_utc(),
             k.policy
         );
     }
@@ -284,13 +252,6 @@ pub(crate) async fn run_user(cmd: UserCmd, config: &Config) -> Result<()> {
                 }
             }
         },
-        UserSub::Revoke(r) => {
-            let prepared = PreparedAdminCommand::RevokeUser { username: r.name };
-            let AdminOutcome::Withdrawn(withdrawn) = admin_one(config, prepared).await? else {
-                unreachable!("revoke-user command has a closed withdrawn outcome")
-            };
-            crate::auth::print_withdrawn(&withdrawn);
-        }
         UserSub::Remove(a) => {
             let prepared = PreparedAdminCommand::RemoveUser {
                 username: a.name.clone(),
@@ -313,7 +274,6 @@ pub(crate) async fn run_key(cmd: KeyCmd, config: &Config) -> Result<()> {
                 macaroon: minted.macaroon,
                 token_id: minted.token_id,
                 fingerprint: minted.fingerprint,
-                expires_at: minted.expires_at,
             };
             crate::auth::print_minted(&granted, c.json);
             if !c.json {
@@ -330,26 +290,6 @@ pub(crate) async fn run_key(cmd: KeyCmd, config: &Config) -> Result<()> {
                 println!("no keys");
             }
             print_minted_keys(&keys);
-            Ok(())
-        }
-        KeySub::Revoke(r) => {
-            let revocation = match r.id {
-                Some(id) => Revoke::Token(id.parse()?),
-                None => {
-                    let bearer = crate::prompt::piped_line().await?.ok_or_else(|| {
-                        rejected("key revoke needs --id or the macaroon piped on stdin")
-                    })?;
-                    if bearer.is_empty() {
-                        return Err(rejected("no macaroon on stdin"));
-                    }
-                    Revoke::from_bearer(&bearer)?
-                }
-            };
-            let prepared = PreparedAdminCommand::RevokeKey { revocation };
-            let AdminOutcome::Withdrawn(withdrawn) = admin_one(config, prepared).await? else {
-                unreachable!("revoke-key command has a closed withdrawn outcome")
-            };
-            crate::auth::print_withdrawn(&withdrawn);
             Ok(())
         }
     }
@@ -390,9 +330,6 @@ mod tests {
             PreparedAdminCommand::GetUser {
                 username: INVALID_USERNAME.to_string(),
             },
-            PreparedAdminCommand::RevokeUser {
-                username: INVALID_USERNAME.to_string(),
-            },
             PreparedAdminCommand::RemoveUser {
                 username: INVALID_USERNAME.to_string(),
             },
@@ -416,7 +353,6 @@ mod tests {
         };
         let key = KeyCreateCmd {
             entries: EntryFlags::default(),
-            ttl: None,
             json: false,
         };
 
@@ -443,7 +379,6 @@ mod tests {
         };
         let key = KeyCreateCmd {
             entries: EntryFlags::default(),
-            ttl: None,
             json: false,
         };
 

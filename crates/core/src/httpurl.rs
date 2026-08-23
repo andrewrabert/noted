@@ -85,8 +85,8 @@ mod tests {
 
         let prefixed: HttpUrl = "http://host:8000/api".parse().unwrap();
         assert_eq!(
-            prefixed.join("macaroon/revoke").as_str(),
-            "http://host:8000/api/macaroon/revoke"
+            prefixed.join("macaroon/mint").as_str(),
+            "http://host:8000/api/macaroon/mint"
         );
     }
 

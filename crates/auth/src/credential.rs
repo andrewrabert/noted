@@ -14,7 +14,6 @@ use crate::types::{Fingerprint, Owner};
 use noted::PolicyFragment;
 use noted::error::{Result, rejected};
 use noted::newtype::str_newtype;
-use noted::types::UnixEpochSeconds;
 use noted::util::random_token;
 
 const KEY_BYTES: usize = 32;
@@ -33,7 +32,7 @@ impl MacaroonId {
 }
 
 /// The material a server holds for one owner: the secret its roots are minted
-/// under, and the epoch below which every credential of that owner is dead.
+/// under.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct KeyRecord {
     pub secret: Vec<u8>,
@@ -50,19 +49,16 @@ impl KeyRecord {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum Caveat {
-    Before(UnixEpochSeconds),
     Policy(PolicyFragment),
     Token(MacaroonId),
 }
 
-const KEY_BEFORE: &str = "before";
 const KEY_POLICY: &str = "policy";
 const KEY_TOKEN: &str = "token_id";
 
 impl Display for Caveat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Caveat::Before(v) => write!(f, "{KEY_BEFORE}={v}"),
             Caveat::Policy(v) => write!(f, "{KEY_POLICY}={v}"),
             Caveat::Token(v) => write!(f, "{KEY_TOKEN}={v}"),
         }
@@ -78,7 +74,6 @@ impl FromStr for Caveat {
             .ok_or_else(|| rejected(format!("unqualified macaroon caveat: '{s}'")))?;
         let bad = || rejected(format!("invalid macaroon caveat: '{s}'"));
         match key {
-            KEY_BEFORE => Ok(Caveat::Before(value.parse().map_err(|_| bad())?)),
             KEY_POLICY => Ok(Caveat::Policy(value.parse().map_err(|_| bad())?)),
             KEY_TOKEN => Ok(Caveat::Token(MacaroonId::new(value))),
             _ => Err(bad()),

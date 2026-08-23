@@ -1,17 +1,10 @@
 use std::sync::Arc;
 
-use crate::authority::{Mint, Minter, Revoke, Verified};
+use crate::authority::{Mint, Minter};
 use crate::service::{AuthService, MintSummary, UserSummary};
 use crate::types::{Owner, Password, Username};
 use noted::PolicyFragment;
 use noted::error::{Result, rejected};
-use noted::types::Ttl;
-
-#[derive(Clone, Debug)]
-pub enum AdminCredentialLifetime {
-    Default,
-    Explicit(Ttl),
-}
 
 #[derive(Clone, Debug)]
 pub enum AdminCommand {
@@ -31,20 +24,13 @@ pub enum AdminCommand {
     GetUser {
         username: Username,
     },
-    RevokeUser {
-        username: Username,
-    },
     RemoveUser {
         username: Username,
     },
     CreateKey {
         policy: PolicyFragment,
-        lifetime: AdminCredentialLifetime,
     },
     ListKeys,
-    RevokeKey {
-        revocation: Revoke,
-    },
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -60,7 +46,6 @@ pub enum AdminOutcome {
     User(UserDetails),
     Minted(crate::authority::Minted),
     Credentials(Vec<MintSummary>),
-    Withdrawn(crate::authority::Withdrawn),
 }
 
 pub struct Administration {
@@ -104,33 +89,15 @@ impl Administration {
                 let credentials = self.minter.minted(&Owner::User(username))?;
                 Ok(AdminOutcome::User(UserDetails { user, credentials }))
             }
-            AdminCommand::RevokeUser { username } => {
-                self.service
-                    .user_get(&username)?
-                    .ok_or_else(|| rejected(format!("no such user: '{username}'")))?;
-                Ok(AdminOutcome::Withdrawn(self.minter.revoke(
-                    &Verified::as_owner(Owner::User(username)),
-                    &Revoke::All,
-                )?))
-            }
             AdminCommand::RemoveUser { username } => {
                 self.service.user_remove(&username)?;
                 Ok(AdminOutcome::Completed)
             }
-            AdminCommand::CreateKey { policy, lifetime } => {
-                let ttl = match lifetime {
-                    AdminCredentialLifetime::Default => self.service.default_ttl(),
-                    AdminCredentialLifetime::Explicit(ttl) => ttl,
-                };
-                Ok(AdminOutcome::Minted(
-                    self.minter.mint(self.minter.own(), &Mint { policy, ttl })?,
-                ))
-            }
+            AdminCommand::CreateKey { policy } => Ok(AdminOutcome::Minted(
+                self.minter.mint(self.minter.own(), &Mint { policy })?,
+            )),
             AdminCommand::ListKeys => Ok(AdminOutcome::Credentials(
                 self.minter.minted(&self.owner()?)?,
-            )),
-            AdminCommand::RevokeKey { revocation } => Ok(AdminOutcome::Withdrawn(
-                self.minter.revoke(self.minter.own(), &revocation)?,
             )),
         }
     }

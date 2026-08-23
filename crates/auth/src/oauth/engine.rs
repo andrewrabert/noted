@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -24,37 +24,48 @@ use crate::login::{LoginAttempt, LoginAuthenticator, LoginOutcome};
 use crate::service::AuthService;
 use crate::types::AuthorizationTransactionId;
 use noted::error::{Result, rejected};
-use noted::types::{Ttl, UnixEpochSeconds};
 use noted::util::random_token;
 
-pub(super) const TRANSACTION_TTL: Ttl = Ttl::from_secs(10 * 60);
 pub(super) const MAX_TRANSACTIONS: usize = 1024;
 pub(super) const DEFAULT_SCOPE: &str = "notes";
-
-pub(super) trait Clock: Send + Sync {
-    fn now(&self) -> Result<UnixEpochSeconds>;
-}
-
-pub(super) struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now(&self) -> Result<UnixEpochSeconds> {
-        UnixEpochSeconds::now()
-    }
-}
 
 pub(super) struct ProtocolState {
     pub(super) service: Arc<AuthService>,
     pub(super) registrar: ClientMap,
     pub(super) authorizer: AuthMap<RandomGenerator>,
     pub(super) issuer: DbIssuer,
-    pub(super) transactions: HashMap<AuthorizationTransactionId, Transaction>,
+    pub(super) transactions: Transactions,
     pub(super) authenticator: LoginAuthenticator,
 }
 
-pub(super) struct Transaction {
-    pub(super) request: AuthorizationRequest,
-    pub(super) expires_at: UnixEpochSeconds,
+/// The pending authorizations, oldest first. Nothing here expires, so the
+/// oldest is dropped to make room once `MAX_TRANSACTIONS` are parked.
+#[derive(Default)]
+pub(super) struct Transactions {
+    requests: HashMap<AuthorizationTransactionId, AuthorizationRequest>,
+    order: VecDeque<AuthorizationTransactionId>,
+}
+
+impl Transactions {
+    fn park(&mut self, transaction: AuthorizationTransactionId, request: AuthorizationRequest) {
+        while self.order.len() >= MAX_TRANSACTIONS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.requests.remove(&oldest);
+            }
+        }
+        self.order.push_back(transaction.clone());
+        self.requests.insert(transaction, request);
+    }
+
+    fn get(&self, transaction: &AuthorizationTransactionId) -> Option<&AuthorizationRequest> {
+        self.requests.get(transaction)
+    }
+
+    fn remove(&mut self, transaction: &AuthorizationTransactionId) {
+        if self.requests.remove(transaction).is_some() {
+            self.order.retain(|parked| parked != transaction);
+        }
+    }
 }
 
 pub(super) fn open(service: Arc<AuthService>) -> Result<ProtocolState> {
@@ -68,7 +79,7 @@ pub(super) fn open(service: Arc<AuthService>) -> Result<ProtocolState> {
         registrar,
         authorizer: AuthMap::new(RandomGenerator::new(16)),
         issuer: DbIssuer::new(service.clone()),
-        transactions: HashMap::new(),
+        transactions: Transactions::default(),
         authenticator: LoginAuthenticator::new(service),
     })
 }
@@ -149,26 +160,11 @@ fn authorization_query(request: &AuthorizationRequest) -> HashMap<String, String
 pub(super) fn begin_authorization(
     state: &mut ProtocolState,
     request: AuthorizationRequest,
-    clock: &dyn Clock,
 ) -> BeginAuthorizationOutcome {
-    let now = match clock.now() {
-        Ok(now) => now,
-        Err(_) => return BeginAuthorizationOutcome::ServerError,
-    };
+    let transaction = AuthorizationTransactionId::submitted(random_token(24));
     state
         .transactions
-        .retain(|_, transaction| transaction.expires_at > now);
-    if state.transactions.len() >= MAX_TRANSACTIONS {
-        return BeginAuthorizationOutcome::TemporarilyUnavailable;
-    }
-    let transaction = AuthorizationTransactionId::submitted(random_token(24));
-    state.transactions.insert(
-        transaction.clone(),
-        Transaction {
-            request: request.clone(),
-            expires_at: now + TRANSACTION_TTL,
-        },
-    );
+        .park(transaction.clone(), request.clone());
 
     let login_url = match url::Url::parse(&format!(
         "https://authentication.invalid/login?txn={}",
@@ -259,9 +255,6 @@ fn token_outcome(response: OxResponse) -> TokenOutcome {
         else {
             return TokenOutcome::ServerError;
         };
-        let Some(lifetime) = value.get("expires_in").and_then(|value| value.as_i64()) else {
-            return TokenOutcome::ServerError;
-        };
         let Some(scope) = value.get("scope").and_then(|value| value.as_str()) else {
             return TokenOutcome::ServerError;
         };
@@ -272,7 +265,6 @@ fn token_outcome(response: OxResponse) -> TokenOutcome {
             access_token: crate::types::OAuthAccessToken::issued(access_token),
             refresh_token: crate::types::RefreshToken::new(refresh_token),
             token_type: crate::types::OAuthTokenType::Bearer,
-            lifetime: crate::types::TokenLifetimeSeconds::new(lifetime),
             scope: crate::types::GrantedScope::new(scope),
         });
     }
@@ -386,47 +378,32 @@ pub(super) fn exchange_refresh_token(
 }
 
 pub(super) fn authorization_status(
-    state: &mut ProtocolState,
+    state: &ProtocolState,
     transaction: &AuthorizationTransactionId,
-    clock: &dyn Clock,
 ) -> AuthorizationStatus {
-    let now = match clock.now() {
-        Ok(now) => now,
-        Err(_) => return AuthorizationStatus::ExpiredOrInvalid,
-    };
     match state.transactions.get(transaction) {
-        Some(pending) if pending.expires_at > now => AuthorizationStatus::Pending,
-        Some(_) => {
-            state.transactions.remove(transaction);
-            AuthorizationStatus::ExpiredOrInvalid
-        }
-        None => AuthorizationStatus::ExpiredOrInvalid,
+        Some(_) => AuthorizationStatus::Pending,
+        None => AuthorizationStatus::Unknown,
     }
 }
 
 pub(super) fn authorize_login(
     state: &mut ProtocolState,
     login: AuthorizationLogin,
-    clock: &dyn Clock,
 ) -> AuthorizationLoginOutcome {
-    if authorization_status(state, &login.transaction, clock) != AuthorizationStatus::Pending {
-        return AuthorizationLoginOutcome::ExpiredOrInvalid;
-    }
     let request = match state.transactions.get(&login.transaction) {
-        Some(transaction) => transaction.request.clone(),
-        None => return AuthorizationLoginOutcome::ExpiredOrInvalid,
+        Some(request) => request.clone(),
+        None => return AuthorizationLoginOutcome::Unknown,
     };
     let outcome = state.authenticator.authenticate(LoginAttempt {
         name: login.name,
         password: login.password,
-        source: login.source,
     });
     let username = match outcome {
         Ok(LoginOutcome::Authenticated(username)) => username,
         Ok(LoginOutcome::InvalidCredentials) | Err(_) => {
             return AuthorizationLoginOutcome::InvalidCredentials;
         }
-        Ok(LoginOutcome::Throttled) => return AuthorizationLoginOutcome::Throttled,
     };
     state.transactions.remove(&login.transaction);
 
@@ -474,8 +451,6 @@ pub(super) fn lock_error() -> noted::error::NotedError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
     use super::*;
     use crate::Db;
     use crate::oauth::{
@@ -486,31 +461,14 @@ mod tests {
         AuthorizationResponseType, AuthorizationTransactionId, CodeChallenge, CodeChallengeMethod,
         RedirectUri, SubmittedRedirectUri,
     };
-    use noted::types::Ttl;
-
-    struct FakeClock(AtomicU64);
-
-    impl FakeClock {
-        fn set(&self, seconds: u64) {
-            self.0.store(seconds, Ordering::SeqCst);
-        }
-    }
-
-    impl Clock for FakeClock {
-        fn now(&self) -> Result<UnixEpochSeconds> {
-            Ok(UnixEpochSeconds::from_secs(self.0.load(Ordering::SeqCst)))
-        }
-    }
 
     #[test]
-    fn pending_authorizations_expire_after_ten_minutes_and_stop_at_1024() {
+    fn parking_past_1024_drops_the_oldest_pending_authorization() {
         let dir = tempfile::tempdir().unwrap();
-        let service = Arc::new(AuthService::new(
-            Arc::new(Db::open(&dir.path().join("auth.redb")).unwrap()),
-            Ttl::from_secs(3600),
-        ));
-        let clock = Arc::new(FakeClock(AtomicU64::new(1_000)));
-        let protocol = OAuthProtocol::open_with_clock(service, clock.clone()).unwrap();
+        let service = Arc::new(AuthService::new(Arc::new(
+            Db::open(&dir.path().join("auth.redb")).unwrap(),
+        )));
+        let protocol = OAuthProtocol::open(service).unwrap();
         let client = protocol
             .register_client(
                 RegisterOAuthClient::new(vec![
@@ -544,27 +502,21 @@ mod tests {
             ));
         }
         assert_eq!(
-            protocol.begin_authorization(request.clone()),
-            BeginAuthorizationOutcome::TemporarilyUnavailable
-        );
-
-        clock.set(1_599);
-        assert_eq!(
             protocol.authorization_status(&first),
             AuthorizationStatus::Pending
         );
-        clock.set(1_600);
-        assert_eq!(
-            protocol.authorization_status(&first),
-            AuthorizationStatus::ExpiredOrInvalid
-        );
+
         assert!(matches!(
             protocol.begin_authorization(request),
             BeginAuthorizationOutcome::LoginRequired(_)
         ));
         assert_eq!(
+            protocol.authorization_status(&first),
+            AuthorizationStatus::Unknown
+        );
+        assert_eq!(
             protocol.authorization_status(&AuthorizationTransactionId::submitted("missing")),
-            AuthorizationStatus::ExpiredOrInvalid
+            AuthorizationStatus::Unknown
         );
     }
 }

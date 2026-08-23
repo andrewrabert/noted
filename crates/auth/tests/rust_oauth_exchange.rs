@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use noted::types::Ttl;
 use noted_auth::oauth::{
     AuthorizationCodeExchange, AuthorizationLogin, AuthorizationLoginOutcome, AuthorizationRequest,
     BeginAuthorizationOutcome, OAuthProtocol, RefreshTokenExchange, RegisterOAuthClient,
@@ -8,7 +7,7 @@ use noted_auth::oauth::{
 };
 use noted_auth::types::{
     AuthorizationCode, AuthorizationResponseType, ClientId, CodeChallenge, CodeChallengeMethod,
-    CodeVerifier, LoginName, LoginSource, LoginSourceId, Password, RedirectUri, RequestedScope,
+    CodeVerifier, LoginName, Password, RedirectUri, RequestedScope,
     SubmittedRedirectUri, Username,
 };
 use noted_auth::{AuthService, Db};
@@ -19,10 +18,9 @@ const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 
 fn protocol() -> (tempfile::TempDir, Arc<AuthService>, OAuthProtocol, ClientId) {
     let dir = tempfile::tempdir().unwrap();
-    let service = Arc::new(AuthService::new(
-        Arc::new(Db::open(&dir.path().join("auth.redb")).unwrap()),
-        Ttl::from_secs(3600),
-    ));
+    let service = Arc::new(AuthService::new(Arc::new(
+        Db::open(&dir.path().join("auth.redb")).unwrap(),
+    )));
     service
         .user_add(&Username::new("alice").unwrap(), &Password::new("correct"))
         .unwrap();
@@ -55,7 +53,6 @@ fn authorize(protocol: &OAuthProtocol, client_id: &ClientId) -> AuthorizationCod
             transaction,
             LoginName::submitted("alice"),
             Password::new("correct"),
-            LoginSource::NonTcpAdapter(LoginSourceId::new("test")),
         ))
     else {
         panic!("login did not authorize");
@@ -102,7 +99,6 @@ fn authorization_code_exchange_returns_exact_token_facts_and_codes_are_single_us
         tokens.token_type(),
         &noted_auth::types::OAuthTokenType::Bearer
     );
-    assert_eq!(tokens.lifetime().as_secs(), 3599);
     assert_eq!(tokens.scope().as_str(), "notes");
     assert!(matches!(
         protocol.exchange_token(exchange(

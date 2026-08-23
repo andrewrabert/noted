@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use noted::error::{Result, rejected};
 use noted::store::NotedDir;
-use noted::types::{Source, Ttl};
+use noted::types::Source;
 use noted::{Backend, BackendArgs, Endpoint, HttpUrl, PolicyArgs, PolicyFragment, Transport};
 use noted_client::credentials::{CredentialStore, CredentialStoreConfig, SecretStorage};
 use noted_server::serve::ServedConfig;
@@ -240,16 +240,6 @@ impl Config {
 
     pub fn setting(&self, var: Variable) -> Option<&str> {
         self.settings.get(var)
-    }
-
-    /// The duration `var` names, else `fallback`.
-    pub fn ttl(&self, var: Variable, fallback: Ttl) -> Result<Ttl> {
-        match self.setting(var) {
-            None => Ok(fallback),
-            Some(raw) => {
-                crate::args::parse_ttl(raw).map_err(|e| rejected(format!("{}: {e}", var.name())))
-            }
-        }
     }
 
     fn source(&self) -> Option<Source> {

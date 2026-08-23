@@ -2,12 +2,10 @@ use std::sync::Arc;
 
 use noted::PolicyFragment;
 use noted_auth::Db;
-use noted_auth::authority::{Mint, Minter, OriginAuthority, Revoke, Verified, Verifier};
-use noted_auth::credential::{Caveat, Macaroon, MacaroonId};
+use noted_auth::authority::{Mint, Minter, OriginAuthority, Verifier};
+use noted_auth::credential::Macaroon;
 use noted_auth::service::{AuthService, PREFIX_MAC, PREFIX_REF, sha256_hex};
 use noted_auth::types::{ClientId, CredentialPresentation, Owner};
-
-const DEFAULT_TTL: noted::types::Ttl = noted::types::Ttl::from_secs(30 * 24 * 3600);
 
 fn held(text: &str) -> PolicyFragment {
     text.parse().unwrap()
@@ -15,7 +13,7 @@ fn held(text: &str) -> PolicyFragment {
 
 fn service_at(dir: &std::path::Path) -> Arc<AuthService> {
     let db = Arc::new(Db::open(&dir.join("auth.redb")).unwrap());
-    Arc::new(AuthService::new(db, DEFAULT_TTL))
+    Arc::new(AuthService::new(db))
 }
 
 fn service() -> (tempfile::TempDir, Arc<AuthService>) {
@@ -119,23 +117,14 @@ fn user_remove_is_transactional_and_total() {
 }
 
 #[test]
-fn revoking_all_of_a_user_kills_its_sessions_but_passwd_does_not() {
+fn changing_a_password_leaves_outstanding_sessions_alive() {
     let (_d, svc) = service();
     svc.user_add(&un("alice"), &pw("pw")).unwrap();
     let login = svc.issue_login(&un("alice"), &client()).unwrap();
     let authority = OriginAuthority::new(svc.clone());
     svc.user_passwd(&un("alice"), &pw("newpw")).unwrap();
     assert!(policy_of(&authority, login.access.expose()).is_some());
-
-    let withdrawn = authority
-        .revoke(
-            &Verified::as_owner(Owner::user("alice").unwrap()),
-            &Revoke::All,
-        )
-        .unwrap();
-    assert!(withdrawn.revoked.is_empty());
-    assert!(svc.refresh_owner(&login.refresh).unwrap().is_none());
-    assert!(policy_of(&authority, login.access.expose()).is_some());
+    assert!(svc.refresh_owner(&login.refresh).unwrap().is_some());
 }
 
 #[test]
@@ -212,12 +201,11 @@ fn a_forged_signature_verifies_nowhere() {
 }
 
 #[test]
-fn a_minted_credential_is_ledgered_and_revocable() {
+fn a_minted_credential_is_ledgered() {
     let (_d, svc) = service();
     let authority = OriginAuthority::new(svc.clone());
     let ask = Mint {
         policy: held(r#"{"scope":"dev"}"#),
-        ttl: DEFAULT_TTL,
     };
     let minted = authority.mint(authority.own(), &ask).unwrap();
     assert!(minted.macaroon.expose().starts_with(PREFIX_MAC));
@@ -233,71 +221,6 @@ fn a_minted_credential_is_ledgered_and_revocable() {
             .iter()
             .any(|f| f.to_string() == r#"{"scope":"dev"}"#)
     );
-
-    let withdrawn = authority
-        .revoke(authority.own(), &Revoke::Token(minted.token_id.clone()))
-        .unwrap();
-    assert_eq!(
-        withdrawn.revoked,
-        vec![Caveat::Token(minted.token_id.clone())]
-    );
-    assert!(policy_of(&authority, minted.macaroon.expose()).is_none());
-    assert!(authority.minted(&owner).unwrap().is_empty());
-}
-
-#[test]
-fn a_bearer_names_the_token_it_revokes() {
-    let (_d, svc) = service();
-    let authority = OriginAuthority::new(svc.clone());
-    let ask = Mint {
-        policy: PolicyFragment::default(),
-        ttl: DEFAULT_TTL,
-    };
-    let minted = authority.mint(authority.own(), &ask).unwrap();
-    let by = Revoke::from_bearer(minted.macaroon.expose()).unwrap();
-    assert!(matches!(&by, Revoke::Token(id) if *id == minted.token_id));
-    let withdrawn = authority.revoke(authority.own(), &by).unwrap();
-    assert_eq!(withdrawn.revoked, vec![Caveat::Token(minted.token_id)]);
-    assert!(policy_of(&authority, minted.macaroon.expose()).is_none());
-}
-
-#[test]
-fn a_revocation_the_ledger_cannot_name_is_refused() {
-    let (_d, svc) = service();
-    let authority = OriginAuthority::new(svc.clone());
-    let ask = Revoke::Token(MacaroonId::new("never-minted"));
-    assert!(authority.revoke(authority.own(), &ask).is_err());
-}
-
-#[test]
-fn revoking_all_withdraws_every_ledger_row() {
-    let (_d, svc) = service();
-    let authority = OriginAuthority::new(svc.clone());
-    let ask = Mint {
-        policy: PolicyFragment::default(),
-        ttl: DEFAULT_TTL,
-    };
-    let child = authority.mint(authority.own(), &ask).unwrap();
-    let owner = authority.own().owner().unwrap().clone();
-
-    let withdrawn = authority.revoke(authority.own(), &Revoke::All).unwrap();
-    assert_eq!(withdrawn.revoked, vec![Caveat::Token(child.token_id)]);
-    assert!(authority.minted(&owner).unwrap().is_empty());
-    let authority = OriginAuthority::new(svc.clone());
-    assert!(policy_of(&authority, child.macaroon.expose()).is_none());
-}
-
-#[test]
-fn a_sweep_drops_what_has_expired() {
-    let (_d, svc) = service();
-    svc.user_add(&un("alice"), &pw("pw")).unwrap();
-    let login = svc.issue_login(&un("alice"), &client()).unwrap();
-    svc.sweep().unwrap();
-    assert!(svc.refresh_owner(&login.refresh).unwrap().is_some());
-
-    let far = noted::types::UnixEpochSeconds::now().unwrap() + DEFAULT_TTL + DEFAULT_TTL;
-    svc.db().sweep(far).unwrap();
-    assert!(svc.refresh_owner(&login.refresh).unwrap().is_none());
 }
 
 #[test]
@@ -307,7 +230,7 @@ fn no_plaintext_secret_at_rest() {
     let refresh_token;
     {
         let db = Arc::new(Db::open(&path).unwrap());
-        let svc = Arc::new(AuthService::new(db, DEFAULT_TTL));
+        let svc = Arc::new(AuthService::new(db));
         svc.user_add(&un("alice"), &pw("hunter2-password")).unwrap();
         let login = svc.issue_login(&un("alice"), &client()).unwrap();
         refresh_token = login.refresh.expose().to_string();

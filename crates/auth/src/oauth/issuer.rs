@@ -11,6 +11,12 @@ use crate::service::{AuthService, Login};
 use crate::types::{ClientId, Owner, RefreshToken, Username};
 use noted::error::Result;
 
+/// Nothing this server issues expires. `oxide_auth` still demands a deadline on
+/// every grant, so every grant carries the same unreachable one.
+fn never() -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::<chrono::Utc>::MAX_UTC
+}
+
 pub(super) struct DbIssuer {
     service: Arc<AuthService>,
 }
@@ -30,7 +36,7 @@ impl DbIssuer {
             client_id: rec.client_id.as_str().to_string(),
             scope: Scope::from_str(DEFAULT_SCOPE).expect("static scope parses"),
             redirect_uri: url::Url::parse("http://localhost/").expect("static url parses"),
-            until: unix_to_utc(rec.expires_at.as_secs()),
+            until: never(),
             extensions: Default::default(),
         }
     }
@@ -39,7 +45,7 @@ impl DbIssuer {
         IssuedToken {
             token: login.access.expose().to_string(),
             refresh: Some(login.refresh.expose().to_string()),
-            until: unix_to_utc(login.expires_at.as_secs()),
+            until: never(),
             token_type: TokenType::Bearer,
         }
     }
@@ -50,10 +56,6 @@ impl DbIssuer {
             ClientId::new(grant.client_id.clone()),
         ))
     }
-}
-
-fn unix_to_utc(secs: u64) -> chrono::DateTime<chrono::Utc> {
-    chrono::DateTime::<chrono::Utc>::from_timestamp(secs as i64, 0).unwrap_or_else(chrono::Utc::now)
 }
 
 impl Issuer for DbIssuer {
@@ -96,7 +98,7 @@ impl Issuer for DbIssuer {
 mod tests {
     use super::*;
     use crate::db::Db;
-    use crate::service::{ACCESS_TTL, PREFIX_MAC, PREFIX_REF};
+    use crate::service::{PREFIX_MAC, PREFIX_REF};
     use crate::types::{Password, Username};
 
     fn un(s: &str) -> Username {
@@ -109,13 +111,7 @@ mod tests {
     fn service() -> (tempfile::TempDir, Arc<AuthService>) {
         let dir = tempfile::tempdir().unwrap();
         let db = Arc::new(Db::open(&dir.path().join("auth.redb")).unwrap());
-        (
-            dir,
-            Arc::new(AuthService::new(
-                db,
-                noted::types::Ttl::from_secs(30 * 24 * 3600),
-            )),
-        )
+        (dir, Arc::new(AuthService::new(db)))
     }
 
     fn grant_for(owner: &str, client: &str) -> Grant {
@@ -124,7 +120,7 @@ mod tests {
             client_id: client.to_string(),
             scope: Scope::from_str(DEFAULT_SCOPE).unwrap(),
             redirect_uri: url::Url::parse("http://localhost/cb").unwrap(),
-            until: chrono::Utc::now(),
+            until: never(),
             extensions: Default::default(),
         }
     }
@@ -139,11 +135,7 @@ mod tests {
         assert!(issued.token.starts_with(PREFIX_MAC));
         let refresh0 = issued.refresh.clone().unwrap();
         assert!(refresh0.starts_with(PREFIX_REF));
-        let ttl = issued.until.timestamp() - chrono::Utc::now().timestamp();
-        assert!(
-            (ttl - ACCESS_TTL.as_secs() as i64).abs() <= 2,
-            "ttl was {ttl}"
-        );
+        assert_eq!(issued.until, never());
 
         // an access macaroon is the verifier's business, not the issuer's
         let issuer2 = DbIssuer::new(auth.clone());
@@ -157,8 +149,8 @@ mod tests {
             .refresh(&refresh0, grant_for("alice", "client-1"))
             .unwrap();
         assert!(rotated.token.starts_with(PREFIX_MAC));
-        // the access macaroon is a pure function of owner, epoch, session and
-        // expiry, so only the refresh is guaranteed to differ
+        // the access macaroon is a pure function of the owner and its key, so
+        // only the refresh is guaranteed to differ
         assert_ne!(rotated.refresh, issued.refresh);
         assert!(issuer3.recover_refresh(&refresh0).unwrap().is_none());
         assert!(

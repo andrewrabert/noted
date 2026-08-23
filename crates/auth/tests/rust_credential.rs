@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use noted::PolicyFragment;
-use noted::types::{Ttl, UnixEpochSeconds};
 use noted_auth::Db;
 use noted_auth::authority::{
     Mint, Minter, OpenAuthority, OriginAuthority, RelayCredential, Verified, Verifier,
@@ -9,8 +8,6 @@ use noted_auth::authority::{
 use noted_auth::credential::{Caveat, KeyRecord, Macaroon, MacaroonId};
 use noted_auth::service::AuthService;
 use noted_auth::types::{ClientId, CredentialPresentation, Owner};
-
-const DEFAULT_TTL: Ttl = Ttl::from_secs(30 * 24 * 3600);
 
 fn fragment(text: &str) -> PolicyFragment {
     text.parse().unwrap()
@@ -37,7 +34,6 @@ fn a_minted_credential_carries_its_caveats_in_mint_order() {
     let caveats = vec![
         Caveat::Policy(fragment(r#"{"scope":"dev"}"#)),
         Caveat::Token(MacaroonId::fresh()),
-        Caveat::Before(UnixEpochSeconds::from_secs(4_000_000_000)),
     ];
     let macaroon = Macaroon::mint(&owner(), &KeyRecord::fresh(), &caveats).unwrap();
     assert_eq!(macaroon.caveats().unwrap(), caveats);
@@ -73,7 +69,7 @@ fn beyond_yields_only_the_caveats_past_the_ancestor() {
     let root = Macaroon::mint(&owner(), &KeyRecord::fresh(), &[]).unwrap();
     let added = vec![
         Caveat::Policy(fragment(r#"{"scope":"dev"}"#)),
-        Caveat::Before(UnixEpochSeconds::from_secs(4_000_000_000)),
+        Caveat::Token(MacaroonId::fresh()),
     ];
     let child = root.extended(&added).unwrap();
 
@@ -100,7 +96,6 @@ fn a_re_mint_puts_the_relay_policy_ahead_of_the_callers_caveats() {
             held[0].clone(),
             held[1].clone(),
             Caveat::Token(minted.token_id.clone()),
-            Caveat::Before(minted.expires_at),
         ]
     );
 }
@@ -110,7 +105,6 @@ fn a_relay_minted_credential_presented_back_is_confined_once() {
     let relay = relay(r#"{"scope":"relay"}"#);
     let ask = Mint {
         policy: fragment(r#"{"scope":"agent"}"#),
-        ttl: Ttl::from_secs(3600),
     };
     let minted = Minter::mint(&relay, &Verified::anonymous(), &ask).unwrap();
 
@@ -151,14 +145,13 @@ fn two_re_mints_of_one_caller_carry_distinct_token_ids() {
 }
 
 #[test]
-fn an_open_authority_honors_policy_and_before_and_ignores_revocation() {
+fn an_open_authority_honors_policy_alone() {
     let live = Macaroon::mint(
         &owner(),
         &KeyRecord::fresh(),
         &[
             Caveat::Policy(fragment(r#"{"scope":"dev"}"#)),
-            Caveat::Token(MacaroonId::new("revoked-elsewhere")),
-            Caveat::Before(UnixEpochSeconds::from_secs(4_000_000_000)),
+            Caveat::Token(MacaroonId::new("minted-elsewhere")),
         ],
     )
     .unwrap();
@@ -167,18 +160,6 @@ fn an_open_authority_honors_policy_and_before_and_ignores_revocation() {
         .unwrap();
     assert_eq!(verified.owner(), Some(&owner()));
     assert_eq!(verified.fragments(), [fragment(r#"{"scope":"dev"}"#)]);
-
-    let expired = Macaroon::mint(
-        &owner(),
-        &KeyRecord::fresh(),
-        &[Caveat::Before(UnixEpochSeconds::from_secs(1))],
-    )
-    .unwrap();
-    assert!(
-        OpenAuthority
-            .verify(Some(&CredentialPresentation::submitted(expired.expose())))
-            .is_err()
-    );
     assert!(OpenAuthority.verify(None).unwrap().owner().is_none());
 }
 
@@ -186,7 +167,7 @@ fn an_open_authority_honors_policy_and_before_and_ignores_revocation() {
 fn an_origin_authority_refuses_a_forged_signature() {
     let dir = tempfile::tempdir().unwrap();
     let db = Arc::new(Db::open(&dir.path().join("auth.redb")).unwrap());
-    let service = Arc::new(AuthService::new(db, DEFAULT_TTL));
+    let service = Arc::new(AuthService::new(db));
     service
         .user_add(
             &"alice".parse().unwrap(),

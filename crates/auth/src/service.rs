@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
-use crate::credential::{Caveat, KeyRecord, Macaroon, MacaroonId};
+use crate::credential::{KeyRecord, Macaroon, MacaroonId};
 use crate::db::{Db, RefreshRecord, UserRecord};
 use crate::oauth::OAuthClient;
 use crate::password::hash_password;
@@ -11,15 +11,11 @@ use crate::types::{
 };
 use noted::PolicyFragment;
 use noted::error::{Result, rejected};
-use noted::types::{Ttl, UnixEpochSeconds};
+use noted::types::UnixEpochSeconds;
 use noted::util::random_token;
 
 pub const PREFIX_REF: &str = "noted_ref_";
 pub const PREFIX_MAC: &str = "noted_mac_";
-
-pub const ACCESS_TTL: Ttl = Ttl::from_secs(3600);
-pub const DEFAULT_CREDENTIAL_TTL: Ttl = Ttl::from_secs(30 * 24 * 3600);
-pub const DEFAULT_CREDENTIAL_TTL_HUMAN: &str = "30d";
 
 const FINGERPRINT_CHARS: usize = 8;
 const SECRET_BYTES: usize = 32;
@@ -72,31 +68,24 @@ pub struct MintSummary {
     pub policy: PolicyFragment,
     pub fingerprint: Fingerprint,
     pub created_at: UnixEpochSeconds,
-    pub expires_at: UnixEpochSeconds,
 }
 
 pub struct Login {
     pub access: Macaroon,
     pub refresh: RefreshToken,
-    pub expires_at: UnixEpochSeconds,
 }
 
 pub struct AuthService {
     db: Arc<Db>,
-    default_ttl: Ttl,
 }
 
 impl AuthService {
-    pub fn new(db: Arc<Db>, default_ttl: Ttl) -> AuthService {
-        AuthService { db, default_ttl }
+    pub fn new(db: Arc<Db>) -> AuthService {
+        AuthService { db }
     }
 
     pub fn db(&self) -> &Arc<Db> {
         &self.db
-    }
-
-    pub fn default_ttl(&self) -> Ttl {
-        self.default_ttl
     }
 
     pub(crate) fn register_oauth_client(&self, client: &OAuthClient) -> Result<()> {
@@ -182,8 +171,8 @@ impl AuthService {
         Ok(rec)
     }
 
-    /// A root under the user's key carrying `before=` at `ACCESS_TTL`, with an
-    /// opaque `noted_ref_*` refresh beside it.
+    /// A bare root under the user's key, with an opaque `noted_ref_*` refresh
+    /// beside it.
     pub fn issue_login(&self, name: &Username, client: &ClientId) -> Result<Login> {
         self.mint_login(name, client, None)
     }
@@ -212,15 +201,13 @@ impl AuthService {
         let key = self.user_root(name)?;
         let owner = Owner::User(name.clone());
         let created_at = UnixEpochSeconds::now()?;
-        let expires_at = created_at + ACCESS_TTL;
-        let access = Macaroon::mint(&owner, &key, &[Caveat::Before(expires_at)])?;
+        let access = Macaroon::mint(&owner, &key, &[])?;
         let refresh = format!("{PREFIX_REF}{}", random_token(SECRET_BYTES));
         let record = RefreshRecord {
             owner,
             client_id: client.clone(),
             fingerprint: fingerprint(&refresh, PREFIX_REF),
             created_at,
-            expires_at: created_at + self.default_ttl,
         };
         let hash = sha256_hex(&refresh);
         match rotate {
@@ -230,7 +217,6 @@ impl AuthService {
         Ok(Login {
             access,
             refresh: RefreshToken::new(refresh),
-            expires_at,
         })
     }
 
@@ -241,9 +227,6 @@ impl AuthService {
         let Some(rec) = self.db.refresh(&sha256_hex(refresh.expose()))? else {
             return Ok(None);
         };
-        if UnixEpochSeconds::now()? >= rec.expires_at {
-            return Ok(None);
-        }
         let Owner::User(name) = &rec.owner else {
             return Ok(None);
         };
@@ -251,10 +234,6 @@ impl AuthService {
             return Ok(None);
         }
         Ok(Some(rec))
-    }
-
-    pub fn sweep(&self) -> Result<()> {
-        self.db.sweep(UnixEpochSeconds::now()?)
     }
 }
 
@@ -276,16 +255,6 @@ mod tests {
         assert_eq!(BearerKind::from_secret("noted_key_x"), None);
         assert_eq!(BearerKind::from_secret("ghp_something"), None);
         assert_eq!(BearerKind::from_secret(""), None);
-    }
-
-    #[test]
-    fn default_ttl_forms_agree() {
-        assert_eq!(
-            humantime::parse_duration(DEFAULT_CREDENTIAL_TTL_HUMAN)
-                .unwrap()
-                .as_secs(),
-            DEFAULT_CREDENTIAL_TTL.as_secs()
-        );
     }
 
     #[test]

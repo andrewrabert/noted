@@ -10,7 +10,7 @@ pub mod types;
 
 pub use administration::Administration;
 pub use authority::{
-    Denial, Minter, OpenAuthority, OriginAuthority, RelayCredential, Verified, Verifier, Withdrawn,
+    Denial, Minter, OpenAuthority, OriginAuthority, RelayCredential, Verified, Verifier,
 };
 pub use credential::Macaroon;
 pub use db::Db;

@@ -1,6 +1,5 @@
 use noted::Bearer;
 use noted::HttpUrl;
-use noted::types::UnixEpochSeconds;
 use noted_auth::types::{ClientId, RefreshToken};
 use noted_client::credentials::{Credential, CredentialStore};
 
@@ -18,7 +17,6 @@ fn cred() -> Credential {
         client_id: ClientId::new("cid-123"),
         access_token: Bearer::new("acc-secret"),
         refresh_token: Some(RefreshToken::new("ref-secret")),
-        expires_at: Some(UnixEpochSeconds::from_secs(9_999_999_999)),
     }
 }
 

@@ -26,9 +26,6 @@ pub(super) fn begin_authorization(
         noted_auth::oauth::BeginAuthorizationOutcome::InvalidRequest => {
             oauth_error(StatusCode::BAD_REQUEST, "invalid_request")
         }
-        noted_auth::oauth::BeginAuthorizationOutcome::TemporarilyUnavailable => {
-            oauth_error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
-        }
         noted_auth::oauth::BeginAuthorizationOutcome::ServerError => {
             oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error")
         }
@@ -45,22 +42,14 @@ pub(super) fn authorization_login(
             [(header::LOCATION, redirect.as_uri().as_str())],
         )
             .into_response(),
-        noted_auth::oauth::AuthorizationLoginOutcome::ExpiredOrInvalid => (
+        noted_auth::oauth::AuthorizationLoginOutcome::Unknown => (
             StatusCode::BAD_REQUEST,
-            Html(login_page("", Some("expired or invalid"))),
+            Html(login_page("", Some("unknown login request"))),
         )
             .into_response(),
         noted_auth::oauth::AuthorizationLoginOutcome::InvalidCredentials => (
             StatusCode::UNAUTHORIZED,
             Html(login_page(transaction, Some("invalid credentials"))),
-        )
-            .into_response(),
-        noted_auth::oauth::AuthorizationLoginOutcome::Throttled => (
-            StatusCode::TOO_MANY_REQUESTS,
-            Html(login_page(
-                transaction,
-                Some("too many attempts, try later"),
-            )),
         )
             .into_response(),
         noted_auth::oauth::AuthorizationLoginOutcome::InvalidRequest => {
@@ -83,7 +72,6 @@ pub(super) fn token(outcome: noted_auth::oauth::TokenOutcome) -> Response {
                 "token_type": match tokens.token_type() {
                     noted_auth::types::OAuthTokenType::Bearer => "bearer",
                 },
-                "expires_in": tokens.lifetime().as_secs(),
                 "scope": tokens.scope().as_str(),
             }))
             .unwrap_or_else(|_| r#"{"error":"server_error","error_description":""}"#.to_string()),
