@@ -60,7 +60,6 @@ impl Verified {
 
 #[derive(Clone, Debug)]
 pub enum Denial {
-    /// The bearer is not a parseable macaroon.
     Malformed(String),
     Unauthorized(String),
     Forbidden(String),
@@ -265,8 +264,6 @@ impl Minter for OriginAuthority {
     }
 }
 
-/// A server with no auth database: it reads what a credential says and holds
-/// nobody to account for it.
 pub struct OpenAuthority;
 
 impl Verifier for OpenAuthority {
@@ -274,30 +271,12 @@ impl Verifier for OpenAuthority {
         &self,
         credential: Option<&CredentialPresentation>,
     ) -> std::result::Result<Verified, Denial> {
-        let Some(credential) = credential else {
-            return Ok(Verified::anonymous());
-        };
-        let bearer = credential.expose();
-        let macaroon = Macaroon::from_encoded(bearer.to_string())
-            .map_err(|e| Denial::Malformed(e.to_string()))?;
-        let owner = macaroon
-            .owner()
-            .map_err(|e| Denial::Malformed(e.to_string()))?;
-        let caveats = macaroon
-            .caveats()
-            .map_err(|e| Denial::Malformed(e.to_string()))?;
-        let mut fragments = Vec::new();
-        for caveat in &caveats {
-            if let Caveat::Policy(fragment) = caveat {
-                fragments.push(fragment.clone());
-            }
+        match credential {
+            Some(_) => Err(Denial::Malformed(
+                "this server has no authentication and takes no credential".to_string(),
+            )),
+            None => Ok(Verified::anonymous()),
         }
-        Ok(Verified {
-            owner: Some(owner),
-            fragments,
-            caveats,
-            macaroon: Some(macaroon),
-        })
     }
 }
 

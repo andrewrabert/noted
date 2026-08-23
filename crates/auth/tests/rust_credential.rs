@@ -3,7 +3,7 @@ use std::sync::Arc;
 use noted::PolicyFragment;
 use noted_auth::Db;
 use noted_auth::authority::{
-    Mint, Minter, OpenAuthority, OriginAuthority, RelayCredential, Verified, Verifier,
+    Denial, Mint, Minter, OpenAuthority, OriginAuthority, RelayCredential, Verified, Verifier,
 };
 use noted_auth::credential::{Caveat, KeyRecord, Macaroon, MacaroonId};
 use noted_auth::service::AuthService;
@@ -145,7 +145,7 @@ fn two_re_mints_of_one_caller_carry_distinct_token_ids() {
 }
 
 #[test]
-fn an_open_authority_honors_policy_alone() {
+fn an_open_authority_takes_no_credential_at_all() {
     let live = Macaroon::mint(
         &owner(),
         &KeyRecord::fresh(),
@@ -155,12 +155,17 @@ fn an_open_authority_honors_policy_alone() {
         ],
     )
     .unwrap();
-    let verified = OpenAuthority
+    let denial = OpenAuthority
         .verify(Some(&CredentialPresentation::submitted(live.expose())))
-        .unwrap();
-    assert_eq!(verified.owner(), Some(&owner()));
-    assert_eq!(verified.fragments(), [fragment(r#"{"scope":"dev"}"#)]);
-    assert!(OpenAuthority.verify(None).unwrap().owner().is_none());
+        .unwrap_err();
+    assert!(
+        matches!(&denial, Denial::Malformed(message) if message.contains("takes no credential")),
+        "{denial:?}"
+    );
+
+    let anonymous = OpenAuthority.verify(None).unwrap();
+    assert!(anonymous.owner().is_none());
+    assert!(anonymous.fragments().is_empty());
 }
 
 #[test]
