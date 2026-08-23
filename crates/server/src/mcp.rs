@@ -10,7 +10,7 @@ use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler};
 use serde_json::Value;
 
-use noted::{NotedRoot, ToolCall};
+use noted::{NotedRoot, PolicyFragment, ToolCall};
 use noted_auth::Verified;
 
 pub const SERVER_NAME: &str = "noted";
@@ -30,18 +30,34 @@ impl McpContext {
             .unwrap_or_else(Verified::anonymous)
     }
 
-    fn confined(&self, caller: &Verified) -> noted::Result<NotedRoot> {
-        self.root.with_authority(caller.fragments())
+    /// The policy the request carrying this call asked to be held to. A call
+    /// that reached no request narrows nothing.
+    fn query_policy(&self, context: &RequestContext<RoleServer>) -> Vec<PolicyFragment> {
+        context
+            .extensions
+            .get::<http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<Vec<PolicyFragment>>().cloned())
+            .unwrap_or_default()
     }
 
-    async fn dispatch(&self, params: CallToolRequestParams, caller: &Verified) -> CallToolResult {
+    fn confined(&self, context: &RequestContext<RoleServer>) -> noted::Result<NotedRoot> {
+        self.root
+            .with_authority(self.caller(context).fragments())?
+            .with_authority(&self.query_policy(context))
+    }
+
+    async fn dispatch(
+        &self,
+        params: CallToolRequestParams,
+        context: &RequestContext<RoleServer>,
+    ) -> CallToolResult {
         let name = params.name.as_ref();
         let arguments = params
             .arguments
             .map(Value::Object)
             .unwrap_or(Value::Object(Default::default()));
 
-        match self.invoke(name, arguments, caller).await {
+        match self.invoke(name, arguments, context).await {
             Ok(output) => tool_ok(output),
             Err(e) => tool_error(format!("error: {}", e.message())),
         }
@@ -51,10 +67,10 @@ impl McpContext {
         &self,
         name: &str,
         arguments: Value,
-        caller: &Verified,
+        context: &RequestContext<RoleServer>,
     ) -> noted::Result<String> {
         let call = ToolCall::raw(name, arguments)?;
-        Ok(self.confined(caller)?.invoke(&call).await?.render())
+        Ok(self.confined(context)?.invoke(&call).await?.render())
     }
 }
 
@@ -70,9 +86,8 @@ impl ServerHandler for McpContext {
         _request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let caller = self.caller(&context);
         let tools: Vec<Tool> = self
-            .confined(&caller)
+            .confined(&context)
             .map_err(|e| McpError::internal_error(e.message().into_owned(), None))?
             .tools()
             .into_iter()
@@ -93,8 +108,7 @@ impl ServerHandler for McpContext {
         params: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        let caller = self.caller(&context);
-        Ok(self.dispatch(params, &caller).await.into())
+        Ok(self.dispatch(params, &context).await.into())
     }
 }
 

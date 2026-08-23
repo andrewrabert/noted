@@ -454,6 +454,297 @@ async fn write_schema_hides_when_via_mcp() {
     assert!(props.get("when").is_none(), "when leaked into MCP schema");
 }
 
+/// `path` carrying `policies` as its query policy — outermost first, one
+/// `policy=` each.
+fn query_policy(path: &str, policies: &[&str]) -> String {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(policies.iter().map(|policy| ("policy", *policy)))
+        .finish();
+    format!("{path}?{query}")
+}
+
+#[tokio::test]
+async fn a_query_policy_narrows_a_key_that_holds_more() {
+    let dir = common::fixture_dir();
+    let (app, t) = keyed_app(&dir, PolicyFragment::default()).await;
+    let read_only = r#"{"access":{"read":true,"write":false}}"#;
+
+    let (s, _) = post_json(
+        &app,
+        &query_policy("/tool/ReadNote", &[read_only]),
+        Some(&t),
+        &json!({"path": "Inbox.md"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, b) = post_json(
+        &app,
+        &query_policy("/tool/WriteNote", &[read_only]),
+        Some(&t),
+        &json!({"path": "narrowed.md", "content": "x"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert!(
+        json_body(&b)["detail"]
+            .as_str()
+            .unwrap()
+            .contains("forbidden")
+    );
+
+    // the narrowing is per-request: the same key without one still writes
+    let (s, _) = post_json(
+        &app,
+        "/tool/WriteNote",
+        Some(&t),
+        &json!({"path": "narrowed.md", "content": "x"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_query_scope_confines_the_paths_a_call_names() {
+    let dir = common::fixture_dir();
+    let (app, t) = keyed_app(&dir, PolicyFragment::default()).await;
+    let scoped = query_policy("/tool/ReadNote", &[r#"{"scope":"projects"}"#]);
+
+    let (s, b) = post_json(&app, &scoped, Some(&t), &json!({"path": "ideas.md"})).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(json_body(&b)["ok"]["data"].as_str().is_some());
+    let (s, _) = post_json(&app, &scoped, Some(&t), &json!({"path": "Inbox.md"})).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn query_policies_apply_outermost_first() {
+    let dir = common::fixture_dir();
+    let (app, t) = keyed_app(&dir, PolicyFragment::default()).await;
+    // the second names 'ideas.md' under the scope the first established; read
+    // the other way round it would deny a root 'ideas.md' that does not exist
+    let ordered = query_policy(
+        "/tool/ReadNote",
+        &[
+            r#"{"scope":"projects"}"#,
+            r#"{"paths":{"ideas.md":{"read":false}}}"#,
+        ],
+    );
+
+    let (s, _) = post_json(&app, &ordered, Some(&t), &json!({"path": "ideas.md"})).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = post_json(&app, &ordered, Some(&t), &json!({"path": "notes-mcp.md"})).await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_query_policy_never_widens_the_key_that_carries_it() {
+    let dir = common::fixture_dir();
+    let (app, ro) = keyed_app(&dir, held(r#"{"access":{"read":true,"write":false}}"#)).await;
+
+    let (s, b) = post_json(
+        &app,
+        &query_policy("/tool/WriteNote", &[r#"{"access":{"write":true}}"#]),
+        Some(&ro),
+        &json!({"path": "widened.md", "content": "x"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert!(
+        json_body(&b)["detail"]
+            .as_str()
+            .unwrap()
+            .contains("does not have"),
+        "{}",
+        json_body(&b)
+    );
+}
+
+#[tokio::test]
+async fn an_unparseable_query_policy_is_refused_before_the_tool_runs() {
+    let dir = common::fixture_dir();
+    let (app, t) = keyed_app(&dir, PolicyFragment::default()).await;
+
+    for bad in ["notjson", "{}}", r#"{"nope":1}"#, r#"{"scope":"Log"}"#] {
+        let (s, b) = post_json(
+            &app,
+            &query_policy("/tool/WriteNote", &[bad]),
+            Some(&t),
+            &json!({"path": "never.md", "content": "x"}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}");
+        assert!(json_body(&b)["detail"].as_str().is_some(), "{bad}");
+    }
+
+    let (s, _) = post_json(
+        &app,
+        "/tool/ReadNote",
+        Some(&t),
+        &json!({"path": "never.md"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_query_with_no_policy_narrows_nothing() {
+    let dir = common::fixture_dir();
+    let (app, t) = keyed_app(&dir, PolicyFragment::default()).await;
+
+    let (s, _) = post_json(
+        &app,
+        "/tool/WriteNote?cachebust=1&policies=nope",
+        Some(&t),
+        &json!({"path": "unnarrowed.md", "content": "x"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn an_open_origin_holds_a_bearerless_call_to_its_query_policy() {
+    let dir = common::fixture_dir();
+    let app = common::open_app(&dir);
+
+    let (s, _) = post_json(
+        &app,
+        &query_policy(
+            "/tool/WriteNote",
+            &[r#"{"access":{"read":true,"write":false}}"#],
+        ),
+        None,
+        &json!({"path": "open.md", "content": "x"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = post_json(
+        &app,
+        "/tool/WriteNote",
+        None,
+        &json!({"path": "open.md", "content": "x"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn mcp_holds_a_tool_call_to_its_query_policy() {
+    let dir = common::fixture_dir();
+    let (app, t) = keyed_app(&dir, PolicyFragment::default()).await;
+    let read_only = query_policy("/mcp", &[r#"{"access":{"read":true,"write":false}}"#]);
+
+    let (s, _h, b) = post_mcp_at(
+        &app,
+        &read_only,
+        Some(&t),
+        &mcp_call(
+            "WriteNote",
+            json!({"path": "mcp_narrowed.md", "content": "x"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let result = &json_body(&b)["result"];
+    assert_eq!(result["isError"], true);
+    assert!(
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("forbidden")
+    );
+
+    let (s, _h, b) = post_mcp(
+        &app,
+        Some(&t),
+        &mcp_call(
+            "WriteNote",
+            json!({"path": "mcp_narrowed.md", "content": "x"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_ne!(json_body(&b)["result"]["isError"], true);
+}
+
+#[tokio::test]
+async fn mcp_lists_the_tools_its_query_policy_leaves() {
+    let dir = common::fixture_dir();
+    let (app, t) = keyed_app(&dir, PolicyFragment::default()).await;
+    let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}});
+
+    let named = |b: &[u8]| -> Vec<String> {
+        json_body(b)["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let (_s, _h, b) = post_mcp(&app, Some(&t), &list).await;
+    assert!(named(&b).contains(&"WriteNote".to_string()));
+
+    let (s, _h, b) = post_mcp_at(
+        &app,
+        &query_policy("/mcp", &[r#"{"access":{"read":true,"write":false}}"#]),
+        Some(&t),
+        &list,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let listed = named(&b);
+    assert!(listed.contains(&"ReadNote".to_string()));
+    assert!(!listed.contains(&"WriteNote".to_string()), "{listed:?}");
+}
+
+#[tokio::test]
+async fn an_mcp_query_policy_never_widens_the_key_that_carries_it() {
+    let dir = common::fixture_dir();
+    let (app, ro) = keyed_app(&dir, held(r#"{"access":{"read":true,"write":false}}"#)).await;
+
+    let (s, _h, b) = post_mcp_at(
+        &app,
+        &query_policy("/mcp", &[r#"{"access":{"write":true}}"#]),
+        Some(&ro),
+        &mcp_call(
+            "WriteNote",
+            json!({"path": "mcp_widened.md", "content": "x"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let result = &json_body(&b)["result"];
+    assert_eq!(result["isError"], true);
+    assert!(
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("does not have"),
+        "{result}"
+    );
+}
+
+#[tokio::test]
+async fn an_unparseable_mcp_query_policy_is_refused_before_the_transport() {
+    let dir = common::fixture_dir();
+    let (app, t) = keyed_app(&dir, PolicyFragment::default()).await;
+
+    let (s, _h, b) = post_mcp_at(
+        &app,
+        &query_policy("/mcp", &["notjson"]),
+        Some(&t),
+        &mcp_call("WriteNote", json!({"path": "never_mcp.md", "content": "x"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert!(
+        json_body(&b)["detail"]
+            .as_str()
+            .unwrap()
+            .contains("invalid policy")
+    );
+}
+
 fn pw(s: &str) -> noted_auth::types::Password {
     noted_auth::types::Password::new(s)
 }
