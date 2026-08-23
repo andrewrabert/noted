@@ -9,7 +9,6 @@ use noted::error::{Result, rejected};
 pub enum Variable {
     AdminSocket,
     AuthDb,
-    DefaultTtl,
     Dir,
     Editor,
     EnvFile,
@@ -30,7 +29,6 @@ pub enum Variable {
 const ALL: &[Variable] = &[
     Variable::AdminSocket,
     Variable::AuthDb,
-    Variable::DefaultTtl,
     Variable::Dir,
     Variable::Editor,
     Variable::EnvFile,
@@ -53,7 +51,6 @@ impl Variable {
         match self {
             Variable::AdminSocket => "NOTED_ADMIN_SOCKET",
             Variable::AuthDb => "NOTED_AUTH_DB",
-            Variable::DefaultTtl => "NOTED_DEFAULT_TTL",
             Variable::Dir => "NOTED_DIR",
             Variable::Editor => "EDITOR",
             Variable::EnvFile => "NOTED_ENV_FILE",
@@ -77,7 +74,6 @@ impl Variable {
         match self {
             Variable::AdminSocket => Some("--admin-socket"),
             Variable::AuthDb => Some("--auth-db"),
-            Variable::DefaultTtl => Some("--default-ttl"),
             Variable::Dir => Some("--dir"),
             Variable::Editor => None,
             Variable::EnvFile => Some("--env-file"),

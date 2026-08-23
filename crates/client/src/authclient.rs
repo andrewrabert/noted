@@ -9,10 +9,8 @@ use tokio::net::TcpListener;
 use crate::credentials::{Credential, CredentialStore};
 use noted::HttpUrl;
 use noted::error::{Result, http_error, io_error, rejected, unavailable};
-use noted::types::{Ttl, UnixEpochSeconds};
 use noted::util::random_token;
 use noted::{Bearer, PolicyFragment};
-use noted_auth::authority::{Revoke, Withdrawn};
 use noted_auth::credential::{Macaroon, MacaroonId};
 use noted_auth::types::{ClientId, Fingerprint, RefreshToken};
 
@@ -139,12 +137,6 @@ pub async fn login(url: &HttpUrl) -> Result<Credential> {
         .get("refresh_token")
         .and_then(Value::as_str)
         .map(str::to_string);
-    let now = UnixEpochSeconds::now()?;
-    let expires_at = tokens
-        .get("expires_in")
-        .and_then(Value::as_u64)
-        .map(|s| now + Ttl::from_secs(s));
-
     let user = Macaroon::from_encoded(access_token.clone())
         .and_then(|access| access.owner())
         .map(|owner| owner.to_string())
@@ -155,14 +147,12 @@ pub async fn login(url: &HttpUrl) -> Result<Credential> {
         client_id: ClientId::new(client_id),
         access_token: Bearer::new(access_token),
         refresh_token: refresh_token.map(RefreshToken::new),
-        expires_at,
     })
 }
 
 /// What a caller asks a server to mint for it.
 pub struct Ask {
     pub policy: PolicyFragment,
-    pub ttl: Ttl,
 }
 
 /// What the server minted in answer.
@@ -171,7 +161,6 @@ pub struct Granted {
     pub macaroon: Macaroon,
     pub token_id: MacaroonId,
     pub fingerprint: Fingerprint,
-    pub expires_at: UnixEpochSeconds,
 }
 
 pub struct Session {
@@ -189,7 +178,7 @@ impl Session {
         }
     }
 
-    /// The stored login's access macaroon, refreshed when it has expired.
+    /// The stored login's access macaroon.
     pub async fn credential(&self) -> Result<Option<Macaroon>> {
         if let Some(token) = &self.token_override {
             return self.as_macaroon(token).map(Some);
@@ -197,27 +186,7 @@ impl Session {
         let Some(cred) = self.store.get(&self.url)? else {
             return Ok(None);
         };
-        let now = UnixEpochSeconds::now()?;
-        let expired = cred.expires_at.map(|e| now >= e).unwrap_or(false);
-        if !expired {
-            return self.as_macaroon(cred.access_token.expose()).map(Some);
-        }
-        let Some(rt) = cred.refresh_token.clone() else {
-            return Err(rejected("session expired; run `noted auth login` again"));
-        };
-        match refresh(&self.url, cred.client_id.as_str(), rt.expose()).await {
-            Ok((access, refresh_token, expires_at)) => {
-                let updated = Credential {
-                    access_token: Bearer::new(access.clone()),
-                    refresh_token: refresh_token.map(RefreshToken::new),
-                    expires_at,
-                    ..cred
-                };
-                self.store.set(&self.url, &updated)?;
-                self.as_macaroon(&access).map(Some)
-            }
-            Err(_) => Err(rejected("session expired; run `noted auth login` again")),
-        }
+        self.as_macaroon(cred.access_token.expose()).map(Some)
     }
 
     fn as_macaroon(&self, token: &str) -> Result<Macaroon> {
@@ -235,25 +204,7 @@ impl Session {
             .await?
             .ok_or_else(|| rejected("not logged in; run `noted auth login`"))?;
         let endpoint = self.url.join("macaroon/mint");
-        let body = json!({
-            "policy": ask.policy,
-            "ttl": ask.ttl.as_secs(),
-        });
-        let answer = post_json(&endpoint, credential.expose(), &body).await?;
-        serde_json::from_value(answer)
-            .map_err(|e| unavailable(format!("{endpoint}: unreadable answer: {e}")))
-    }
-
-    pub async fn revoke(&self, selector: Revoke) -> Result<Withdrawn> {
-        let credential = self
-            .credential()
-            .await?
-            .ok_or_else(|| rejected("not logged in; run `noted auth login`"))?;
-        let body = match &selector {
-            Revoke::All => json!({ "all": true }),
-            Revoke::Token(id) => json!({ "id": id.as_str() }),
-        };
-        let endpoint = self.url.join("macaroon/revoke");
+        let body = json!({ "policy": ask.policy });
         let answer = post_json(&endpoint, credential.expose(), &body).await?;
         serde_json::from_value(answer)
             .map_err(|e| unavailable(format!("{endpoint}: unreadable answer: {e}")))
@@ -279,42 +230,6 @@ async fn post_json(endpoint: &HttpUrl, bearer: &str, body: &Value) -> Result<Val
         return Err(rejected(format!("{endpoint}: {detail}")));
     }
     Ok(answer)
-}
-
-pub async fn refresh(
-    url: &HttpUrl,
-    client_id: &str,
-    refresh_token: &str,
-) -> Result<(String, Option<String>, Option<UnixEpochSeconds>)> {
-    let client = reqwest::Client::new();
-    let meta = get_json(&client, &url.join(".well-known/oauth-authorization-server")).await?;
-    let token_ep = endpoint(&meta, "token_endpoint")?;
-    let tokens = post_form(
-        &client,
-        &token_ep,
-        &[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", client_id),
-        ],
-    )
-    .await?;
-    let access = tokens
-        .get("access_token")
-        .and_then(Value::as_str)
-        .ok_or_else(|| unavailable("refresh returned no access_token"))?
-        .to_string();
-    let new_refresh = tokens
-        .get("refresh_token")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .or_else(|| Some(refresh_token.to_string()));
-    let now = UnixEpochSeconds::now()?;
-    let expires_at = tokens
-        .get("expires_in")
-        .and_then(Value::as_u64)
-        .map(|s| now + Ttl::from_secs(s));
-    Ok((access, new_refresh, expires_at))
 }
 
 fn endpoint(meta: &Value, key: &str) -> Result<HttpUrl> {

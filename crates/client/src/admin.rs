@@ -3,11 +3,9 @@ use std::sync::Arc;
 
 use noted::error::{Result, rejected, unavailable};
 use noted_auth::Db;
-use noted_auth::administration::{
-    AdminCommand, AdminCredentialLifetime, AdminOutcome, Administration, UserDetails,
-};
+use noted_auth::administration::{AdminCommand, AdminOutcome, Administration, UserDetails};
 use noted_auth::authority::{Minted, OriginAuthority};
-use noted_auth::service::{AuthService, DEFAULT_CREDENTIAL_TTL};
+use noted_auth::service::AuthService;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[cfg(unix)]
@@ -34,20 +32,13 @@ enum AdminRequest {
     UserGet {
         name: String,
     },
-    UserRevoke {
-        name: String,
-    },
     UserRemove {
         name: String,
     },
     KeyCreate {
         policy: noted::PolicyFragment,
-        ttl: Option<noted::types::Ttl>,
     },
     KeyList,
-    KeyRevoke {
-        by: noted_auth::authority::Revoke,
-    },
 }
 
 #[derive(Deserialize)]
@@ -73,7 +64,6 @@ struct EncodedMinted {
     macaroon: noted_auth::credential::Macaroon,
     token_id: noted_auth::credential::MacaroonId,
     fingerprint: noted_auth::types::Fingerprint,
-    expires_at: noted::types::UnixEpochSeconds,
 }
 
 impl AdminRequest {
@@ -95,23 +85,13 @@ impl AdminRequest {
             AdminCommand::GetUser { username } => AdminRequest::UserGet {
                 name: username.as_str().to_string(),
             },
-            AdminCommand::RevokeUser { username } => AdminRequest::UserRevoke {
-                name: username.as_str().to_string(),
-            },
             AdminCommand::RemoveUser { username } => AdminRequest::UserRemove {
                 name: username.as_str().to_string(),
             },
-            AdminCommand::CreateKey { policy, lifetime } => AdminRequest::KeyCreate {
+            AdminCommand::CreateKey { policy } => AdminRequest::KeyCreate {
                 policy: policy.clone(),
-                ttl: match lifetime {
-                    AdminCredentialLifetime::Default => None,
-                    AdminCredentialLifetime::Explicit(ttl) => Some(*ttl),
-                },
             },
             AdminCommand::ListKeys => AdminRequest::KeyList,
-            AdminCommand::RevokeKey { revocation } => AdminRequest::KeyRevoke {
-                by: revocation.clone(),
-            },
         }
     }
 }
@@ -144,13 +124,9 @@ impl AdminResponse {
                     macaroon: minted.macaroon,
                     token_id: minted.token_id,
                     fingerprint: minted.fingerprint,
-                    expires_at: minted.expires_at,
                 })
             }
             AdminCommand::ListKeys => AdminOutcome::Credentials(decode(value)?),
-            AdminCommand::RevokeUser { .. } | AdminCommand::RevokeKey { .. } => {
-                AdminOutcome::Withdrawn(decode(value)?)
-            }
         })
     }
 }
@@ -232,7 +208,7 @@ impl AdminConnection {
         let path = path.to_path_buf();
         let administration = tokio::task::spawn_blocking(move || -> Result<Arc<Administration>> {
             let db = Db::open(&path)?;
-            let service = Arc::new(AuthService::new(Arc::new(db), DEFAULT_CREDENTIAL_TTL));
+            let service = Arc::new(AuthService::new(Arc::new(db)));
             let minter = Arc::new(OriginAuthority::new(service.clone()));
             Ok(Arc::new(Administration::new(service, minter)))
         })

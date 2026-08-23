@@ -1,14 +1,13 @@
 use std::sync::Arc;
 
 use noted::PolicyFragment;
-use noted::types::Ttl;
-use noted_auth::authority::{Mint, Minter, OriginAuthority, Revoke, Verified};
+use noted_auth::authority::{Mint, Minter, OriginAuthority, Verified};
 use noted_auth::oauth::{
     AuthorizationRequest, BeginAuthorizationOutcome, OAuthProtocol, RegisterOAuthClient,
 };
 use noted_auth::types::{
-    AuthorizationResponseType, ClientId, CodeChallenge, CodeChallengeMethod, Owner, Password,
-    RedirectUri, SubmittedRedirectUri, Username,
+    AuthorizationResponseType, ClientId, CodeChallenge, CodeChallengeMethod, Password, RedirectUri,
+    SubmittedRedirectUri, Username,
 };
 use noted_auth::{AuthService, Db};
 use redb::{Database, ReadableDatabase, ReadableTableMetadata, TableDefinition};
@@ -17,13 +16,9 @@ const USERS: TableDefinition<&str, &[u8]> = TableDefinition::new("users");
 const REFRESH: TableDefinition<&str, &[u8]> = TableDefinition::new("refresh");
 const MINTED: TableDefinition<&str, &[u8]> = TableDefinition::new("minted");
 const ROOTS: TableDefinition<&str, &[u8]> = TableDefinition::new("roots");
-const REVOKED: TableDefinition<&str, u64> = TableDefinition::new("revoked");
 const OAUTH_CLIENTS: TableDefinition<&str, &str> = TableDefinition::new("clients");
 fn open(path: &std::path::Path) -> Arc<AuthService> {
-    Arc::new(AuthService::new(
-        Arc::new(Db::open(path).unwrap()),
-        Ttl::from_secs(3600),
-    ))
+    Arc::new(AuthService::new(Arc::new(Db::open(path).unwrap())))
 }
 
 fn registration() -> RegisterOAuthClient {
@@ -72,7 +67,6 @@ fn populate(service: &Arc<AuthService>) {
             &Verified::anonymous(),
             &Mint {
                 policy: PolicyFragment::default(),
-                ttl: Ttl::from_secs(3600),
             },
         )
         .unwrap();
@@ -92,7 +86,7 @@ fn every_auth_table_reopens_without_migration() {
 }
 
 #[test]
-fn user_refresh_mint_root_and_revocation_records_keep_their_shapes() {
+fn user_refresh_mint_and_root_records_keep_their_shapes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("auth.redb");
     {
@@ -105,7 +99,6 @@ fn user_refresh_mint_root_and_revocation_records_keep_their_shapes() {
     assert_eq!(read.open_table(REFRESH).unwrap().len().unwrap(), 1);
     assert_eq!(read.open_table(MINTED).unwrap().len().unwrap(), 1);
     assert!(read.open_table(ROOTS).unwrap().len().unwrap() >= 1);
-    assert_eq!(read.open_table(REVOKED).unwrap().len().unwrap(), 0);
 }
 
 #[test]
@@ -160,8 +153,7 @@ fn authentication_open_accepts_canonical_oauth_client_records() {
     );
 
     let database = Arc::new(Db::open(&path).unwrap());
-    let protocol =
-        OAuthProtocol::open(Arc::new(AuthService::new(database, Ttl::from_secs(3600)))).unwrap();
+    let protocol = OAuthProtocol::open(Arc::new(AuthService::new(database))).unwrap();
     assert!(matches!(
         protocol.begin_authorization(authorization_request(ClientId::new("client"))),
         BeginAuthorizationOutcome::LoginRequired(_)
@@ -266,7 +258,7 @@ fn every_auth_table_including_oauth_reopens_together() {
 }
 
 #[test]
-fn refresh_rotation_user_removal_and_withdrawal_remain_atomic() {
+fn refresh_rotation_and_user_removal_remain_atomic() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("auth.redb");
     let service = open(&path);
@@ -280,15 +272,8 @@ fn refresh_rotation_user_removal_and_withdrawal_remain_atomic() {
         .unwrap();
     assert!(service.refresh_owner(&first.refresh).unwrap().is_none());
     assert!(service.refresh_owner(&second.refresh).unwrap().is_some());
-    let authority = OriginAuthority::new(service.clone());
-    authority
-        .revoke(
-            &Verified::as_owner(Owner::User(username.clone())),
-            &Revoke::All,
-        )
-        .unwrap();
-    assert!(service.refresh_owner(&second.refresh).unwrap().is_none());
     service.user_remove(&username).unwrap();
+    assert!(service.refresh_owner(&second.refresh).unwrap().is_none());
     assert!(service.user_get(&username).unwrap().is_none());
 }
 

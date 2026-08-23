@@ -10,12 +10,12 @@ use axum::response::Response;
 use serde_json::{Value, json};
 
 use noted::{Bearer, Endpoint, PolicyFragment, Transport};
-use noted_auth::authority::{Mint, Minter, RelayCredential, Revoke, Verified};
+use noted_auth::authority::{Mint, Minter, RelayCredential, Verified};
 use noted_auth::credential::{Caveat, Macaroon};
 use noted_auth::types::Owner;
 use noted_server::http::{Served, build_app};
 use noted_server::relay::Relay;
-use noted_server::serve::{Bind, Bound, HttpConfig, ServedConfig, serve_http};
+use noted_server::serve::Bound;
 
 use common::{json_body, post_json, post_mcp};
 
@@ -223,7 +223,7 @@ async fn a_relay_in_front_of_an_open_origin_self_mints_and_reaches_the_tree() {
             .caveats()
             .unwrap()
             .iter()
-            .any(|caveat| matches!(caveat, Caveat::Before(_)))
+            .any(|caveat| matches!(caveat, Caveat::Token(_)))
     );
 }
 
@@ -288,99 +288,6 @@ async fn an_unreachable_upstream_names_only_the_dialable_endpoint_attempted() {
 }
 
 #[tokio::test]
-async fn a_revoked_caller_token_id_produces_no_upstream_request() {
-    let dir = common::fixture_dir();
-    let (origin, seen) = upstream(&dir);
-    let svc = common::auth_service(&dir);
-    let cred = Arc::new(
-        RelayCredential::open(None, PolicyFragment::default(), Some(svc.clone())).unwrap(),
-    );
-    let ask = Mint {
-        policy: PolicyFragment::default(),
-        ttl: svc.default_ttl(),
-    };
-    let minted = Minter::mint(cred.as_ref(), &Verified::anonymous(), &ask).unwrap();
-    let token = minted.macaroon.expose().to_string();
-    let app = in_front_of(cred.clone(), origin).await;
-
-    let (status, _) = read(&app, Some(&token), "Inbox.md").await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(seen.lock().unwrap().len(), 1);
-
-    Minter::revoke(
-        cred.as_ref(),
-        &Verified::anonymous(),
-        &Revoke::Token(minted.token_id.clone()),
-    )
-    .unwrap();
-
-    let (status, body) = read(&app, Some(&token), "Inbox.md").await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert_eq!(json_body(&body)["detail"], "unauthorized");
-    assert_eq!(seen.lock().unwrap().len(), 1);
-}
-
-#[tokio::test]
-async fn relay_revocation_errors_name_the_listener_endpoint() {
-    let upstream: Endpoint = "http://upstream.test/internal".parse().unwrap();
-    let bound = common::bound_listener().await;
-    let app = relay_app(
-        credential("{}", None),
-        upstream,
-        &bound,
-        Transport::Router(common::open_app(&common::fixture_dir())),
-    )
-    .await;
-
-    let (status, body) = post_json(&app, "/macaroon/revoke", None, &json!({"id":"anything"})).await;
-
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    let detail = json_body(&body)["detail"].as_str().unwrap().to_string();
-    assert!(detail.starts_with("http://127.0.0.1:"), "{detail}");
-    assert!(
-        detail.ends_with(": this relay records nothing it mints"),
-        "{detail}"
-    );
-}
-
-#[test]
-fn malformed_relay_credentials_name_the_allocated_listener_endpoint_at_startup() {
-    let endpoint: Endpoint = "http://relay.test/presented".parse().unwrap();
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    let error = runtime
-        .block_on(serve_http(HttpConfig {
-            served: ServedConfig::Relay {
-                endpoint,
-                bearer: Some(Bearer::new("not-a-macaroon")),
-                policy: noted::PolicyArgs::default(),
-                transport: Transport::Router(common::open_app(&common::fixture_dir())),
-            },
-            bind: Bind::Tcp {
-                host: "127.0.0.1".to_string(),
-                port: 0,
-            },
-            public_url: None,
-            authentication: None,
-            #[cfg(unix)]
-            admin_socket: None,
-        }))
-        .unwrap_err();
-
-    let message = error.to_string();
-    let selected = message
-        .strip_prefix("http://127.0.0.1:")
-        .and_then(|remainder| remainder.split_once(": "))
-        .map(|(port, _)| port.parse::<u16>().unwrap())
-        .unwrap_or_else(|| panic!("missing bound relay endpoint: {message}"));
-    assert_ne!(selected, 0, "{message}");
-    assert!(!message.starts_with("http://127.0.0.1:0: "), "{message}");
-    assert!(
-        !message.starts_with("http://relay.test/presented: "),
-        "{message}"
-    );
-}
-
-#[tokio::test]
 async fn a_relay_minted_credential_presented_back_composes_its_scope_once() {
     let dir = common::fixture_dir();
     seed(&dir, "a/x.md", "once").await;
@@ -388,7 +295,6 @@ async fn a_relay_minted_credential_presented_back_composes_its_scope_once() {
     let cred = credential(r#"{"scope":"a"}"#, None);
     let ask = Mint {
         policy: PolicyFragment::default(),
-        ttl: noted::types::Ttl::from_secs(3600),
     };
     let minted = Minter::mint(cred.as_ref(), &Verified::anonymous(), &ask).unwrap();
     let token = minted.macaroon.expose().to_string();

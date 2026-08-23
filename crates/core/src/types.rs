@@ -61,23 +61,6 @@ impl std::str::FromStr for UnixEpochSeconds {
 )]
 #[serde(transparent)]
 #[schemars(transparent)]
-pub struct Ttl(u64);
-
-impl Ttl {
-    pub const fn from_secs(secs: u64) -> Ttl {
-        Ttl(secs)
-    }
-
-    pub const fn as_secs(self) -> u64 {
-        self.0
-    }
-}
-
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
-)]
-#[serde(transparent)]
-#[schemars(transparent)]
 pub struct SecondsDuration(u64);
 
 impl SecondsDuration {
@@ -87,13 +70,6 @@ impl SecondsDuration {
 
     pub const fn as_secs(self) -> u64 {
         self.0
-    }
-}
-
-impl std::ops::Add<Ttl> for UnixEpochSeconds {
-    type Output = UnixEpochSeconds;
-    fn add(self, ttl: Ttl) -> UnixEpochSeconds {
-        UnixEpochSeconds(self.0.saturating_add(ttl.as_secs()))
     }
 }
 

@@ -13,7 +13,7 @@ use noted::note::{Condition, TextNote};
 use noted::path::Path;
 use noted::search::{Hit, SearchMode, SearchQuery};
 use noted::store::NotedDir;
-use noted::types::{Source, Ttl};
+use noted::types::Source;
 use noted::{NotedRoot, PolicyFragment};
 use noted_auth::AuthService;
 use noted_auth::authority::{Mint, Minter, OriginAuthority, Verified};
@@ -78,19 +78,15 @@ pub async fn found(root: &NotedRoot, pattern: &str) -> noted::Result<Vec<String>
 }
 
 pub fn auth_service(dir: &tempfile::TempDir) -> Arc<AuthService> {
-    Arc::new(AuthService::new(
-        Arc::new(noted_auth::Db::open(&dir.path().join("auth.redb")).unwrap()),
-        Ttl::from_secs(30 * 24 * 3600),
-    ))
+    Arc::new(AuthService::new(Arc::new(
+        noted_auth::Db::open(&dir.path().join("auth.redb")).unwrap(),
+    )))
 }
 
 /// A credential the server minted from its own: what an agent carries.
 pub fn mint_key(svc: &Arc<AuthService>, policy: PolicyFragment) -> String {
     let minter = OriginAuthority::new(svc.clone());
-    let ask = Mint {
-        policy,
-        ttl: svc.default_ttl(),
-    };
+    let ask = Mint { policy };
     minter
         .mint(&Verified::anonymous(), &ask)
         .unwrap()

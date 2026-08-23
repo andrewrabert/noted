@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use noted::types::Ttl;
 use noted_auth::oauth::{OAuthProtocol, RegisterOAuthClient};
 use noted_auth::types::RedirectUri;
 use noted_auth::{AuthService, Db};
@@ -9,10 +8,7 @@ use redb::{Database, ReadableDatabase, TableDefinition};
 const OAUTH_CLIENTS: TableDefinition<&str, &str> = TableDefinition::new("clients");
 
 fn service(path: &std::path::Path) -> Arc<AuthService> {
-    Arc::new(AuthService::new(
-        Arc::new(Db::open(path).unwrap()),
-        Ttl::from_secs(3600),
-    ))
+    Arc::new(AuthService::new(Arc::new(Db::open(path).unwrap())))
 }
 
 fn registration() -> RegisterOAuthClient {

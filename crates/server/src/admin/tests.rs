@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use noted::types::Ttl;
 use noted_auth::administration::Administration;
 use noted_auth::authority::OriginAuthority;
 use noted_auth::{AuthService, Db};
@@ -10,10 +9,7 @@ use tokio::net::UnixStream;
 
 async fn spawn(dir: &tempfile::TempDir) -> (PathBuf, tokio::task::JoinHandle<()>) {
     let auth_db = dir.path().join("auth.redb");
-    let service = Arc::new(AuthService::new(
-        Arc::new(Db::open(&auth_db).unwrap()),
-        Ttl::from_secs(3600),
-    ));
+    let service = Arc::new(AuthService::new(Arc::new(Db::open(&auth_db).unwrap())));
     let authority = Arc::new(OriginAuthority::new(service.clone()));
     let path = dir.path().join("admin.sock");
     let listener = tokio::net::UnixListener::bind(&path).unwrap();
@@ -76,7 +72,7 @@ async fn every_operation_round_trips_with_exact_request_and_response_json() {
         "{\"ok\":{}}\n"
     );
     assert!(
-        line(&mut stream, r#"{"op":"key_create","policy":{},"ttl":null}"#)
+        line(&mut stream, r#"{"op":"key_create","policy":{}}"#)
             .await
             .contains("noted_mac_")
     );
@@ -84,16 +80,6 @@ async fn every_operation_round_trips_with_exact_request_and_response_json() {
         line(&mut stream, r#"{"op":"key_list"}"#)
             .await
             .starts_with("{\"ok\":[{")
-    );
-    assert!(
-        line(&mut stream, r#"{"op":"key_revoke","by":"All"}"#)
-            .await
-            .contains("\"revoked\":")
-    );
-    assert!(
-        line(&mut stream, r#"{"op":"user_revoke","name":"alice"}"#)
-            .await
-            .contains("\"revoked\":")
     );
     assert_eq!(
         line(&mut stream, r#"{"op":"user_remove","name":"alice"}"#).await,
@@ -189,10 +175,7 @@ async fn shutdown_cancels_connections_and_guard_cleanup_unlinks_the_socket() {
     let path = dir.path().join("guarded.sock");
     let (listener, guard) = crate::socket::bind_unix_socket(&path, Some(0o600)).unwrap();
     let auth_db = dir.path().join("auth.redb");
-    let service = Arc::new(AuthService::new(
-        Arc::new(Db::open(&auth_db).unwrap()),
-        Ttl::from_secs(3600),
-    ));
+    let service = Arc::new(AuthService::new(Arc::new(Db::open(&auth_db).unwrap())));
     let authority = Arc::new(OriginAuthority::new(service.clone()));
     let task = tokio::spawn(super::serve_socket(
         listener,

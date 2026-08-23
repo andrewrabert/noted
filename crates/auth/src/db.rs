@@ -4,7 +4,7 @@ use std::sync::Arc;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
-use crate::credential::{Caveat, KeyRecord, MacaroonId};
+use crate::credential::{KeyRecord, MacaroonId};
 use crate::oauth::{OAuthClient, RegisterOAuthClient};
 use crate::types::{ClientId, Fingerprint, Owner, PasswordHash, RedirectUri, SecretHash, Username};
 use noted::error::{NotedError, Result, db_error, json_error, rejected};
@@ -14,7 +14,6 @@ const USERS: TableDefinition<&str, &[u8]> = TableDefinition::new("users");
 const REFRESH: TableDefinition<&str, &[u8]> = TableDefinition::new("refresh");
 const MINTED: TableDefinition<&str, &[u8]> = TableDefinition::new("minted");
 const ROOTS: TableDefinition<&str, &[u8]> = TableDefinition::new("roots");
-const REVOKED: TableDefinition<&str, u64> = TableDefinition::new("revoked");
 const OAUTH_CLIENTS: TableDefinition<&str, &str> = TableDefinition::new("clients");
 
 /// The `roots` row holding the server's own identity. No owner spelling can
@@ -46,7 +45,6 @@ pub struct RefreshRecord {
     pub client_id: ClientId,
     pub fingerprint: Fingerprint,
     pub created_at: UnixEpochSeconds,
-    pub expires_at: UnixEpochSeconds,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -55,7 +53,6 @@ pub struct MintRecord {
     pub policy: noted::PolicyFragment,
     pub fingerprint: Fingerprint,
     pub created_at: UnixEpochSeconds,
-    pub expires_at: UnixEpochSeconds,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -85,7 +82,6 @@ impl Db {
             w.open_table(REFRESH).map_err(db_err)?;
             w.open_table(MINTED).map_err(db_err)?;
             w.open_table(ROOTS).map_err(db_err)?;
-            w.open_table(REVOKED).map_err(db_err)?;
             w.open_table(OAUTH_CLIENTS).map_err(db_err)?;
         }
         w.commit().map_err(db_err)?;
@@ -321,89 +317,6 @@ impl Db {
             drop(minted);
             let mut roots = w.open_table(ROOTS).map_err(db_err)?;
             roots.remove(owner_key.as_str()).map_err(db_err)?;
-        }
-        w.commit().map_err(db_err)?;
-        Ok(())
-    }
-
-    /// Tombstones every caveat until `until` and drops every named ledger row,
-    /// in one write.
-    pub fn withdraw(
-        &self,
-        dead: &[Caveat],
-        rows: &[MacaroonId],
-        until: UnixEpochSeconds,
-    ) -> Result<()> {
-        let w = self.inner.begin_write().map_err(db_err)?;
-        {
-            let mut revoked = w.open_table(REVOKED).map_err(db_err)?;
-            for caveat in dead {
-                revoked
-                    .insert(caveat.to_string().as_str(), until.as_secs())
-                    .map_err(db_err)?;
-            }
-            drop(revoked);
-            let mut minted = w.open_table(MINTED).map_err(db_err)?;
-            for id in rows {
-                minted.remove(id.as_str()).map_err(db_err)?;
-            }
-        }
-        w.commit().map_err(db_err)?;
-        Ok(())
-    }
-
-    pub fn is_revoked(&self, caveat: &Caveat) -> Result<bool> {
-        let r = self.inner.begin_read().map_err(db_err)?;
-        let t = r.open_table(REVOKED).map_err(db_err)?;
-        Ok(t.get(caveat.to_string().as_str())
-            .map_err(db_err)?
-            .is_some())
-    }
-
-    /// Drops every expired refresh record, ledger row and revocation.
-    pub fn sweep(&self, now: UnixEpochSeconds) -> Result<()> {
-        let dead_refresh: Vec<String> = self
-            .rows::<RefreshRecord>(REFRESH)?
-            .into_iter()
-            .filter(|(_, rec)| now >= rec.expires_at)
-            .map(|(k, _)| k)
-            .collect();
-        let dead_minted: Vec<String> = self
-            .rows::<MintRecord>(MINTED)?
-            .into_iter()
-            .filter(|(_, rec)| now >= rec.expires_at)
-            .map(|(k, _)| k)
-            .collect();
-        let mut dead_revoked: Vec<String> = Vec::new();
-        {
-            let r = self.inner.begin_read().map_err(db_err)?;
-            let t = r.open_table(REVOKED).map_err(db_err)?;
-            for row in t.iter().map_err(db_err)? {
-                let (k, v) = row.map_err(db_err)?;
-                if now.as_secs() >= v.value() {
-                    dead_revoked.push(k.value().to_string());
-                }
-            }
-        }
-        if dead_refresh.is_empty() && dead_minted.is_empty() && dead_revoked.is_empty() {
-            return Ok(());
-        }
-        let w = self.inner.begin_write().map_err(db_err)?;
-        {
-            let mut refresh = w.open_table(REFRESH).map_err(db_err)?;
-            for k in &dead_refresh {
-                refresh.remove(k.as_str()).map_err(db_err)?;
-            }
-            drop(refresh);
-            let mut minted = w.open_table(MINTED).map_err(db_err)?;
-            for k in &dead_minted {
-                minted.remove(k.as_str()).map_err(db_err)?;
-            }
-            drop(minted);
-            let mut revoked = w.open_table(REVOKED).map_err(db_err)?;
-            for k in &dead_revoked {
-                revoked.remove(k.as_str()).map_err(db_err)?;
-            }
         }
         w.commit().map_err(db_err)?;
         Ok(())

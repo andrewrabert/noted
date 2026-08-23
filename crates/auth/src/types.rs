@@ -1,5 +1,3 @@
-use std::net::IpAddr;
-
 use serde::{Deserialize, Serialize};
 
 use noted::error::{Result, rejected};
@@ -43,34 +41,6 @@ impl LoginName {
     pub fn candidate_username(&self) -> Result<Username> {
         Username::new(self.0.clone())
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct LoginPeerIp(IpAddr);
-
-impl LoginPeerIp {
-    pub const fn accepted(value: IpAddr) -> LoginPeerIp {
-        LoginPeerIp(value)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct LoginSourceId(String);
-
-impl LoginSourceId {
-    pub fn new(value: impl Into<String>) -> LoginSourceId {
-        LoginSourceId(value.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum LoginSource {
-    AcceptedTcpPeer(LoginPeerIp),
-    NonTcpAdapter(LoginSourceId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -308,19 +278,6 @@ impl OAuthAccessToken {
 
     pub fn expose(&self) -> &str {
         &self.0
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TokenLifetimeSeconds(i64);
-
-impl TokenLifetimeSeconds {
-    pub(crate) fn new(value: i64) -> TokenLifetimeSeconds {
-        TokenLifetimeSeconds(value)
-    }
-
-    pub fn as_secs(self) -> i64 {
-        self.0
     }
 }
 

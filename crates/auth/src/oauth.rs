@@ -1,8 +1,8 @@
 use crate::types::{
     AuthorizationCode, AuthorizationResponseType, AuthorizationTransactionId, ClientId,
     ClientState, CodeChallenge, CodeChallengeMethod, CodeVerifier, GrantedScope, LoginName,
-    LoginSource, OAuthAccessToken, OAuthTokenType, Password, RedirectUri, RefreshToken,
-    RequestedScope, SubmittedRedirectUri, TokenLifetimeSeconds,
+    OAuthAccessToken, OAuthTokenType, Password, RedirectUri, RefreshToken,
+    RequestedScope, SubmittedRedirectUri,
 };
 use noted::error::{Result, rejected};
 use noted::types::UnixEpochSeconds;
@@ -16,23 +16,14 @@ use engine::ProtocolState;
 pub struct OAuthProtocol {
     service: std::sync::Arc<crate::service::AuthService>,
     state: std::sync::Mutex<ProtocolState>,
-    clock: std::sync::Arc<dyn engine::Clock>,
 }
 
 impl OAuthProtocol {
     pub fn open(service: std::sync::Arc<crate::service::AuthService>) -> Result<OAuthProtocol> {
-        Self::open_with_clock(service, std::sync::Arc::new(engine::SystemClock))
-    }
-
-    fn open_with_clock(
-        service: std::sync::Arc<crate::service::AuthService>,
-        clock: std::sync::Arc<dyn engine::Clock>,
-    ) -> Result<OAuthProtocol> {
         let state = engine::open(service.clone())?;
         Ok(OAuthProtocol {
             service,
             state: std::sync::Mutex::new(state),
-            clock,
         })
     }
 
@@ -46,18 +37,18 @@ impl OAuthProtocol {
             Ok(state) => state,
             Err(_) => return BeginAuthorizationOutcome::ServerError,
         };
-        engine::begin_authorization(&mut state, request, self.clock.as_ref())
+        engine::begin_authorization(&mut state, request)
     }
 
     pub fn authorization_status(
         &self,
         transaction: &AuthorizationTransactionId,
     ) -> AuthorizationStatus {
-        let mut state = match self.state.lock() {
+        let state = match self.state.lock() {
             Ok(state) => state,
-            Err(_) => return AuthorizationStatus::ExpiredOrInvalid,
+            Err(_) => return AuthorizationStatus::Unknown,
         };
-        engine::authorization_status(&mut state, transaction, self.clock.as_ref())
+        engine::authorization_status(&state, transaction)
     }
 
     pub fn authorize_login(&self, login: AuthorizationLogin) -> AuthorizationLoginOutcome {
@@ -65,7 +56,7 @@ impl OAuthProtocol {
             Ok(state) => state,
             Err(_) => return AuthorizationLoginOutcome::ServerError,
         };
-        engine::authorize_login(&mut state, login, self.clock.as_ref())
+        engine::authorize_login(&mut state, login)
     }
 
     pub fn exchange_token(&self, request: TokenRequest) -> TokenOutcome {
@@ -188,7 +179,6 @@ pub struct AuthorizationLogin {
     transaction: AuthorizationTransactionId,
     name: LoginName,
     password: Password,
-    source: LoginSource,
 }
 
 impl AuthorizationLogin {
@@ -196,13 +186,11 @@ impl AuthorizationLogin {
         transaction: AuthorizationTransactionId,
         name: LoginName,
         password: Password,
-        source: LoginSource,
     ) -> AuthorizationLogin {
         AuthorizationLogin {
             transaction,
             name,
             password,
-            source,
         }
     }
 }
@@ -272,22 +260,20 @@ pub enum BeginAuthorizationOutcome {
     LoginRequired(AuthorizationTransactionId),
     Redirect(AuthorizationRedirect),
     InvalidRequest,
-    TemporarilyUnavailable,
     ServerError,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuthorizationStatus {
     Pending,
-    ExpiredOrInvalid,
+    Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuthorizationLoginOutcome {
     Redirect(AuthorizationRedirect),
-    ExpiredOrInvalid,
+    Unknown,
     InvalidCredentials,
-    Throttled,
     InvalidRequest,
     ServerError,
 }
@@ -311,7 +297,6 @@ pub struct OAuthTokens {
     access_token: OAuthAccessToken,
     refresh_token: RefreshToken,
     token_type: OAuthTokenType,
-    lifetime: TokenLifetimeSeconds,
     scope: GrantedScope,
 }
 
@@ -324,9 +309,6 @@ impl OAuthTokens {
     }
     pub fn token_type(&self) -> &OAuthTokenType {
         &self.token_type
-    }
-    pub fn lifetime(&self) -> TokenLifetimeSeconds {
-        self.lifetime
     }
     pub fn scope(&self) -> &GrantedScope {
         &self.scope
@@ -344,17 +326,14 @@ pub enum TokenOutcome {
 mod tests {
     use std::sync::Arc;
 
-    use noted::types::Ttl;
-
     use super::*;
 
     #[test]
     fn poisoned_protocol_state_maps_token_exchange_to_server_error() {
         let directory = tempfile::tempdir().unwrap();
-        let service = Arc::new(crate::service::AuthService::new(
-            Arc::new(crate::db::Db::open(&directory.path().join("auth.redb")).unwrap()),
-            Ttl::from_secs(3600),
-        ));
+        let service = Arc::new(crate::service::AuthService::new(Arc::new(
+            crate::db::Db::open(&directory.path().join("auth.redb")).unwrap(),
+        )));
         let protocol = Arc::new(OAuthProtocol::open(service).unwrap());
         let poisoner = Arc::clone(&protocol);
 

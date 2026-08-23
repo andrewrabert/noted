@@ -196,11 +196,10 @@ async fn mcp_refuses_a_write_the_policy_denies() {
 }
 
 #[tokio::test]
-async fn only_a_live_macaroon_of_this_server_reaches_a_tool() {
+async fn only_a_macaroon_of_this_server_reaches_a_tool() {
     let dir = common::fixture_dir();
     let svc = common::auth_service(&dir);
     let live = common::mint_key(&svc, PolicyFragment::default());
-    let doomed = common::mint_key(&svc, PolicyFragment::default());
     let app = common::origin_app(common::root(&dir), &svc).await;
 
     let probe = |tok: Option<String>| {
@@ -230,31 +229,6 @@ async fn only_a_live_macaroon_of_this_server_reaches_a_tool() {
             "{unparseable}"
         );
     }
-    assert_eq!(probe(Some(doomed.clone())).await, StatusCode::OK);
-    let (s, _) = post_json(
-        &app,
-        "/macaroon/revoke",
-        Some(&doomed),
-        &json!({"id": token_id(&doomed)}),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    assert_eq!(probe(Some(doomed)).await, StatusCode::UNAUTHORIZED);
-}
-
-/// The `token_id=` caveat the server stamped on a credential it minted.
-fn token_id(bearer: &str) -> String {
-    let macaroon = noted_auth::Macaroon::from_encoded(bearer.to_string()).unwrap();
-    macaroon
-        .caveats()
-        .unwrap()
-        .into_iter()
-        .rev()
-        .find_map(|caveat| match caveat {
-            noted_auth::credential::Caveat::Token(id) => Some(id.as_str().to_string()),
-            _ => None,
-        })
-        .expect("a minted credential carries a token id")
 }
 
 #[tokio::test]

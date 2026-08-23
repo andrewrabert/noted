@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use noted::error::{Result, io_error, json_error, unavailable};
-use noted::types::UnixEpochSeconds;
 use noted::util::atomic_write;
 use noted::{Bearer, HttpUrl};
 use noted_auth::types::{ClientId, RefreshToken};
@@ -15,7 +14,6 @@ pub struct Credential {
     pub client_id: ClientId,
     pub access_token: Bearer,
     pub refresh_token: Option<RefreshToken>,
-    pub expires_at: Option<UnixEpochSeconds>,
 }
 
 #[derive(Clone, Debug)]
@@ -37,8 +35,6 @@ struct Secret {
     access_token: Bearer,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     refresh_token: Option<RefreshToken>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    expires_at: Option<UnixEpochSeconds>,
 }
 
 trait SecretBackend: Send + Sync {
@@ -173,7 +169,6 @@ impl CredentialStore {
             client_id: ptr.client_id.clone(),
             access_token: secret.access_token,
             refresh_token: secret.refresh_token,
-            expires_at: secret.expires_at,
         }))
     }
 
@@ -191,7 +186,6 @@ impl CredentialStore {
         let secret = Secret {
             access_token: cred.access_token.clone(),
             refresh_token: cred.refresh_token.clone(),
-            expires_at: cred.expires_at,
         };
         let blob = serde_json::to_string(&secret).map_err(|e| json_error("credential", e))?;
         self.backend.set(url, &blob)

@@ -1,23 +1,21 @@
 use std::sync::Arc;
 
-use noted::types::Ttl;
 use noted_auth::oauth::{
     AuthorizationLogin, AuthorizationLoginOutcome, AuthorizationRequest, AuthorizationStatus,
     BeginAuthorizationOutcome, OAuthProtocol, RegisterOAuthClient,
 };
 use noted_auth::types::{
     AuthorizationResponseType, ClientId, ClientState, CodeChallenge, CodeChallengeMethod,
-    LoginName, LoginSource, LoginSourceId, Password, RedirectUri, RequestedScope,
+    LoginName, Password, RedirectUri, RequestedScope,
     SubmittedRedirectUri, Username,
 };
 use noted_auth::{AuthService, Db};
 
 fn protocol() -> (tempfile::TempDir, OAuthProtocol, ClientId) {
     let dir = tempfile::tempdir().unwrap();
-    let service = Arc::new(AuthService::new(
-        Arc::new(Db::open(&dir.path().join("auth.redb")).unwrap()),
-        Ttl::from_secs(3600),
-    ));
+    let service = Arc::new(AuthService::new(Arc::new(
+        Db::open(&dir.path().join("auth.redb")).unwrap(),
+    )));
     service
         .user_add(&Username::new("alice").unwrap(), &Password::new("correct"))
         .unwrap();
@@ -108,7 +106,7 @@ fn invalid_authorization_requests_keep_the_existing_redirect_or_invalid_request_
 }
 
 #[test]
-fn pending_authorizations_stop_at_1024_and_unknown_transactions_are_invalid() {
+fn parking_past_1024_drops_the_oldest_and_unknown_transactions_are_unknown() {
     let (_dir, protocol, client_id) = protocol();
     let BeginAuthorizationOutcome::LoginRequired(first) =
         protocol.begin_authorization(request(client_id.clone(), None))
@@ -125,47 +123,40 @@ fn pending_authorizations_stop_at_1024_and_unknown_transactions_are_invalid() {
             BeginAuthorizationOutcome::LoginRequired(_)
         ));
     }
-    assert_eq!(
+    assert!(matches!(
         protocol.begin_authorization(request(client_id, None)),
-        BeginAuthorizationOutcome::TemporarilyUnavailable
+        BeginAuthorizationOutcome::LoginRequired(_)
+    ));
+    assert_eq!(
+        protocol.authorization_status(&first),
+        AuthorizationStatus::Unknown
     );
     assert_eq!(
         protocol.authorization_status(&noted_auth::types::AuthorizationTransactionId::submitted(
             "missing"
         )),
-        AuthorizationStatus::ExpiredOrInvalid
+        AuthorizationStatus::Unknown
     );
 }
 
 #[test]
-fn invalid_and_throttled_logins_keep_the_transaction_but_success_consumes_it() {
+fn invalid_logins_keep_the_transaction_but_success_consumes_it() {
     let (_dir, protocol, client_id) = protocol();
     let BeginAuthorizationOutcome::LoginRequired(transaction) =
         protocol.begin_authorization(request(client_id.clone(), None))
     else {
         panic!("valid authorization was not parked");
     };
-    let source = LoginSource::NonTcpAdapter(LoginSourceId::new("first"));
     for _ in 0..5 {
         assert_eq!(
             protocol.authorize_login(AuthorizationLogin::new(
                 transaction.clone(),
                 LoginName::submitted("alice"),
                 Password::new("wrong"),
-                source.clone(),
             )),
             AuthorizationLoginOutcome::InvalidCredentials
         );
     }
-    assert_eq!(
-        protocol.authorize_login(AuthorizationLogin::new(
-            transaction.clone(),
-            LoginName::submitted("alice"),
-            Password::new("wrong"),
-            source,
-        )),
-        AuthorizationLoginOutcome::Throttled
-    );
     assert_eq!(
         protocol.authorization_status(&transaction),
         AuthorizationStatus::Pending
@@ -181,12 +172,11 @@ fn invalid_and_throttled_logins_keep_the_transaction_but_success_consumes_it() {
             success.clone(),
             LoginName::submitted("alice"),
             Password::new("correct"),
-            LoginSource::NonTcpAdapter(LoginSourceId::new("second")),
         )),
         AuthorizationLoginOutcome::Redirect(_)
     ));
     assert_eq!(
         protocol.authorization_status(&success),
-        AuthorizationStatus::ExpiredOrInvalid
+        AuthorizationStatus::Unknown
     );
 }

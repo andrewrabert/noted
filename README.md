@@ -148,7 +148,6 @@ Four variables read differently by what the process is:
 | `NOTED_AUTH_DB`      | `--auth-db`      | -                     | Auth database; setting it enables auth.              |
 | `NOTED_ADMIN_SOCKET` | `--admin-socket` | -                     | Unix socket for live user/key admin (mode 0600).     |
 | `NOTED_PUBLIC_URL`   | `--public-url`   | -                     | External `https` base URL; enables the OAuth server. |
-| `NOTED_DEFAULT_TTL`  | `--default-ttl`  | `30d`                 | Default lifetime for issued credentials.             |
 | `NOTED_LOG_LEVEL`    | `--log-level`    | `INFO`                | Tracing filter: a level, or `EnvFilter` directives.  |
 | `NOTED_LOG_FILE`     | `--log-file`     | *(stderr)*            | Write logs to this file instead of stderr.           |
 | `NOTED_HOSTS_FILE`   | `--hosts-file`   | `~/.config/noted/hosts.json` | Credential metadata path; setting it forces plaintext secret storage. |
@@ -165,12 +164,10 @@ A macaroon is the only bearer a server accepts. `POST /token` returns one for a 
 and its own token id.
 
 Every credential a server hands out descends from the credential that server holds, so
-the tree of them narrows downward and never widens. Revoking reaches only downward — a
-relay withdraws only what it minted — and an open origin, holding no auth database,
-honors no revocation at all.
+the tree of them narrows downward and never widens. Nothing a server issues expires.
 
 - A **user** logs in with username + password (OAuth flow / claude.ai).
-- An **API key** is a scoped, expiring macaroon identified by its `token-id`.
+- An **API key** is a scoped macaroon identified by its `token-id`.
 
 Both carry a **policy**: a scope plus per-path read/write entries. Every policy flag
 builds one fragment — `--scope` anchors it, `--in /path=read,write` names an entry, `--in
@@ -200,7 +197,7 @@ from the scope, except one at or under `Log` or `Tasks`, which names that region
 scope `/dev`, `--in /Tasks=read` is `Tasks/dev` and `--in /Log=write` is `Log/dev`.
 
 A user's policy is edited in place; a key's is fixed at its mint, so narrowing one means
-minting another and revoking the old. Both can mint narrowed child credentials (see
+minting another. Both can mint narrowed child credentials (see
 [Delegation](#delegation)).
 
 ```sh
@@ -208,29 +205,22 @@ noted server user add myname                             # prompts for a passwor
 noted server user passwd myname                          # change a password
 noted server user policy ar --scope /dev --in /secrets=  # set the whole fragment
 noted server user list                                   # every user, with its policy
-noted server user revoke ar                              # withdraws ar's credentials
 noted server user remove ar                              # drops the user and everything under it
 noted server key create --scope /dev/myproject           # prints the macaroon on stdout
-noted server key create --in /= --in /Log=write --ttl 90d
-noted server key list                                    # token-id, fingerprint, expiry, policy
-noted server key revoke --id <token-id>                  # withdraws one live key
+noted server key create --in /= --in /Log=write
+noted server key list                                    # token-id, fingerprint, policy
 ```
 
 ## Delegation
 
-Hand an agent limited access by minting a short-lived credential from your stored login.
-It can only narrow the login's scope, never widen it, and it tracks the parent: narrow or
-revoke the login and every child narrows or dies with it.
-
-A revocation reaches only what the server records having minted, and answers with the
-names it withdrew — one that names nothing the server minted is an error.
+Hand an agent limited access by minting a credential from your stored login. It can only
+narrow the login's scope, never widen it, and it tracks the parent: narrow the login and
+every child narrows with it. Removing the user drops every credential under it.
 
 ```sh
 noted auth login --url https://notes.example.com         # browser OAuth; stores the login
-noted auth status                                        # who the stored login is, and until when
-noted auth mint --ttl 1h --scope /dev/myproject --in /=read --in /Tasks=read,write
-noted auth revoke <token-id>                             # withdraws one minted credential
-noted auth revoke --all                                  # withdraws every child
+noted auth status                                        # who the stored login is
+noted auth mint --scope /dev/myproject --in /=read --in /Tasks=read,write
 noted auth logout                                        # drops the stored login
 ```
 

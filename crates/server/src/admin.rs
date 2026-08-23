@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use noted::error::{Result, json_error};
-use noted_auth::administration::{
-    AdminCommand, AdminCredentialLifetime, AdminOutcome, Administration,
-};
+use noted_auth::administration::{AdminCommand, AdminOutcome, Administration};
 use noted_auth::types::{Password, Username};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -34,20 +32,13 @@ enum AdminRequest {
     UserGet {
         name: String,
     },
-    UserRevoke {
-        name: String,
-    },
     UserRemove {
         name: String,
     },
     KeyCreate {
         policy: noted::PolicyFragment,
-        ttl: Option<noted::types::Ttl>,
     },
     KeyList,
-    KeyRevoke {
-        by: noted_auth::authority::Revoke,
-    },
 }
 
 #[derive(Serialize)]
@@ -87,20 +78,11 @@ impl AdminRequest {
             AdminRequest::UserGet { name } => AdminCommand::GetUser {
                 username: Username::new(name)?,
             },
-            AdminRequest::UserRevoke { name } => AdminCommand::RevokeUser {
-                username: Username::new(name)?,
-            },
             AdminRequest::UserRemove { name } => AdminCommand::RemoveUser {
                 username: Username::new(name)?,
             },
-            AdminRequest::KeyCreate { policy, ttl } => AdminCommand::CreateKey {
-                policy,
-                lifetime: ttl
-                    .map(AdminCredentialLifetime::Explicit)
-                    .unwrap_or(AdminCredentialLifetime::Default),
-            },
+            AdminRequest::KeyCreate { policy } => AdminCommand::CreateKey { policy },
             AdminRequest::KeyList => AdminCommand::ListKeys,
-            AdminRequest::KeyRevoke { by } => AdminCommand::RevokeKey { revocation: by },
         })
     }
 }
@@ -120,10 +102,8 @@ impl AdminResponse {
                     "macaroon": minted.macaroon.expose(),
                     "token_id": minted.token_id,
                     "fingerprint": minted.fingerprint,
-                    "expires_at": minted.expires_at,
                 }),
                 AdminOutcome::Credentials(credentials) => to_value(credentials)?,
-                AdminOutcome::Withdrawn(withdrawn) => to_value(withdrawn)?,
             })
         }) {
             Ok(value) => AdminResponse::Ok(value),

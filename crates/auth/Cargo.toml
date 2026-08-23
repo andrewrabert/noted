@@ -14,7 +14,6 @@ publish = false
 chrono = { workspace = true }
 noted-core = { workspace = true }
 oxide-auth = "0.6"
-governor = "0.10"
 macaroon = "0.3"
 rand = "0.10"
 redb = "4"

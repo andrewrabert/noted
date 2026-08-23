@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
-    Extension, Json, Router,
+    Json, Router,
     body::Bytes,
-    extract::{ConnectInfo, RawQuery, State},
-    http::{HeaderMap, StatusCode},
+    extract::{RawQuery, State},
+    http::StatusCode,
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
@@ -17,7 +17,6 @@ use noted_auth::service::AuthService;
 use noted_auth::types::{AuthorizationTransactionId, LoginName, Password, RedirectUri};
 
 use crate::auth::run_blocking;
-pub(crate) mod login;
 pub(crate) mod presentation;
 const REDIRECT_URIS: &str = "redirect_uris";
 const TOKEN_AUTH: &str = "token_endpoint_auth_method";
@@ -260,7 +259,7 @@ async fn login_get(State(state): State<AuthState>, RawQuery(raw): RawQuery) -> R
         Ok(status) => status,
         Err(error) => {
             tracing::error!(%error, "oauth login status task failed");
-            noted_auth::oauth::AuthorizationStatus::ExpiredOrInvalid
+            noted_auth::oauth::AuthorizationStatus::Unknown
         }
     };
     match status {
@@ -269,9 +268,9 @@ async fn login_get(State(state): State<AuthState>, RawQuery(raw): RawQuery) -> R
             None,
         ))
         .into_response(),
-        noted_auth::oauth::AuthorizationStatus::ExpiredOrInvalid => (
+        noted_auth::oauth::AuthorizationStatus::Unknown => (
             StatusCode::BAD_REQUEST,
-            Html(presentation::login_page("", Some("expired or invalid"))),
+            Html(presentation::login_page("", Some("unknown login request"))),
         )
             .into_response(),
     }
@@ -279,8 +278,6 @@ async fn login_get(State(state): State<AuthState>, RawQuery(raw): RawQuery) -> R
 
 async fn login_post(
     State(state): State<AuthState>,
-    peer: Option<Extension<ConnectInfo<std::net::SocketAddr>>>,
-    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let p = provider(&state);
@@ -288,7 +285,6 @@ async fn login_post(
     let txn = form.get("txn").cloned().unwrap_or_default();
     let name = LoginName::submitted(form.get("username").cloned().unwrap_or_default());
     let password = Password::new(form.get("password").cloned().unwrap_or_default());
-    let source = login::source(peer.map(|Extension(ConnectInfo(peer))| peer), &headers);
     let transaction = AuthorizationTransactionId::submitted(txn.clone());
     let protocol = p.protocol.clone();
     let outcome = match run_blocking(move || {
@@ -296,7 +292,6 @@ async fn login_post(
             transaction,
             name,
             password,
-            source,
         ))
     })
     .await

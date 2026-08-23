@@ -6,7 +6,6 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 
 use noted::error::{Result, io_error, rejected, unavailable};
 use noted::tools::{DeleteArgs, EditArgs, MoveArgs, ReadArgs, SearchNotesArgs, WriteArgs};
-use noted_auth::service::DEFAULT_CREDENTIAL_TTL;
 use noted_server::serve::{Bind, HttpConfig, StdioConfig};
 #[cfg(unix)]
 use noted_server::socket::{SocketBind, SocketEnv};
@@ -143,8 +142,6 @@ enum ServerSub {
 struct ServerArgs {
     #[command(flatten)]
     auth: AuthPaths,
-    #[arg(long = "default-ttl")]
-    default_ttl: Option<String>,
     #[command(flatten)]
     entries: EntryFlags,
 }
@@ -152,21 +149,16 @@ struct ServerArgs {
 impl Flags for ServerArgs {
     fn write(&self, layer: &mut Layer) {
         self.auth.write(layer);
-        layer.set(Variable::DefaultTtl, self.default_ttl.as_deref());
     }
 }
 
 async fn initialized_auth(config: &Config) -> Result<Option<Arc<noted_auth::AuthService>>> {
-    let default_ttl = config.ttl(Variable::DefaultTtl, DEFAULT_CREDENTIAL_TTL)?;
     match config.setting(Variable::AuthDb).map(PathBuf::from) {
         Some(path) => Ok(Some(
             tokio::task::spawn_blocking(move || -> Result<Arc<noted_auth::AuthService>> {
-                let service = Arc::new(noted_auth::AuthService::new(
-                    Arc::new(noted_auth::Db::open(&path)?),
-                    default_ttl,
-                ));
-                service.sweep()?;
-                Ok(service)
+                Ok(Arc::new(noted_auth::AuthService::new(Arc::new(
+                    noted_auth::Db::open(&path)?,
+                ))))
             })
             .await
             .map_err(|error| unavailable(format!("cannot open auth database: {error}")))??,
@@ -360,27 +352,24 @@ mod tests {
                     #[cfg(unix)]
                     admin_socket: None,
                 },
-                default_ttl: None,
                 entries: EntryFlags::default(),
             },
         }
     }
 
     #[tokio::test]
-    async fn http_config_contains_initialized_authentication_with_the_resolved_lifetime() {
+    async fn http_config_contains_initialized_authentication() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("auth.redb");
         let http = serve_command()
             .into_config(&config(&[
                 (Variable::Dir, dir.path().to_str().unwrap()),
                 (Variable::AuthDb, path.to_str().unwrap()),
-                (Variable::DefaultTtl, "17m"),
             ]))
             .await
             .unwrap();
-        let authentication = http.authentication.unwrap();
 
-        assert_eq!(authentication.default_ttl().as_secs(), 17 * 60);
+        assert!(http.authentication.is_some());
         assert!(path.is_file());
     }
 

@@ -1,4 +1,4 @@
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 
 use noted::error::{Result, rejected, unavailable};
 
@@ -33,21 +33,6 @@ pub(crate) async fn confirm(question: &str) -> bool {
     })
     .await;
     answered.unwrap_or(false)
-}
-
-/// Reads one line from stdin. `None` when stdin is a terminal.
-pub(crate) async fn piped_line() -> Result<Option<String>> {
-    blocking(|| {
-        if std::io::stdin().is_terminal() {
-            return Ok(None);
-        }
-        let mut line = String::new();
-        std::io::stdin()
-            .read_line(&mut line)
-            .map_err(|e| rejected(format!("read stdin: {e}")))?;
-        Ok(Some(line.trim().to_string()))
-    })
-    .await
 }
 
 async fn blocking<T, F>(f: F) -> Result<T>

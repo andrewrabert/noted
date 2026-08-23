@@ -4,11 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use noted::PolicyFragment;
-use noted::types::Ttl;
-use noted_auth::administration::{
-    AdminCommand, AdminCredentialLifetime, AdminOutcome, Administration,
-};
-use noted_auth::authority::{OriginAuthority, Revoke};
+use noted_auth::administration::{AdminCommand, AdminOutcome, Administration};
+use noted_auth::authority::OriginAuthority;
 use noted_auth::types::{Password, Username};
 use noted_auth::{AuthService, Db};
 use noted_client::admin::AdminConnection;
@@ -77,13 +74,6 @@ fn every_command() -> Vec<(AdminCommand, &'static str, &'static str)> {
             r#"{"ok":{"user":{"name":"alice","policy":{},"created_at":1},"credentials":[]}}"#,
         ),
         (
-            AdminCommand::RevokeUser {
-                username: Username::new("alice").unwrap(),
-            },
-            r#"{"op":"user_revoke","name":"alice"}"#,
-            r#"{"ok":{"revoked":[]}}"#,
-        ),
-        (
             AdminCommand::RemoveUser {
                 username: Username::new("alice").unwrap(),
             },
@@ -93,9 +83,8 @@ fn every_command() -> Vec<(AdminCommand, &'static str, &'static str)> {
         (
             AdminCommand::CreateKey {
                 policy: PolicyFragment::default(),
-                lifetime: AdminCredentialLifetime::Default,
             },
-            r#"{"op":"key_create","policy":{},"ttl":null}"#,
+            r#"{"op":"key_create","policy":{}}"#,
             r#"{"error":{"kind":"rejected","message":"fixture"}}"#,
         ),
         (
@@ -103,29 +92,18 @@ fn every_command() -> Vec<(AdminCommand, &'static str, &'static str)> {
             r#"{"op":"key_list"}"#,
             r#"{"ok":[]}"#,
         ),
-        (
-            AdminCommand::RevokeKey {
-                revocation: Revoke::Token("token".parse().unwrap()),
-            },
-            r#"{"op":"key_revoke","by":{"Token":"token"}}"#,
-            r#"{"ok":{"revoked":[]}}"#,
-        ),
     ]
 }
 
 async fn minted_response(path: &Path) -> Value {
     let auth_db = path.join("mint.redb");
     tokio::task::spawn_blocking(move || {
-        let service = Arc::new(AuthService::new(
-            Arc::new(Db::open(&auth_db).unwrap()),
-            Ttl::from_secs(3600),
-        ));
+        let service = Arc::new(AuthService::new(Arc::new(Db::open(&auth_db).unwrap())));
         let authority = Arc::new(OriginAuthority::new(service.clone()));
         let admin = Administration::new(service, authority);
         let AdminOutcome::Minted(minted) = admin
             .execute(AdminCommand::CreateKey {
                 policy: PolicyFragment::default(),
-                lifetime: AdminCredentialLifetime::Default,
             })
             .unwrap()
         else {
@@ -136,7 +114,6 @@ async fn minted_response(path: &Path) -> Value {
                 "macaroon": minted.macaroon.expose(),
                 "token_id": minted.token_id,
                 "fingerprint": minted.fingerprint,
-                "expires_at": minted.expires_at,
             }
         })
     })
@@ -179,16 +156,12 @@ async fn every_admin_response_decodes_to_the_typed_outcome() {
                 .to_string(),
         ),
         (
-            r#"{"op":"key_create","policy":{},"ttl":60}"#.to_string(),
+            r#"{"op":"key_create","policy":{}}"#.to_string(),
             minted.to_string(),
         ),
         (
             r#"{"op":"key_list"}"#.to_string(),
             r#"{"ok":[]}"#.to_string(),
-        ),
-        (
-            r#"{"op":"user_revoke","name":"alice"}"#.to_string(),
-            r#"{"ok":{"revoked":[]}}"#.to_string(),
         ),
     ];
     let (socket, peer) = scripted_peer(&dir, exchanges).await;
@@ -215,7 +188,6 @@ async fn every_admin_response_decodes_to_the_typed_outcome() {
     let AdminOutcome::Minted(minted) = connection
         .call(AdminCommand::CreateKey {
             policy: PolicyFragment::default(),
-            lifetime: AdminCredentialLifetime::Explicit(Ttl::from_secs(60)),
         })
         .await
         .unwrap()
@@ -227,19 +199,6 @@ async fn every_admin_response_decodes_to_the_typed_outcome() {
         connection.call(AdminCommand::ListKeys).await.unwrap(),
         AdminOutcome::Credentials(credentials) if credentials.is_empty()
     ));
-    let AdminOutcome::Withdrawn(withdrawn) = connection
-        .call(AdminCommand::RevokeUser {
-            username: Username::new("alice").unwrap(),
-        })
-        .await
-        .unwrap()
-    else {
-        panic!("withdrawn outcome")
-    };
-    assert_eq!(
-        serde_json::to_value(withdrawn).unwrap(),
-        json!({"revoked": []})
-    );
     peer.await.unwrap();
 }
 

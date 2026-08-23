@@ -5,7 +5,6 @@ use noted_cli::settings::{Layer, Location, Settings, Variable};
 const EVERY: &[Variable] = &[
     Variable::AdminSocket,
     Variable::AuthDb,
-    Variable::DefaultTtl,
     Variable::Dir,
     Variable::Editor,
     Variable::EnvFile,
