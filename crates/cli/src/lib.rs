@@ -61,9 +61,9 @@ fn start() -> Result<ExitCode> {
 
 #[derive(Parser)]
 #[command(
-    name = "noted",
+    name = noted::APP_NAME,
     about = "A tree of .md notes as a CLI, MCP server, and HTTP API",
-    version
+    version = noted::APP_VERSION
 )]
 struct Cli {
     #[command(flatten)]

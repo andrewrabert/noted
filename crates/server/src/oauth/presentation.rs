@@ -120,10 +120,10 @@ pub(super) fn login_page(transaction: &str, error: Option<&str>) -> String {
         html {
             head {
                 meta charset="utf-8";
-                title { "noted sign in" }
+                title { (noted::APP_NAME) " sign in" }
             }
             body style="font-family:sans-serif;max-width:22rem;margin:4rem auto" {
-                h1 { "noted" }
+                h1 { (noted::APP_NAME) }
                 @if let Some(error) = error {
                     p style="color:#c00" { (error) }
                 }

@@ -17,7 +17,7 @@ use crate::auth::AuthState;
 use crate::mcp::McpContext;
 use crate::relay::Relay;
 use noted::error::NotedError;
-use noted::{NotedRoot, PolicyFragment, ToolCall};
+use noted::{APP_NAME, NotedRoot, PolicyFragment, ToolCall};
 use noted_auth::{Denial, Verified};
 use url::form_urlencoded;
 
@@ -31,7 +31,7 @@ static DOCUMENT: LazyLock<String> = LazyLock::new(|| {
          <head>\
          <meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <title>noted</title>\
+         <title>{APP_NAME}</title>\
          <style>html,body{{margin:0;height:100%;overflow:hidden;background:#1a1b26}}</style>\
          </head>\
          <body>\

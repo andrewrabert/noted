@@ -250,7 +250,7 @@ async fn mcp_initialize_list_and_call() {
     let app = common::open_app(&dir);
 
     let init = mcp_post(&app, &init_msg()).await;
-    assert_eq!(init["result"]["serverInfo"]["name"], "noted");
+    assert_eq!(init["result"]["serverInfo"]["name"], noted::APP_NAME);
     assert!(
         init["result"]["instructions"]
             .as_str()

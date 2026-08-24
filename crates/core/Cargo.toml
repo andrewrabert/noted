@@ -13,6 +13,9 @@ publish = false
 [lib]
 name = "noted"
 
+[build-dependencies]
+vergen-gix = { workspace = true }
+
 [dependencies]
 base64 = "0.23"
 chrono = { workspace = true }

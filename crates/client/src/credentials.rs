@@ -51,19 +51,19 @@ impl SecretBackend for Keyring {
         "keyring"
     }
     fn get(&self, url: &str) -> Result<Option<String>> {
-        match keyring::Entry::new("noted", url).and_then(|e| e.get_password()) {
+        match keyring::Entry::new(noted::APP_NAME, url).and_then(|e| e.get_password()) {
             Ok(v) => Ok(Some(v)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(e) => Err(unavailable(format!("keyring: {e}"))),
         }
     }
     fn set(&self, url: &str, blob: &str) -> Result<()> {
-        keyring::Entry::new("noted", url)
+        keyring::Entry::new(noted::APP_NAME, url)
             .and_then(|e| e.set_password(blob))
             .map_err(|e| unavailable(format!("keyring: {e}")))
     }
     fn remove(&self, url: &str) -> Result<()> {
-        match keyring::Entry::new("noted", url).and_then(|e| e.delete_credential()) {
+        match keyring::Entry::new(noted::APP_NAME, url).and_then(|e| e.delete_credential()) {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(unavailable(format!("keyring: {e}"))),
         }
@@ -227,7 +227,7 @@ fn secrets_path(hosts_path: &std::path::Path) -> PathBuf {
 }
 
 fn keyring_available() -> bool {
-    match keyring::Entry::new("noted", "__probe__") {
+    match keyring::Entry::new(noted::APP_NAME, "__probe__") {
         Ok(e) => !matches!(
             e.get_password(),
             Err(keyring::Error::PlatformFailure(_)) | Err(keyring::Error::NoStorageAccess(_))

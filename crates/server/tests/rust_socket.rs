@@ -280,7 +280,10 @@ async fn a_picked_socket_lands_under_the_runtime_dir() {
     let dir = tempfile::tempdir().unwrap();
     let spec = SocketBind::Picked(env_at(Some(dir.path()), None));
     let (_listener, guard) = spec.bind().unwrap();
-    assert_eq!(guard.path().parent().unwrap(), dir.path().join("noted"));
+    assert_eq!(
+        guard.path().parent().unwrap(),
+        dir.path().join(noted::APP_NAME)
+    );
     assert!(guard.path().exists());
 }
 
@@ -313,7 +316,7 @@ async fn a_picked_socket_is_bound_at_0600_and_unlinked_with_its_lock() {
     drop(listener);
     assert!(!path.exists());
     assert!(!lock.exists());
-    assert!(dir.path().join("noted").is_dir());
+    assert!(dir.path().join(noted::APP_NAME).is_dir());
 }
 
 #[tokio::test]
@@ -379,7 +382,7 @@ async fn a_created_base_directory_is_exactly_0700_and_reusable() {
 async fn a_base_directory_at_the_wrong_mode_is_refused_and_kept() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
-    let base = dir.path().join("noted");
+    let base = dir.path().join(noted::APP_NAME);
     std::fs::create_dir(&base).unwrap();
     std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o770)).unwrap();
 
@@ -393,7 +396,7 @@ async fn a_base_directory_at_the_wrong_mode_is_refused_and_kept() {
 #[tokio::test]
 async fn a_base_directory_that_is_not_a_directory_is_refused_and_kept() {
     let dir = tempfile::tempdir().unwrap();
-    let base = dir.path().join("noted");
+    let base = dir.path().join(noted::APP_NAME);
     std::fs::write(&base, b"payload").unwrap();
 
     let err = socket_base_dir(&env_at(Some(dir.path()), None)).unwrap_err();
@@ -412,11 +415,11 @@ async fn a_base_directory_under_a_root_that_denies_mkdir_is_refused() {
     let err = socket_base_dir(&env_at(Some(&root), None)).unwrap_err();
     assert!(
         err.message()
-            .contains(&root.join("noted").display().to_string()),
+            .contains(&root.join(noted::APP_NAME).display().to_string()),
         "{err}"
     );
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
-    assert!(!root.join("noted").exists());
+    assert!(!root.join(noted::APP_NAME).exists());
 }
 
 #[test]

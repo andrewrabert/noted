@@ -38,3 +38,6 @@ pub use tasks::TaskNote;
 pub use timerange::{TimeRange, TimeRangeBound};
 pub use types::Bearer;
 pub use upstream::{Reply, Transport, Upstream};
+
+pub const APP_NAME: &str = env!("CARGO_CRATE_NAME");
+pub const APP_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), env!("VERSION_SUFFIX"));

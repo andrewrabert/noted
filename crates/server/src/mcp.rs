@@ -13,9 +13,6 @@ use serde_json::Value;
 use noted::{NotedRoot, PolicyFragment, ToolCall};
 use noted_auth::Verified;
 
-pub const SERVER_NAME: &str = "noted";
-pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
-
 #[derive(Clone)]
 pub struct McpContext {
     pub root: NotedRoot,
@@ -77,7 +74,7 @@ impl McpContext {
 impl ServerHandler for McpContext {
     fn get_info(&self) -> ServerInfo {
         InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(SERVER_NAME, SERVER_VERSION))
+            .with_server_info(Implementation::new(noted::APP_NAME, noted::APP_VERSION))
             .with_instructions(self.root.instructions())
     }
 

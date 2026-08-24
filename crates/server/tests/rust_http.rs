@@ -377,7 +377,10 @@ async fn mcp_initialize_returns_server_info() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(json_body(&b)["result"]["serverInfo"]["name"], "noted");
+    assert_eq!(
+        json_body(&b)["result"]["serverInfo"]["name"],
+        noted::APP_NAME
+    );
 }
 
 #[tokio::test]

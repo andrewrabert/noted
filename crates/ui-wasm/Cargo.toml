@@ -1,6 +1,5 @@
 [package]
 name = "noted-ui-wasm"
-version = "0.1.0"
 authors = ["Andrew Rabert <ar@nullsum.net>"]
 description = "The noted web UI, compiled to WebAssembly and served by noted-server."
 edition = "2024"

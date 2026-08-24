@@ -798,7 +798,7 @@ fn labeled_input<'a>(
 pub fn run() -> iced::Result {
     clipboard::install();
     iced::application(State::new, update, view)
-        .title("noted")
+        .title(noted::APP_NAME)
         .theme(|state: &State| state.theme.clone())
         .run()
 }
