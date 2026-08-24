@@ -82,7 +82,6 @@ struct AuthServerMetadata {
     grant_types_supported: [&'static str; 2],
     token_endpoint_auth_methods_supported: [&'static str; 1],
     code_challenge_methods_supported: [&'static str; 1],
-    scopes_supported: [&'static str; 0],
 }
 
 #[derive(serde::Serialize)]
@@ -104,7 +103,6 @@ fn authorization_server_metadata(p: &OAuthProvider) -> AuthServerMetadata {
         grant_types_supported: ["authorization_code", "refresh_token"],
         token_endpoint_auth_methods_supported: ["none"],
         code_challenge_methods_supported: ["S256"],
-        scopes_supported: [],
     }
 }
 

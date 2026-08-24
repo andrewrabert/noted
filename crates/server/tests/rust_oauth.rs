@@ -669,6 +669,7 @@ async fn metadata_preserves_every_key_value_url_and_challenge_spelling() {
         metadata["registration_endpoint"],
         format!("{PUBLIC}/register")
     );
+    assert!(metadata.get("scopes_supported").is_none());
 }
 
 #[tokio::test]
