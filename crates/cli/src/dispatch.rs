@@ -8,8 +8,8 @@ use noted::ToolCall;
 use noted::error::Result;
 use noted::tasks::TaskState;
 use noted::tools::{
-    AttachToTaskArgs, CreateTaskArgs, GetLogArgs, GetTasksArgs, LogArgs, MoveTaskArgs,
-    SearchLogArgs, SearchTasksArgs, ToolArgs, ToolOutput, UpdateTaskArgs,
+    CreateTaskArgs, GetLogArgs, GetTasksArgs, LogArgs, MoveTaskArgs, SearchLogArgs,
+    SearchTasksArgs, ToolArgs, ToolOutput, UpdateTaskArgs,
 };
 
 use crate::config::Config;
@@ -28,7 +28,6 @@ enum TaskSub {
     Update(UpdateTaskArgs),
     #[command(name = "move")]
     Move(MoveTaskArgs),
-    Attach(AttachToTaskArgs),
     Search(SearchTasksArgs),
 }
 
@@ -98,7 +97,6 @@ pub(crate) fn build_task(cmd: TaskCmd) -> Result<Dispatch> {
         },
         TaskSub::Update(c) => passthrough_of(c)?,
         TaskSub::Move(c) => passthrough_of(c)?,
-        TaskSub::Attach(c) => passthrough_of(c)?,
         TaskSub::Search(c) => search(c)?,
     })
 }

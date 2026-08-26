@@ -74,7 +74,6 @@ pub struct TaskRow {
     pub state: Option<TaskState>,
     pub task: String,
     pub updated_at: String,
-    pub attachments: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -124,9 +123,6 @@ pub enum Message {
     CreateTask,
     DestGroupChanged(String),
     MoveTask,
-    AttachNameChanged(String),
-    AttachTextChanged(String),
-    AttachToTask,
     TaskChanged(Result<ToolOutput, String>),
 
     LogAction(text_editor::Action),
@@ -172,8 +168,6 @@ pub struct State {
     new_group: String,
     task_notes: text_editor::Content,
     dest_group: String,
-    attach_name: String,
-    attach_text: String,
 
     log: text_editor::Content,
     log_filter: String,
@@ -211,8 +205,6 @@ impl State {
             new_group: String::new(),
             task_notes: text_editor::Content::new(),
             dest_group: String::new(),
-            attach_name: String::new(),
-            attach_text: String::new(),
             log: text_editor::Content::new(),
             log_filter: String::new(),
             since: String::new(),
@@ -549,21 +541,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             ),
             None => Task::none(),
         },
-        Message::AttachNameChanged(name) => {
-            state.attach_name = name;
-            Task::none()
-        }
-        Message::AttachTextChanged(text) => {
-            state.attach_text = text;
-            Task::none()
-        }
-        Message::AttachToTask => match &state.selected_task {
-            Some(path) if !state.attach_name.is_empty() => call(
-                api::attach_to_task(path, &state.attach_name, &state.attach_text),
-                Message::TaskChanged,
-            ),
-            _ => Task::none(),
-        },
         Message::TaskChanged(Ok(_)) => update(state, Message::RefreshTasks),
         Message::TaskChanged(Err(e)) => {
             state.fail("cannot change the task", e);
@@ -672,7 +649,6 @@ fn task_rows(record: &serde_json::Value) -> Vec<TaskRow> {
                     state: TaskState::parse(&string_at(item, "state")),
                     task: string_at(item, "task"),
                     updated_at: string_at(item, "updated_at"),
-                    attachments: strings_at(item, "attachments"),
                 })
                 .collect()
         })
@@ -701,20 +677,6 @@ fn string_at(value: &serde_json::Value, key: &str) -> String {
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
         .to_string()
-}
-
-fn strings_at(value: &serde_json::Value, key: &str) -> Vec<String> {
-    value
-        .get(key)
-        .and_then(serde_json::Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn view(state: &State) -> Element<'_, Message> {

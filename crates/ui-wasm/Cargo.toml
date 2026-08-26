@@ -24,7 +24,6 @@ iced = { git = "https://github.com/iced-rs/iced", rev = "3c81aac2e1b48125efdf0c9
 ] }
 noted-core = { path = "../core" }
 noted-picker = { path = "../picker" }
-base64 = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

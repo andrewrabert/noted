@@ -10,7 +10,7 @@ use ignore::{IncrementalIgnore, WalkBuilder, WalkState};
 
 use crate::error::{NotedError, Result, io_error, rejected, unavailable};
 use crate::httpurl::HttpUrl;
-use crate::path::{Path, Reserved};
+use crate::path::Path;
 use crate::platform::Entry;
 use crate::search::{GlobPattern, SearchMode, SearchOrder, SearchQuery, build_matcher};
 use crate::store::RawHit;
@@ -351,7 +351,7 @@ pub(crate) async fn grep(
 fn relative(base: &StdPath, abs: &StdPath) -> Option<Path> {
     let cleaned = normalize(abs);
     let under = cleaned.strip_prefix(base).ok()?;
-    Path::stored(under.to_string_lossy().as_ref()).ok()
+    Path::new(under.to_string_lossy().as_ref()).ok()
 }
 
 fn ordered(hits: &mut [RawHit], order: SearchOrder) {
@@ -373,7 +373,7 @@ fn confine(wb: &mut WalkBuilder, from: &StdPath) {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy();
         let toward = from.starts_with(path);
-        let visible = toward || !name.starts_with('.') || name == Reserved::TaskBody.as_str();
+        let visible = toward || !name.starts_with('.');
         (toward || path.starts_with(&from)) && visible && !entry.path_is_symlink()
     });
 }

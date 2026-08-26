@@ -2,14 +2,13 @@ use std::cmp::Reverse;
 
 use crate::error::{NotedError, Result, rejected};
 use crate::note::{Condition, Note as _};
-use crate::path::{Path, Reserved};
+use crate::path::Path;
 use crate::regions::RegionStore;
 use crate::search::{Hit, assemble};
 use crate::tasks::{
-    AttachmentName, GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskTitle,
-    numbered,
+    GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskTitle, numbered,
 };
-use crate::types::{Base64Bytes, TaskBody};
+use crate::types::TaskBody;
 
 // how a claimed task name is filled
 #[derive(Clone, Copy)]
@@ -47,22 +46,10 @@ impl TaskTools {
         }
     }
 
-    // reads the markdown of either form and lists what sits beside it
     async fn read(&self, entry: &Path) -> Result<TaskNote> {
         let reference = TaskRef::of_entry(entry).ok_or_else(|| rejected("not a task"))?;
-        let body = self.region.body_of(entry, Reserved::TaskBody).await?;
-        let bytes = self.region.read(&body).await?;
-        let task = TaskNote::from_bytes(reference, &bytes).map_err(|_| rejected("not a task"))?;
-        Ok(task.with_attachments(self.attachments(entry).await))
-    }
-
-    async fn attachments(&self, entry: &Path) -> Vec<AttachmentName> {
-        let mut beside = self.region.files(entry).await;
-        beside.sort();
-        beside
-            .iter()
-            .filter_map(|at| AttachmentName::new(at.file_name()).ok())
-            .collect()
+        let bytes = self.region.read(entry).await?;
+        TaskNote::from_bytes(reference, &bytes).map_err(|_| rejected("not a task"))
     }
 
     async fn next_number(&self, dir: Option<&Path>) -> u64 {
@@ -192,9 +179,8 @@ impl TaskTools {
     ) -> Result<TaskNote> {
         let entry = self.entry_of(reference)?;
         let updated = self.existing(&entry).await?.changed(change)?;
-        let body = self.region.body_of(&entry, Reserved::TaskBody).await?;
         self.region
-            .write(&body, &updated.to_bytes(), Condition::Always)
+            .write(&entry, &updated.to_bytes(), Condition::Always)
             .await?;
         Ok(updated)
     }
@@ -226,26 +212,9 @@ impl TaskTools {
                 dest
             }
         };
-        let body = self.region.body_of(&dest, Reserved::TaskBody).await?;
         self.region
-            .write(&body, &relocated.to_bytes(), Condition::Always)
+            .write(&dest, &relocated.to_bytes(), Condition::Always)
             .await?;
         Ok(relocated.with_path(TaskTools::named_by(&dest)?))
-    }
-
-    // the attachment's Tasks-relative path
-    pub(super) async fn attach(
-        &self,
-        reference: &TaskRef,
-        name: &AttachmentName,
-        content: &Base64Bytes,
-    ) -> Result<Path> {
-        let entry = self.entry_of(reference)?;
-        self.existing(&entry).await?;
-        let file = entry.joined(name.as_str())?;
-        self.region
-            .attach(&entry, Reserved::TaskBody, &file, content.as_bytes())
-            .await?;
-        Ok(file)
     }
 }

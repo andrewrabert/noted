@@ -27,7 +27,7 @@ pub use endpoint::Endpoint;
 pub use error::{NotedError, Result};
 pub use fragment::{AccessFragment, PolicyFragment};
 pub use httpurl::HttpUrl;
-pub use note::{BinaryNote, Etag, LogNote, Note, TextNote, Trashed};
+pub use note::{Etag, LogNote, Note, TextNote, Trashed};
 pub use path::{DirPath, Path};
 pub use policy::{Access, RegionPolicy};
 pub use policyargs::PolicyArgs;

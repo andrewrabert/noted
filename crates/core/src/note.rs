@@ -265,38 +265,3 @@ impl Note for LogNote {
         self.front.write().dump(&self.body).into_bytes()
     }
 }
-
-/// Opaque bytes with no text meaning — an image or other attachment. It makes no
-/// utf-8 or markdown assumptions; the bytes are the whole of it.
-#[derive(Clone, Debug)]
-pub struct BinaryNote {
-    path: Path,
-    bytes: Vec<u8>,
-}
-
-impl BinaryNote {
-    pub fn new(path: Path, bytes: impl Into<Vec<u8>>) -> BinaryNote {
-        BinaryNote {
-            path,
-            bytes: bytes.into(),
-        }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    pub fn etag(&self) -> Etag {
-        Etag::of(&self.bytes)
-    }
-}
-
-impl Note for BinaryNote {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.bytes.clone()
-    }
-}

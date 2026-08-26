@@ -382,27 +382,5 @@
       "type": "object"
     },
     "name": "MoveTask"
-  },
-  {
-    "input_schema": {
-      "properties": {
-        "content": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "path",
-        "name",
-        "content"
-      ],
-      "type": "object"
-    },
-    "name": "AttachToTask"
   }
 ]

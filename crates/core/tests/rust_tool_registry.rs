@@ -88,7 +88,7 @@ fn arg_schema_defaults_are_pinned() {
 }
 
 #[test]
-fn the_registry_is_the_fifteen_tools() {
+fn the_registry_is_the_fourteen_tools() {
     let dir = fixture_dir();
     let names = tool_names(&dir);
     assert_eq!(
@@ -108,7 +108,6 @@ fn the_registry_is_the_fifteen_tools() {
             "GetTasks",
             "UpdateTask",
             "MoveTask",
-            "AttachToTask",
         ]
     );
 }

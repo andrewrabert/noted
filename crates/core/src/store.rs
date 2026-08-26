@@ -9,16 +9,12 @@ use crate::path::{DirPath, Path};
 use crate::platform::{self, Entry};
 use crate::policy::{Readable, Writeable};
 use crate::search::{Hit, SearchQuery};
-use crate::util::random_token;
 
 const TRASH: &str = ".trash";
 
-// '.md' files, and the '.md' directories that carry a task: a task directory is an
-// entry in itself and is never descended into
 #[derive(Clone, Copy)]
-enum Listing {
-    Notes { deep: bool },
-    Files,
+struct Listing {
+    deep: bool,
 }
 
 pub struct NotedDir(PathBuf);
@@ -207,16 +203,11 @@ impl Store {
     }
 
     pub(crate) async fn walk(&self, from: &DirPath) -> Vec<Path> {
-        self.listing(from, Listing::Notes { deep: true }).await
+        self.listing(from, Listing { deep: true }).await
     }
 
     pub(crate) async fn children(&self, from: &DirPath) -> Vec<Path> {
-        self.listing(from, Listing::Notes { deep: false }).await
-    }
-
-    // every plain file directly inside 'from', whatever its extension
-    pub(crate) async fn files(&self, from: &DirPath) -> Vec<Path> {
-        self.listing(from, Listing::Files).await
+        self.listing(from, Listing { deep: false }).await
     }
 
     async fn listing(&self, from: &DirPath, listing: Listing) -> Vec<Path> {
@@ -224,48 +215,6 @@ impl Store {
         self.collect(&self.directory(from), &self.prefix(from), listing, &mut out)
             .await;
         out
-    }
-
-    pub(crate) async fn is_dir(&self, at: &Readable) -> bool {
-        match self.addressable(&at.0).await {
-            Ok(abs) => self.kind(&abs).await.unwrap_or(false),
-            Err(_) => false,
-        }
-    }
-
-    // makes 'entry' a directory carrying its markdown at 'body' when 'entry' is a
-    // plain file, then writes 'data' at 'file' inside it, in one rename
-    pub(crate) async fn attach(
-        &self,
-        entry: &Writeable,
-        body: &Writeable,
-        file: &Writeable,
-        data: &[u8],
-    ) -> Result<()> {
-        let entry_abs = self.addressable(&entry.0).await?;
-        let file_abs = self.addressable(&file.0).await?;
-        let leaf = body.0.file_name().to_string();
-        let name = file.0.file_name().to_string();
-        let _guard = self.inner.writes.hold().await;
-        match self.kind(&entry_abs).await {
-            None => return Err(NotedError::NotFound),
-            Some(true) => return platform::create(&file_abs, data).await,
-            Some(false) => {}
-        }
-
-        let parent = entry_abs.parent().unwrap_or_else(|| StdPath::new("."));
-        let staged = parent.join(format!(".noted-tmp-{}", random_token(9)));
-        platform::create(&staged.join(&name), data).await?;
-        let held = staged.join(&leaf);
-        platform::rename(&entry_abs, &held, false).await?;
-        match platform::rename(&staged, &entry_abs, false).await {
-            Ok(()) => Ok(()),
-            // a failed attach leaves the task where it was
-            Err(e) => {
-                let _ = platform::rename(&held, &entry_abs, true).await;
-                Err(e)
-            }
-        }
     }
 
     async fn collect(&self, dir: &StdPath, prefix: &str, listing: Listing, out: &mut Vec<Path>) {
@@ -277,22 +226,15 @@ impl Store {
                 continue;
             }
             let at = format!("{prefix}{name}");
-            let Ok(rel) = Path::stored(&at) else {
+            let Ok(rel) = Path::new(&at) else {
                 continue;
             };
-            match listing {
-                Listing::Files if !is_dir => out.push(rel),
-                Listing::Files => {}
-                Listing::Notes { .. } if !is_dir => {
-                    if name.ends_with(".md") {
-                        out.push(rel);
-                    }
+            if !is_dir {
+                if name.ends_with(".md") {
+                    out.push(rel);
                 }
-                Listing::Notes { .. } if name.ends_with(".md") => out.push(rel),
-                Listing::Notes { deep: true } => {
-                    Box::pin(self.collect(&dir.join(&name), &format!("{at}/"), listing, out)).await
-                }
-                Listing::Notes { .. } => {}
+            } else if listing.deep {
+                Box::pin(self.collect(&dir.join(&name), &format!("{at}/"), listing, out)).await;
             }
         }
     }

@@ -13,11 +13,9 @@ use crate::policy::RegionPolicy;
 use crate::regions::{RegionDir, Regions};
 use crate::search::{Hit, SearchQuery};
 use crate::store::NotedDir;
-use crate::tasks::{
-    AttachmentName, GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskTitle,
-};
+use crate::tasks::{GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskTitle};
 use crate::tools::{ToolOutput, permitted, run_tool, tool_defs};
-use crate::types::{Base64Bytes, LogBody, Source, TaskBody};
+use crate::types::{LogBody, Source, TaskBody};
 
 const INSTRUCTIONS: &str = "This is the user's personal notes \u{2014} the canonical place where they keep and organize their own notes, ideas, todos, and log entries as a nested tree of Markdown (.md) files. Whenever the user refers to 'my notes', asks to look something up, record or jot something down, or check what they've written before, use these tools instead of guessing or answering from memory. Search, read, write, edit, move, and delete notes by relative path (e.g. 'proj/ideas.md'). The tree has three regions and each has its own search tool: SearchNotes covers ordinary notes, SearchLog covers Log/, and SearchTasks covers Tasks/ \u{2014} none of them reaches into another's region. Use LogNote to quickly capture an immutable, timestamped log entry (its metadata is auto-generated and it cannot be edited or deleted), then GetLog to list entries newest first or SearchLog to match their text. Track units of work with the task tools: CreateTask opens a task (optionally in a nested 'group' under Tasks/, e.g. group='dev/noted'); GetTasks reads them (by group prefix, or an exact task path with body=true); UpdateTask advances one (state=created/started/blocked/completed/rejected/invalid); MoveTask changes a task's group. A task is identified by its Tasks-relative path minus '.md' (e.g. 'dev/noted/task_0001'); tasks are managed only through these tools \u{2014} WriteNote/EditNote are refused under Tasks/.";
 
@@ -169,15 +167,5 @@ Tasks you create land in its task region; log entries you write are stamped with
 
     pub async fn task_move(&self, task: &TaskRef, group: &GroupPath) -> Result<TaskNote> {
         self.0.task.move_(task, group).await
-    }
-
-    // the attachment's Tasks-relative path
-    pub async fn task_attach(
-        &self,
-        task: &TaskRef,
-        name: &AttachmentName,
-        content: &Base64Bytes,
-    ) -> Result<Path> {
-        self.0.task.attach(task, name, content).await
     }
 }

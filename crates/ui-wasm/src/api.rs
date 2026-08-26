@@ -1,4 +1,3 @@
-use base64::Engine;
 use noted::search::{SearchMode, SearchOrder};
 use noted::tools::ToolOutput;
 use noted::{Backend, BackendArgs, ToolCall, Transport};
@@ -104,13 +103,6 @@ pub struct UpdateTaskArgs {
 pub struct MoveTaskArgs {
     pub path: String,
     pub group: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AttachToTaskArgs {
-    pub path: String,
-    pub name: String,
-    pub content: String,
 }
 
 fn raw(name: &str, args: impl Serialize) -> noted::Result<ToolCall> {
@@ -296,17 +288,6 @@ pub fn move_task(path: &str, group: &str) -> noted::Result<ToolCall> {
         MoveTaskArgs {
             path: path.to_string(),
             group: group.to_string(),
-        },
-    )
-}
-
-pub fn attach_to_task(path: &str, name: &str, text: &str) -> noted::Result<ToolCall> {
-    raw(
-        "AttachToTask",
-        AttachToTaskArgs {
-            path: path.to_string(),
-            name: name.to_string(),
-            content: base64::engine::general_purpose::STANDARD.encode(text.as_bytes()),
         },
     )
 }

@@ -73,7 +73,6 @@ fn every_call() -> Vec<ToolCall> {
         api::get_tasks("dev", true, false),
         api::update_task("dev/noted/task_0001", Some("started"), None, None),
         api::move_task("dev/noted/task_0001", "ops"),
-        api::attach_to_task("dev/noted/task_0001", "notes.txt", "the bytes"),
     ]
     .into_iter()
     .map(|call| call.expect("a registered tool"))
@@ -84,7 +83,7 @@ fn args_of(args: impl serde::Serialize) -> Value {
     serde_json::to_value(args).expect("serialize")
 }
 
-// the fifteen argument shapes, as the UI serializes them onto the wire
+// the argument shapes, as the UI serializes them onto the wire
 fn every_payload() -> Vec<(&'static str, Value)> {
     vec![
         (
@@ -194,14 +193,6 @@ fn every_payload() -> Vec<(&'static str, Value)> {
             args_of(api::MoveTaskArgs {
                 path: "dev/noted/task_0001".into(),
                 group: "ops".into(),
-            }),
-        ),
-        (
-            "AttachToTask",
-            args_of(api::AttachToTaskArgs {
-                path: "dev/noted/task_0001".into(),
-                name: "notes.txt".into(),
-                content: "dGhlIGJ5dGVz".into(),
             }),
         ),
     ]

@@ -93,14 +93,9 @@ Tools, as the MCP and HTTP interfaces expose them:
 | `GetTasks` | Read tasks as summary records |
 | `UpdateTask` | Change a task's state, notes or title |
 | `MoveTask` | Change a task's group |
-| `AttachToTask` | Attach a file to a task, beside its markdown |
-
-A task carrying attachments is a directory named exactly like its markdown file
-(`task_0001.md/`), holding the markdown as `.task.md` alongside the attachments; its
-path in every task tool is unchanged.
 
 Every served process answers `GET /` with a self-contained WebAssembly UI — the whole
-surface, over the same fifteen tools — embedded in the binary. The UI calls back to the
+surface, over the same fourteen tools — embedded in the binary. The UI calls back to the
 origin it was served from and carries no bearer of its own, so it reaches exactly what
 that endpoint admits: put it behind a socket, or behind a relay that confines it.
 
