@@ -228,10 +228,10 @@ mod tests {
         assert_eq!(root.as_str(), "/");
         assert_eq!(root.to_path(), None);
 
-        let log = root.child("Log");
-        assert_eq!(log.as_str(), "/Log/");
-        assert_eq!(log.to_path().unwrap(), "Log");
-        assert_eq!(log.join(&Path::new("a/b").unwrap()).as_str(), "/Log/a/b/");
+        let log = root.child(".logs");
+        assert_eq!(log.as_str(), "/.logs/");
+        assert_eq!(log.to_path().unwrap(), ".logs");
+        assert_eq!(log.join(&Path::new("a/b").unwrap()).as_str(), "/.logs/a/b/");
     }
 
     #[test]

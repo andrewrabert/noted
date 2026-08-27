@@ -15,7 +15,7 @@ Features: regex search across the tree, timestamped log entries named by the ins
 were written, and a scoped task tracker.
 
 The tree has one open region plus two reserved ones, and each gets its own search:
-`SearchNotes` for ordinary notes, `SearchLog` for `Log/`, `SearchTasks` for `Tasks/`.
+`SearchNotes` for ordinary notes, `SearchLog` for `.logs/`, `SearchTasks` for `.tasks/`.
 
 ## Downloads
 
@@ -79,7 +79,7 @@ Tools, as the MCP and HTTP interfaces expose them:
 
 | Tool | What it does |
 | --- | --- |
-| `SearchNotes` | Find notes by regex, outside `Log/` and `Tasks/` |
+| `SearchNotes` | Find notes by regex, outside `.logs/` and `.tasks/` |
 | `SearchLog` | Find log entries by regex, within a time range |
 | `SearchTasks` | Find tasks by regex, within a group |
 | `ReadNote` | Read a note's text by relative path |
@@ -89,7 +89,7 @@ Tools, as the MCP and HTTP interfaces expose them:
 | `DeleteNote` | Move a note to `.trash/` |
 | `LogNote` | Append an immutable, timestamped entry |
 | `GetLog` | List log entries newest first |
-| `CreateTask` | Open a task under `Tasks/` |
+| `CreateTask` | Open a task under `.tasks/` |
 | `GetTasks` | Read tasks as summary records |
 | `UpdateTask` | Change a task's state, notes or title |
 | `MoveTask` | Change a task's group |
@@ -188,9 +188,9 @@ enclosing policy already allows, so `{"write": false}` closes writing and leaves
 as it was.
 
 The scope is cumulative across the three regions: a scope of `/a/b/c` puts notes at
-`a/b/c`, log entries at `Log/a/b/c`, and tasks at `Tasks/a/b/c`. A `paths` key is read
-from the scope, except one at or under `Log` or `Tasks`, which names that region: under
-scope `/dev`, `--in /Tasks=read` is `Tasks/dev` and `--in /Log=write` is `Log/dev`.
+`a/b/c`, log entries at `.logs/a/b/c`, and tasks at `.tasks/a/b/c`. A `paths` key is read
+from the scope, except one at or under `.logs` or `.tasks`, which names that region: under
+scope `/dev`, `--in /.tasks=read` is `.tasks/dev` and `--in /.logs=write` is `.logs/dev`.
 
 A user's policy is edited in place; a key's is fixed at its mint, so narrowing one means
 minting another. Both can mint narrowed child credentials (see
@@ -203,7 +203,7 @@ noted server user policy ar --scope /dev --in /secrets=  # set the whole fragmen
 noted server user list                                   # every user, with its policy
 noted server user remove ar                              # drops the user and everything under it
 noted server key create --scope /dev/myproject           # prints the macaroon on stdout
-noted server key create --in /= --in /Log=write
+noted server key create --in /= --in /.logs=write
 noted server key list                                    # token-id, fingerprint, policy
 ```
 
@@ -216,7 +216,7 @@ every child narrows with it. Removing the user drops every credential under it.
 ```sh
 noted auth login --url https://notes.example.com         # browser OAuth; stores the login
 noted auth status                                        # who the stored login is
-noted auth mint --scope /dev/myproject --in /=read --in /Tasks=read,write
+noted auth mint --scope /dev/myproject --in /=read --in /.tasks=read,write
 noted auth logout                                        # drops the stored login
 ```
 

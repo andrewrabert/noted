@@ -8,8 +8,8 @@ use crate::policy::{Readable, RegionPolicy, Writeable};
 use crate::search::{Hit, SearchQuery};
 use crate::store::{NotedDir, Store};
 
-const LOG: &str = "Log";
-const TASKS: &str = "Tasks";
+const LOG: &str = ".logs";
+const TASKS: &str = ".tasks";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegionDir {
@@ -292,8 +292,8 @@ mod tests {
     #[test]
     fn a_region_directory_closes_with_a_separator() {
         assert_eq!(DirPath::from(RegionDir::Notes).as_str(), "/");
-        assert_eq!(DirPath::from(RegionDir::Log).as_str(), "/Log/");
-        assert_eq!(DirPath::from(RegionDir::Tasks).as_str(), "/Tasks/");
+        assert_eq!(DirPath::from(RegionDir::Log).as_str(), "/.logs/");
+        assert_eq!(DirPath::from(RegionDir::Tasks).as_str(), "/.tasks/");
     }
 
     #[test]
@@ -301,8 +301,8 @@ mod tests {
         let fragment = fragment(r#"{"scope":"a/b/c"}"#);
         for (dir, base) in [
             (RegionDir::Notes, "/a/b/c/"),
-            (RegionDir::Log, "/Log/a/b/c/"),
-            (RegionDir::Tasks, "/Tasks/a/b/c/"),
+            (RegionDir::Log, "/.logs/a/b/c/"),
+            (RegionDir::Tasks, "/.tasks/a/b/c/"),
         ] {
             let policy = folded(dir, std::slice::from_ref(&fragment)).unwrap();
             assert_eq!(policy.base().as_str(), base);
@@ -311,9 +311,9 @@ mod tests {
 
     #[test]
     fn a_key_names_its_own_region_and_loses_the_region_name() {
-        assert_eq!(RegionDir::of_key(&at("Log")), (RegionDir::Log, None));
+        assert_eq!(RegionDir::of_key(&at(".logs")), (RegionDir::Log, None));
         assert_eq!(
-            RegionDir::of_key(&at("Tasks/dev/x")),
+            RegionDir::of_key(&at(".tasks/dev/x")),
             (RegionDir::Tasks, Some(at("dev/x")))
         );
         assert_eq!(
@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn a_projection_keeps_only_its_own_regions_keys() {
         let fragment = fragment(
-            r#"{"scope":"dev","access":{"write":false},"paths":{"Tasks":{"read":true},"vendor":{"read":false}}}"#,
+            r#"{"scope":"dev","access":{"write":false},"paths":{".tasks":{"read":true},"vendor":{"read":false}}}"#,
         );
         let tasks = RegionDir::Tasks.project(&fragment).unwrap();
         assert_eq!(tasks.scope, Some(at("dev")));
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn a_reserved_scope_is_refused() {
-        for text in [r#"{"scope":"Log"}"#, r#"{"scope":"Tasks/dev"}"#] {
+        for text in [r#"{"scope":".logs"}"#, r#"{"scope":".tasks/dev"}"#] {
             assert!(
                 matches!(RegionDir::Notes.project(&fragment(text)), Err(NotedError::InvalidInput(ref m)) if m.contains("a scope addresses notes")),
                 "accepted {text}"
@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn a_scoped_key_names_its_own_region() {
         let fragment = fragment(
-            r#"{"scope":"dev","paths":{"Tasks":{"read":true,"write":false},"Log":{"read":false,"write":false}}}"#,
+            r#"{"scope":"dev","paths":{".tasks":{"read":true,"write":false},".logs":{"read":false,"write":false}}}"#,
         );
         let tasks = folded(RegionDir::Tasks, std::slice::from_ref(&fragment)).unwrap();
         assert!(tasks.access().read && !tasks.access().write);

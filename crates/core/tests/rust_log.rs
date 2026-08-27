@@ -40,7 +40,7 @@ async fn an_entry_stamped_with_garbage_is_skipped() {
     let root = backend(&dir);
     let garbage = "2026-07-02T09-00-00.000000-0700.md";
     std::fs::write(
-        common::notes_root(&dir).join("Log").join(garbage),
+        common::notes_root(&dir).join(".logs").join(garbage),
         "---\ncreated: X\ncwd: /tmp\nhost: testhost\nsource: seed\n---\nnotes-mcp garbage\n",
     )
     .unwrap();
@@ -139,14 +139,14 @@ async fn a_denied_entry_leaves_the_rest_of_the_log() {
     let dir = fixture_dir();
     assert!(
         paths(
-            &confined_backend(&dir, r#"{"paths":{"Log":{"read":false,"write":false}}}"#),
+            &confined_backend(&dir, r#"{"paths":{".logs":{"read":false,"write":false}}}"#),
             json!({})
         )
         .await
         .is_empty()
     );
 
-    let denied = format!(r#"{{"paths":{{"Log/{JULY}":{{"read":false,"write":false}}}}}}"#);
+    let denied = format!(r#"{{"paths":{{".logs/{JULY}":{{"read":false,"write":false}}}}}}"#);
     let root = confined_backend(&dir, &denied);
     assert_eq!(paths(&root, json!({})).await, vec![JUNE]);
     assert!(

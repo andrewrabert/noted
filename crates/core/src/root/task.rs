@@ -42,7 +42,7 @@ impl TaskTools {
     fn named(dir: Option<&Path>) -> String {
         match dir {
             Some(dir) => dir.to_string(),
-            None => "the top of Tasks".to_string(),
+            None => "the top of .tasks".to_string(),
         }
     }
 

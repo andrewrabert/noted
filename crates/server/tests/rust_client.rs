@@ -102,8 +102,12 @@ async fn client_http_log_records_the_servers_provenance() {
     let ToolOutput::Logged { path } = &out else {
         panic!("expected a log receipt, got {}", out.render());
     };
-    let text = std::fs::read_to_string(common::notes_root(&dir).join("Log").join(path.to_string()))
-        .unwrap();
+    let text = std::fs::read_to_string(
+        common::notes_root(&dir)
+            .join(".logs")
+            .join(path.to_string()),
+    )
+    .unwrap();
     assert!(text.contains("source: test"), "{text}");
 }
 
@@ -123,7 +127,7 @@ async fn client_search_path_mode_lists_every_open_note() {
     assert!(paths.contains(&"Inbox.md"));
     assert!(paths.contains(&"projects/ideas.md"));
     assert!(
-        !paths.iter().any(|p| p.starts_with("Log/")),
+        !paths.iter().any(|p| p.starts_with(".logs/")),
         "the picker offers the open region only, never the log"
     );
 }
