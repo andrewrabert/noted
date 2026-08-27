@@ -151,7 +151,7 @@ async fn the_task_region_mirrors_the_scope() {
     assert_eq!(made.path().to_string(), "task_0002");
     assert!(
         common::notes_root(&dir)
-            .join("Tasks/dev/task_0002.md")
+            .join(".tasks/dev/task_0002.md")
             .is_file()
     );
 
@@ -174,7 +174,7 @@ async fn a_single_task_can_be_granted_inside_a_denied_region() {
 
     let root = confined(
         &dir,
-        r#"{"paths":{"Tasks":{"read":true,"write":false},"Tasks/task_0001.md":{"read":true,"write":true}}}"#,
+        r#"{"paths":{".tasks":{"read":true,"write":false},".tasks/task_0001.md":{"read":true,"write":true}}}"#,
     );
     assert!(
         root.task_update(&TaskRef::new("task_0001").unwrap(), &Default::default())
@@ -205,7 +205,7 @@ async fn a_scoped_holder_sees_only_its_own_log() {
 
     assert!(
         common::notes_root(&dir)
-            .join("Log/projects")
+            .join(".logs/projects")
             .join(entry.path().to_string())
             .is_file(),
         "a scoped entry lands in its own log directory"
@@ -227,11 +227,11 @@ async fn a_scope_is_cumulative_across_the_three_regions() {
     assert!(notes.join("a/b/kept.md").is_file());
     assert!(
         notes
-            .join("Log/a/b")
+            .join(".logs/a/b")
             .join(entry.path().to_string())
             .is_file()
     );
-    assert!(notes.join("Tasks/a/b/task_0001.md").is_file());
+    assert!(notes.join(".tasks/a/b/task_0001.md").is_file());
 }
 
 #[tokio::test]
@@ -239,7 +239,7 @@ async fn a_scoped_policy_names_the_reserved_regions_by_their_own_keys() {
     let dir = common::fixture_dir();
     let root = confined(
         &dir,
-        r#"{"scope":"dev","paths":{"Tasks":{"read":true,"write":false},"Log":{"read":false,"write":false}}}"#,
+        r#"{"scope":"dev","paths":{".tasks":{"read":true,"write":false},".logs":{"read":false,"write":false}}}"#,
     );
     assert!(create(&root, "refused", "").await.is_err());
     assert!(root.log_note(&"refused\n-- t · s".into()).await.is_err());
@@ -250,7 +250,7 @@ async fn a_scoped_policy_names_the_reserved_regions_by_their_own_keys() {
 async fn a_scope_cannot_widen_a_denied_log() {
     let dir = common::fixture_dir();
     let chain = &[
-        r#"{"paths":{"Log":{"read":false,"write":false}}}"#,
+        r#"{"paths":{".logs":{"read":false,"write":false}}}"#,
         r#"{"scope":"dev"}"#,
     ];
     let root = chained(&dir, chain).unwrap();
@@ -268,7 +268,7 @@ async fn a_scope_cannot_widen_a_denied_task_group() {
     let root = chained(
         &dir,
         &[
-            r#"{"paths":{"Tasks/dev/x":{"read":false,"write":false}}}"#,
+            r#"{"paths":{".tasks/dev/x":{"read":false,"write":false}}}"#,
             r#"{"scope":"dev"}"#,
         ],
     )
@@ -280,7 +280,7 @@ async fn a_scope_cannot_widen_a_denied_task_group() {
 #[test]
 fn a_scope_cannot_name_a_reserved_region() {
     let dir = common::fixture_dir();
-    for text in [r#"{"scope":"Log"}"#, r#"{"scope":"Tasks/dev"}"#] {
+    for text in [r#"{"scope":".logs"}"#, r#"{"scope":".tasks/dev"}"#] {
         assert!(chained(&dir, &[text]).is_err(), "accepted {text}");
     }
 }
@@ -292,16 +292,16 @@ async fn the_reserved_regions_are_reserved_at_every_scope() {
         common::root(&dir),
         confined(&dir, r#"{"scope":"projects"}"#),
     ] {
-        assert!(write(&root, &note("Log/x.md", "x")).await.is_err());
-        assert!(write(&root, &note("Tasks/x.md", "x")).await.is_err());
+        assert!(write(&root, &note(".logs/x.md", "x")).await.is_err());
+        assert!(write(&root, &note(".tasks/x.md", "x")).await.is_err());
     }
-    assert!(!common::notes_root(&dir).join("projects/Log").exists());
+    assert!(!common::notes_root(&dir).join("projects/.logs").exists());
 }
 
 #[tokio::test]
 async fn a_denied_log_region_still_leaves_the_notes_region_open() {
     let dir = common::fixture_dir();
-    let root = confined(&dir, r#"{"paths":{"Log":{"read":false,"write":false}}}"#);
+    let root = confined(&dir, r#"{"paths":{".logs":{"read":false,"write":false}}}"#);
     assert!(root.log_note(&"nope\n-- t · s".into()).await.is_err());
     assert!(log_paths(&root).await.is_empty());
     assert!(read(&root, "Inbox.md").await.is_ok());
@@ -338,7 +338,7 @@ fn allowed_tools_follow_the_regions() {
 
     let names = tool_names(
         &dir,
-        vec![held(r#"{"paths":{"Log":{"read":false,"write":false}}}"#)],
+        vec![held(r#"{"paths":{".logs":{"read":false,"write":false}}}"#)],
     );
     assert!(!names.contains(&"LogNote") && !names.contains(&"SearchLog"));
     assert!(names.contains(&"WriteNote"));
@@ -349,10 +349,11 @@ fn a_tool_description_tells_a_scoped_client_where_things_land() {
     let dir = common::fixture_dir();
     let scoped = || vec![held(r#"{"scope":"projects"}"#)];
     assert!(
-        described(&dir, "CreateTask", scoped()).ends_with("Tasks are stored under Tasks/projects.")
+        described(&dir, "CreateTask", scoped())
+            .ends_with("Tasks are stored under .tasks/projects.")
     );
     assert!(
-        described(&dir, "LogNote", scoped()).ends_with("Entries are stored under Log/projects.")
+        described(&dir, "LogNote", scoped()).ends_with("Entries are stored under .logs/projects.")
     );
     assert!(described(&dir, "WriteNote", scoped()).ends_with("Paths are relative to projects."));
     assert!(!described(&dir, "WriteNote", vec![]).contains("Paths are relative to"));

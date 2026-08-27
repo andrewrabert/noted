@@ -7,7 +7,7 @@ use noted::tasks::{
 use noted::{Backend, NotedRoot};
 
 fn task_file(dir: &tempfile::TempDir, rel: &str) -> std::path::PathBuf {
-    notes_root(dir).join("Tasks").join(format!("{rel}.md"))
+    notes_root(dir).join(".tasks").join(format!("{rel}.md"))
 }
 
 fn seed(dir: &tempfile::TempDir, rel: &str, front: &str) {
@@ -212,9 +212,9 @@ async fn empty_task_ref_and_headless_task_rejected() {
 async fn ignored_tasks_are_unreachable_and_ignored_by_numbering() {
     let dir = fixture_dir();
     let root = root(&dir);
-    std::fs::create_dir_all(notes_root(&dir).join("Tasks")).unwrap();
+    std::fs::create_dir_all(notes_root(&dir).join(".tasks")).unwrap();
     std::fs::write(
-        notes_root(&dir).join("Tasks").join(".ignore"),
+        notes_root(&dir).join(".tasks").join(".ignore"),
         "task_0009.md\n",
     )
     .unwrap();
@@ -500,16 +500,16 @@ async fn tasks_subtree_is_managed() {
     write(&root, &note("loose.md", "x")).await.unwrap();
 
     for err in [
-        write(&root, &note("Tasks/task_0009.md", "nope"))
+        write(&root, &note(".tasks/task_0009.md", "nope"))
             .await
             .unwrap_err(),
-        root.note_delete(&rp("Tasks/task_0001.md"))
+        root.note_delete(&rp(".tasks/task_0001.md"))
             .await
             .unwrap_err(),
-        root.note_move(&rp("Tasks/task_0001.md"), &rp("elsewhere.md"), false)
+        root.note_move(&rp(".tasks/task_0001.md"), &rp("elsewhere.md"), false)
             .await
             .unwrap_err(),
-        root.note_move(&rp("loose.md"), &rp("Tasks/task_0002.md"), false)
+        root.note_move(&rp("loose.md"), &rp(".tasks/task_0002.md"), false)
             .await
             .unwrap_err(),
     ] {
@@ -552,7 +552,7 @@ async fn symlinked_task_file_is_ignored() {
 
     let outside = notes_root(&dir).join("outside.md");
     std::fs::write(&outside, CREATED).unwrap();
-    let group_dir = notes_root(&dir).join("Tasks/grp");
+    let group_dir = notes_root(&dir).join(".tasks/grp");
     std::os::unix::fs::symlink(&outside, group_dir.join("task_0005.md")).unwrap();
 
     assert_eq!(
@@ -578,11 +578,11 @@ async fn symlinked_task_file_is_ignored() {
 async fn symlinked_group_dir_is_ignored() {
     let dir = fixture_dir();
     let root = root(&dir);
-    create(&root, "real", "", "").await.unwrap(); // makes Tasks/
+    create(&root, "real", "", "").await.unwrap(); // makes .tasks/
 
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("task_0001.md"), CREATED).unwrap();
-    std::os::unix::fs::symlink(outside.path(), notes_root(&dir).join("Tasks/escape")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), notes_root(&dir).join(".tasks/escape")).unwrap();
 
     assert!(get(&root, "escape", false).await.unwrap().is_empty());
     assert_eq!(
@@ -637,7 +637,7 @@ async fn search_line_mode_addresses_matches_by_task_ref() {
     )
     .await;
     assert!(out.starts_with("dev/task_0001:"), "{out}");
-    assert!(!out.contains("Tasks/"), "{out}");
+    assert!(!out.contains(".tasks/"), "{out}");
     assert!(!out.contains(".md"), "{out}");
 }
 
@@ -706,7 +706,7 @@ async fn search_admits_only_what_the_grant_allows() {
 
     let confined = confined_backend(
         &dir,
-        r#"{"paths":{"Tasks/ops":{"read":false,"write":false}}}"#,
+        r#"{"paths":{".tasks/ops":{"read":false,"write":false}}}"#,
     );
     let out = find(&confined, serde_json::json!({"pattern": "MARK"})).await;
     assert_eq!(out.lines().collect::<Vec<_>>(), vec!["dev/task_0001"]);

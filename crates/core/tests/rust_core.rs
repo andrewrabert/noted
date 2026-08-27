@@ -49,7 +49,7 @@ async fn write_creates_parents_and_leaves_no_temp() {
 async fn the_log_region_is_unreachable_through_the_note_tools() {
     let dir = fixture_dir();
     let root = root(&dir);
-    let entry = "Log/2026-07-01T09-00-00.000000-0700.md";
+    let entry = ".logs/2026-07-01T09-00-00.000000-0700.md";
     for err in [
         write(&root, &note(entry, "nope")).await.unwrap_err(),
         root.note_delete(&rp(entry)).await.unwrap_err(),
@@ -74,7 +74,7 @@ async fn log_note_writes_one_file_with_front_matter() {
         .unwrap();
     let rel = logged.path().to_string();
     assert!(rel.starts_with("20"), "{rel}");
-    let on_disk = std::fs::read_to_string(notes_root(&dir).join("Log").join(&rel)).unwrap();
+    let on_disk = std::fs::read_to_string(notes_root(&dir).join(".logs").join(&rel)).unwrap();
     let text = String::from_utf8(logged.to_bytes()).unwrap();
     assert_eq!(text, on_disk);
     assert_eq!(logged.etag(), note(&rel, &on_disk).etag());
@@ -87,7 +87,7 @@ async fn log_note_writes_one_file_with_front_matter() {
     assert!(text.contains("source: test"));
     assert!(text.contains("did a thing"));
 
-    let entry = notes_root(&dir).join("Log").join(&rel);
+    let entry = notes_root(&dir).join(".logs").join(&rel);
     let mut written: Vec<String> = std::fs::read_dir(entry.parent().unwrap())
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -214,7 +214,7 @@ async fn note_search_walks_the_open_region_only() {
 
     // testhost appears only in the fixture's log entries
     assert!(grep(&root, "testhost").await.unwrap().is_empty());
-    assert!(found(&root, "Log").await.unwrap().is_empty());
+    assert!(found(&root, ".logs").await.unwrap().is_empty());
 
     root.task_create(
         &"reserved from notes".parse().unwrap(),
@@ -224,7 +224,7 @@ async fn note_search_walks_the_open_region_only() {
     .await
     .unwrap();
     assert!(grep(&root, "UNIQUETASKBODY").await.unwrap().is_empty());
-    assert!(found(&root, "Tasks").await.unwrap().is_empty());
+    assert!(found(&root, ".tasks").await.unwrap().is_empty());
 
     let contacts = found(&root, "contacts").await.unwrap();
     assert!(contacts.iter().any(|p| p == "people/contacts.md"));

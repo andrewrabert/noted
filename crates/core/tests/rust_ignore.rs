@@ -79,7 +79,7 @@ async fn a_higher_dot_ignore_outranks_a_deeper_gitignore_whitelist() {
 }
 
 // a rule at the notes root hides a task from both task_search and task_get,
-// though the Tasks region search starts below the notes root
+// though the .tasks region search starts below the notes root
 #[tokio::test]
 async fn an_ancestor_rule_reaches_a_region_search() {
     let dir = fixture_dir();
@@ -97,7 +97,7 @@ async fn an_ancestor_rule_reaches_a_region_search() {
     let rel = task.path().to_string();
     std::fs::write(
         notes.join(".ignore"),
-        format!("Tasks/{rel}.md\nTasks/{rel}/\n"),
+        format!(".tasks/{rel}.md\n.tasks/{rel}/\n"),
     )
     .unwrap();
 

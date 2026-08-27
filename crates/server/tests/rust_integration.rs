@@ -109,7 +109,7 @@ async fn log_is_immutable_and_recoverable_delete() {
         .path()
         .to_string();
     assert!(rel.starts_with("20"), "{rel}");
-    let spelled = format!("Log/{rel}");
+    let spelled = format!(".logs/{rel}");
     let err = write(&root, &note(&spelled, "x")).await.unwrap_err();
     assert!(matches!(err, noted::NotedError::Forbidden), "{err}");
     assert!(root.note_delete(&rp(&spelled)).await.is_err());
@@ -195,12 +195,12 @@ async fn write_and_edit_refused_under_tasks() {
     let root = cores(&dir);
     create(&root, "t", "grp").await.unwrap();
     assert!(
-        write(&root, &note("Tasks/grp/task_0001.md", "x"))
+        write(&root, &note(".tasks/grp/task_0001.md", "x"))
             .await
             .is_err()
     );
     assert!(
-        root.note_delete(&rp("Tasks/grp/task_0001.md"))
+        root.note_delete(&rp(".tasks/grp/task_0001.md"))
             .await
             .is_err()
     );

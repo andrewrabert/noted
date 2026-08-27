@@ -282,13 +282,13 @@ mod tests {
             &root(),
             RegionFragment {
                 access: asked(Some(false), Some(false)),
-                named: vec![(Some(at("Log")), asked(Some(true), Some(true)))],
+                named: vec![(Some(at(".logs")), asked(Some(true), Some(true)))],
                 ..Default::default()
             },
         )
         .unwrap();
-        assert!(policy.readable(&at("Log/a.md")).is_ok());
-        assert!(policy.writeable(&at("Log/a.md")).is_ok());
+        assert!(policy.readable(&at(".logs/a.md")).is_ok());
+        assert!(policy.writeable(&at(".logs/a.md")).is_ok());
         assert!(policy.readable(&at("other/a.md")).is_err());
         assert!(policy.writeable(&at("other/a.md")).is_err());
     }

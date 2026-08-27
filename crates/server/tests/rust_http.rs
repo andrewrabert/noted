@@ -133,7 +133,7 @@ async fn a_log_only_policy_reaches_nothing_else() {
     let (app, l) = keyed_app(
         &dir,
         held(
-            r#"{"access":{"read":false,"write":false},"paths":{"Log":{"read":true,"write":true}}}"#,
+            r#"{"access":{"read":false,"write":false},"paths":{".logs":{"read":true,"write":true}}}"#,
         ),
     )
     .await;
@@ -250,7 +250,7 @@ async fn a_read_only_task_region_lists_but_never_writes() {
     let dir = common::fixture_dir();
     let (app, t) = keyed_app(
         &dir,
-        held(r#"{"paths":{"Tasks":{"read":true,"write":false}}}"#),
+        held(r#"{"paths":{".tasks":{"read":true,"write":false}}}"#),
     )
     .await;
     common::root(&dir)
@@ -282,7 +282,7 @@ async fn a_write_only_folder_leaves_the_task_region_open() {
     let (app, t) = keyed_app(
         &dir,
         held(
-            r#"{"access":{"read":false,"write":false},"paths":{"Tasks":{"read":true,"write":true},"projects":{"read":false,"write":true}}}"#,
+            r#"{"access":{"read":false,"write":false},"paths":{".tasks":{"read":true,"write":true},"projects":{"read":false,"write":true}}}"#,
         ),
     )
     .await;
@@ -567,7 +567,7 @@ async fn an_unparseable_query_policy_is_refused_before_the_tool_runs() {
     let dir = common::fixture_dir();
     let (app, t) = keyed_app(&dir, PolicyFragment::default()).await;
 
-    for bad in ["notjson", "{}}", r#"{"nope":1}"#, r#"{"scope":"Log"}"#] {
+    for bad in ["notjson", "{}}", r#"{"nope":1}"#, r#"{"scope":".logs"}"#] {
         let (s, b) = post_json(
             &app,
             &query_policy("/tool/WriteNote", &[bad]),
