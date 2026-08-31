@@ -8,7 +8,6 @@ use crate::error::{NotedError, Result, rejected};
 use crate::front_matter::{FrontMatter, split_front};
 use crate::newtype::{str_newtype_validated, str_surface};
 use crate::note::Note;
-use crate::path::Path;
 use crate::search::SearchQuery;
 use crate::types::{TaskBody, Timestamp};
 use crate::util::case_order;
@@ -124,10 +123,6 @@ impl GroupPath {
     pub fn new(s: impl Into<String>) -> Result<GroupPath> {
         Ok(GroupPath(segments(&s.into())?))
     }
-
-    pub(crate) fn to_path(&self) -> Option<Path> {
-        Path::new(&self.0).ok()
-    }
 }
 
 impl FromStr for GroupPath {
@@ -156,20 +151,16 @@ impl TaskRef {
         Ok(TaskRef(segments(&s.into())?))
     }
 
-    pub(crate) fn of_entry(path: &Path) -> Option<TaskRef> {
-        TaskRef::new(path.as_str().strip_suffix(".md")?).ok()
-    }
-
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    pub(crate) fn to_path(&self) -> Option<Path> {
-        Path::new(format!("{}.md", self.0)).ok()
-    }
-
-    pub(crate) fn to_dir(&self) -> Option<Path> {
-        Path::new(&self.0).ok()
+    // the group the task sits in; '' at the top of the region
+    pub(crate) fn group(&self) -> &str {
+        match self.0.rsplit_once('/') {
+            Some((group, _)) => group,
+            None => "",
+        }
     }
 
     pub(crate) fn stem(&self) -> &str {

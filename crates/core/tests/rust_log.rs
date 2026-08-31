@@ -4,8 +4,8 @@ use common::{backend, confined_backend, fixture_dir, invoke, root};
 use noted::{Backend, Note as _};
 use serde_json::{Value, json};
 
-const JUNE: &str = "2026-06-15T08-30-00.000000-0700.md";
-const JULY: &str = "2026-07-01T09-00-00.000000-0700.md";
+const JUNE: &str = "/2026-06-15T08-30-00.000000-0700.md";
+const JULY: &str = "/2026-07-01T09-00-00.000000-0700.md";
 
 async fn records(backend: &Backend, args: Value) -> Vec<Value> {
     let out = invoke(backend, "GetLog", args).await.unwrap();
@@ -139,14 +139,14 @@ async fn a_denied_entry_leaves_the_rest_of_the_log() {
     let dir = fixture_dir();
     assert!(
         paths(
-            &confined_backend(&dir, r#"{"paths":{".logs":{"read":false,"write":false}}}"#),
+            &confined_backend(&dir, r#"{"access":{"read":false,"write":false}}"#),
             json!({})
         )
         .await
         .is_empty()
     );
 
-    let denied = format!(r#"{{"paths":{{".logs/{JULY}":{{"read":false,"write":false}}}}}}"#);
+    let denied = format!(r#"{{"paths":{{"{JULY}":{{"read":false,"write":false}}}}}}"#);
     let root = confined_backend(&dir, &denied);
     assert_eq!(paths(&root, json!({})).await, vec![JUNE]);
     assert!(
@@ -178,7 +178,7 @@ async fn search_is_scoped_to_the_log() {
             .is_empty()
     );
     let listed = search(&root, json!({"mode": "path"})).await;
-    assert!(listed.lines().all(|p| p.starts_with("20")), "{listed}");
+    assert!(listed.lines().all(|p| p.starts_with("/20")), "{listed}");
     assert_eq!(listed.lines().count(), 2, "{listed}");
 }
 

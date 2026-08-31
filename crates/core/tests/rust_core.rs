@@ -4,7 +4,7 @@ use common::{
     backend, fixture_dir, found, grep, invoke, note, notes_root, query, read, root, rp, write,
 };
 use noted::note::{Condition, Etag, Note};
-use noted::search::{CaseMode, SearchMode, SearchQuery};
+use noted::search::{CaseMode, SearchMode};
 use noted::util::{atomic_write, slice_lines};
 use serde_json::json;
 
@@ -13,13 +13,13 @@ async fn read_edge_cases() {
     let dir = fixture_dir();
     let root = root(&dir);
     assert!(matches!(
-        read(&root, "nope.md").await.unwrap_err(),
+        read(&root, "/nope.md").await.unwrap_err(),
         noted::NotedError::NotFound
     ));
 
     std::fs::write(notes_root(&dir).join("bad.md"), [0xff, 0xfe, 0x00]).unwrap();
     assert!(
-        read(&root, "bad.md")
+        read(&root, "/bad.md")
             .await
             .unwrap_err()
             .to_string()
@@ -31,12 +31,12 @@ async fn read_edge_cases() {
 async fn write_creates_parents_and_leaves_no_temp() {
     let dir = fixture_dir();
     let root = root(&dir);
-    write(&root, &note("deep/nested/new.md", "hello\n"))
+    write(&root, &note("/deep/nested/new.md", "hello\n"))
         .await
         .unwrap();
-    assert_eq!(read(&root, "deep/nested/new.md").await.unwrap(), "hello\n");
+    assert_eq!(read(&root, "/deep/nested/new.md").await.unwrap(), "hello\n");
 
-    write(&root, &note("a.md", "x")).await.unwrap();
+    write(&root, &note("/a.md", "x")).await.unwrap();
     let leftovers: Vec<_> = std::fs::read_dir(notes_root(&dir))
         .unwrap()
         .filter_map(|e| e.ok())
@@ -49,19 +49,16 @@ async fn write_creates_parents_and_leaves_no_temp() {
 async fn the_log_region_is_unreachable_through_the_note_tools() {
     let dir = fixture_dir();
     let root = root(&dir);
-    let entry = ".logs/2026-07-01T09-00-00.000000-0700.md";
-    for err in [
-        write(&root, &note(entry, "nope")).await.unwrap_err(),
-        root.note_delete(&rp(entry)).await.unwrap_err(),
-        root.note_move(&rp(entry), &rp("moved.md"), false)
+    let entry = "/.logs/2026-07-01T09-00-00.000000-0700.md";
+    assert!(
+        noted::NotePath::new(entry).is_err(),
+        "a log entry is not a note path"
+    );
+    assert!(
+        read(&root, "/2026-07-01T09-00-00.000000-0700.md")
             .await
-            .unwrap_err(),
-    ] {
-        assert!(
-            matches!(err, noted::NotedError::Forbidden),
-            "expected a policy refusal, got {err}"
-        );
-    }
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -73,8 +70,9 @@ async fn log_note_writes_one_file_with_front_matter() {
         .await
         .unwrap();
     let rel = logged.path().to_string();
-    assert!(rel.starts_with("20"), "{rel}");
-    let on_disk = std::fs::read_to_string(notes_root(&dir).join(".logs").join(&rel)).unwrap();
+    assert!(rel.starts_with("/20"), "{rel}");
+    let file = rel.trim_start_matches('/').to_string();
+    let on_disk = std::fs::read_to_string(notes_root(&dir).join(".logs").join(&file)).unwrap();
     let text = String::from_utf8(logged.to_bytes()).unwrap();
     assert_eq!(text, on_disk);
     assert_eq!(logged.etag(), note(&rel, &on_disk).etag());
@@ -87,7 +85,7 @@ async fn log_note_writes_one_file_with_front_matter() {
     assert!(text.contains("source: test"));
     assert!(text.contains("did a thing"));
 
-    let entry = notes_root(&dir).join(".logs").join(&rel);
+    let entry = notes_root(&dir).join(".logs").join(&file);
     let mut written: Vec<String> = std::fs::read_dir(entry.parent().unwrap())
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -98,7 +96,7 @@ async fn log_note_writes_one_file_with_front_matter() {
         vec![
             "2026-06-15T08-30-00.000000-0700.md".to_string(),
             "2026-07-01T09-00-00.000000-0700.md".to_string(),
-            rel.clone(),
+            file.clone(),
         ],
         "the entry lands flat beside the others, leaving no temp file"
     );
@@ -118,10 +116,10 @@ async fn delete_moves_to_trash_and_uniquifies() {
     let dir = fixture_dir();
     let root = root(&dir);
 
-    let original = read(&root, "Inbox.md").await.unwrap();
-    let trashed = root.note_delete(&rp("Inbox.md")).await.unwrap();
-    assert_eq!(trashed.path().to_string(), "Inbox.md");
-    assert!(read(&root, "Inbox.md").await.is_err());
+    let original = read(&root, "/Inbox.md").await.unwrap();
+    let trashed = root.note_delete(&rp("/Inbox.md")).await.unwrap();
+    assert_eq!(trashed.path().to_string(), "/Inbox.md");
+    assert!(read(&root, "/Inbox.md").await.is_err());
     assert_eq!(
         std::fs::read_to_string(notes_root(&dir).join(".trash").join("Inbox.md")).unwrap(),
         original
@@ -129,18 +127,18 @@ async fn delete_moves_to_trash_and_uniquifies() {
 
     // .trash/old-idea.md already exists in the fixture → a same-named delete
     // must uniquify rather than clobber it.
-    write(&root, &note("old-idea.md", "different\n"))
+    write(&root, &note("/old-idea.md", "different\n"))
         .await
         .unwrap();
-    let uniq = root.note_delete(&rp("old-idea.md")).await.unwrap();
-    assert_eq!(uniq.path().to_string(), "old-idea.md");
+    let uniq = root.note_delete(&rp("/old-idea.md")).await.unwrap();
+    assert_eq!(uniq.path().to_string(), "/old-idea.md");
     assert_eq!(
         std::fs::read_to_string(notes_root(&dir).join(".trash").join("old-idea 1.md")).unwrap(),
         "different\n"
     );
 
     assert!(matches!(
-        root.note_delete(&rp("ghost.md")).await.unwrap_err(),
+        root.note_delete(&rp("/ghost.md")).await.unwrap_err(),
         noted::NotedError::NotFound
     ));
 }
@@ -150,38 +148,38 @@ async fn move_semantics() {
     let dir = fixture_dir();
     let root = root(&dir);
 
-    let body = read(&root, "Inbox.md").await.unwrap();
-    root.note_move(&rp("Inbox.md"), &rp("Inbox2.md"), false)
+    let body = read(&root, "/Inbox.md").await.unwrap();
+    root.note_move(&rp("/Inbox.md"), &rp("/Inbox2.md"), false)
         .await
         .unwrap();
-    assert_eq!(read(&root, "Inbox2.md").await.unwrap(), body);
+    assert_eq!(read(&root, "/Inbox2.md").await.unwrap(), body);
 
     assert!(matches!(
-        root.note_move(&rp("Inbox2.md"), &rp("projects/ideas.md"), false)
+        root.note_move(&rp("/Inbox2.md"), &rp("/projects/ideas.md"), false)
             .await
             .unwrap_err(),
         noted::NotedError::Conflict
     ));
-    root.note_move(&rp("Inbox2.md"), &rp("projects/ideas.md"), true)
+    root.note_move(&rp("/Inbox2.md"), &rp("/projects/ideas.md"), true)
         .await
         .unwrap();
-    assert_eq!(read(&root, "projects/ideas.md").await.unwrap(), body);
+    assert_eq!(read(&root, "/projects/ideas.md").await.unwrap(), body);
 
     assert!(matches!(
-        root.note_move(&rp("ghost.md"), &rp("d.md"), false)
+        root.note_move(&rp("/ghost.md"), &rp("/d.md"), false)
             .await
             .unwrap_err(),
         noted::NotedError::NotFound
     ));
     assert!(
-        root.note_move(&rp("daily"), &rp("daily"), false)
+        root.note_move(&rp("/daily"), &rp("/daily"), false)
             .await
             .unwrap_err()
             .to_string()
             .contains("same")
     );
     assert!(
-        root.note_move(&rp("projects"), &rp("projects/sub"), false)
+        root.note_move(&rp("/projects"), &rp("/projects/sub"), false)
             .await
             .unwrap_err()
             .to_string()
@@ -193,10 +191,10 @@ async fn move_semantics() {
 async fn move_onto_nonempty_folder_is_rejected() {
     let dir = fixture_dir();
     let root = root(&dir);
-    write(&root, &note("srcd/a.md", "a")).await.unwrap();
-    write(&root, &note("dstd/b.md", "b")).await.unwrap();
+    write(&root, &note("/srcd/a.md", "a")).await.unwrap();
+    write(&root, &note("/dstd/b.md", "b")).await.unwrap();
     assert!(
-        root.note_move(&rp("srcd"), &rp("dstd"), true)
+        root.note_move(&rp("/srcd"), &rp("/dstd"), true)
             .await
             .unwrap_err()
             .to_string()
@@ -227,7 +225,7 @@ async fn note_search_walks_the_open_region_only() {
     assert!(found(&root, ".tasks").await.unwrap().is_empty());
 
     let contacts = found(&root, "contacts").await.unwrap();
-    assert!(contacts.iter().any(|p| p == "people/contacts.md"));
+    assert!(contacts.iter().any(|p| p == "/people/contacts.md"));
     // old-idea.md exists only under the fixture's .trash/
     assert!(found(&root, "old-idea").await.unwrap().is_empty());
 }
@@ -252,7 +250,11 @@ async fn search_orders_paths_case_insensitively() {
         .await
         .unwrap();
         let out = out.render();
-        let got: Vec<&str> = out.lines().filter(|l| !l.contains('/')).collect();
+        let got: Vec<&str> = out
+            .lines()
+            .filter_map(|l| l.strip_prefix('/'))
+            .filter(|l| !l.contains('/'))
+            .collect();
         for name in want {
             assert!(got.contains(&name), "{mode}: missing {name} in {got:?}");
         }
@@ -277,9 +279,8 @@ async fn search_pattern_and_glob_edges() {
     assert!(found(&root, "(").await.is_err());
 
     std::fs::create_dir(notes_root(&dir).join("emptydir")).unwrap();
-    let scoped = |glob: &str, pattern: &str| SearchQuery {
-        globs: vec![glob.parse().unwrap()],
-        ..query(pattern, SearchMode::Path)
+    let scoped = |glob: &str, pattern: &str| {
+        query(pattern, SearchMode::Path).globs(vec![glob.parse().unwrap()])
     };
     assert!(
         root.note_search(&scoped("emptydir", "x"))
@@ -291,7 +292,7 @@ async fn search_pattern_and_glob_edges() {
         .note_search(&scoped("Inbox.md", "Inbox"))
         .await
         .unwrap();
-    assert!(hits.iter().any(|h| h.path == "Inbox.md"));
+    assert!(hits.iter().any(|h| h.path == rp("/Inbox.md")));
 }
 
 #[tokio::test]
@@ -302,53 +303,35 @@ async fn search_feature_flags() {
     std::fs::write(notes_root(&dir).join("lit.md"), "a.b\naxb\n").unwrap();
     let lines = |hits: &[noted::search::Hit]| -> usize {
         hits.iter()
-            .filter(|h| h.path == "lit.md")
+            .filter(|h| h.path == rp("/lit.md"))
             .map(|h| h.lines.len())
             .sum()
     };
     assert_eq!(lines(&grep(&root, "a.b").await.unwrap()), 2);
-    let fixed = SearchQuery {
-        fixed: true,
-        ..query("a.b", SearchMode::Line)
-    };
+    let fixed = query("a.b", SearchMode::Line).fixed(true);
     assert_eq!(lines(&root.note_search(&fixed).await.unwrap()), 1);
 
-    let word = SearchQuery {
-        word: true,
-        ..query("Inbo", SearchMode::Line)
-    };
+    let word = query("Inbo", SearchMode::Line).word(true);
     assert!(root.note_search(&word).await.unwrap().is_empty());
 
     std::fs::write(notes_root(&dir).join("case.md"), "Hello\n").unwrap();
-    let sensitive = SearchQuery {
-        case: CaseMode::Sensitive,
-        ..query("HELLO", SearchMode::Line)
-    };
+    let sensitive = query("HELLO", SearchMode::Line).case(CaseMode::Sensitive);
     assert!(root.note_search(&sensitive).await.unwrap().is_empty());
-    let insensitive = SearchQuery {
-        case: CaseMode::Insensitive,
-        ..query("HELLO", SearchMode::Line)
-    };
+    let insensitive = query("HELLO", SearchMode::Line).case(CaseMode::Insensitive);
     assert!(!root.note_search(&insensitive).await.unwrap().is_empty());
 
-    let excluded = SearchQuery {
-        globs: vec!["!people/**".parse().unwrap()],
-        ..query(".", SearchMode::Path)
-    };
+    let excluded = query(".", SearchMode::Path).globs(vec!["!people/**".parse().unwrap()]);
     let paths = root.note_search(&excluded).await.unwrap();
     assert!(
         !paths
             .iter()
-            .any(|h| h.path.to_string().starts_with("people/"))
+            .any(|h| h.path.to_string().starts_with("/people/"))
     );
-    assert!(paths.iter().any(|h| h.path == "Inbox.md"));
+    assert!(paths.iter().any(|h| h.path == rp("/Inbox.md")));
 
-    let markdown = SearchQuery {
-        types: vec!["md".parse().unwrap()],
-        ..query(".", SearchMode::Path)
-    };
+    let markdown = query(".", SearchMode::Path).types(vec!["md".parse().unwrap()]);
     let md_paths = root.note_search(&markdown).await.unwrap();
-    assert!(md_paths.iter().any(|h| h.path == "Inbox.md"));
+    assert!(md_paths.iter().any(|h| h.path == rp("/Inbox.md")));
 }
 
 #[test]
@@ -373,14 +356,14 @@ fn atomic_write_replaces_in_place() {
 async fn matching_condition_is_a_compare_and_swap() {
     let dir = fixture_dir();
     let root = root(&dir);
-    let original = note("cw.md", "one");
+    let original = note("/cw.md", "one");
     write(&root, &original).await.unwrap();
 
     let updated = original.clone().with_body("two");
     root.note_write(&updated, Condition::Matching(original.etag()))
         .await
         .unwrap();
-    assert_eq!(read(&root, "cw.md").await.unwrap(), "two");
+    assert_eq!(read(&root, "/cw.md").await.unwrap(), "two");
 
     let stale = original.clone().with_body("three");
     let err = root
@@ -388,15 +371,15 @@ async fn matching_condition_is_a_compare_and_swap() {
         .await
         .unwrap_err();
     assert!(matches!(err, noted::error::NotedError::Conflict));
-    assert_eq!(read(&root, "cw.md").await.unwrap(), "two");
+    assert_eq!(read(&root, "/cw.md").await.unwrap(), "two");
 
     root.note_write(
-        &note("cw.md", "four"),
-        Condition::Matching(note("cw.md", "two").etag()),
+        &note("/cw.md", "four"),
+        Condition::Matching(note("/cw.md", "two").etag()),
     )
     .await
     .unwrap();
-    assert_eq!(read(&root, "cw.md").await.unwrap(), "four");
+    assert_eq!(read(&root, "/cw.md").await.unwrap(), "four");
 }
 
 #[tokio::test]
@@ -404,21 +387,21 @@ async fn create_and_replace_conditions() {
     let dir = fixture_dir();
     let root = root(&dir);
 
-    root.note_write(&note("m.md", "hi"), Condition::Missing)
+    root.note_write(&note("/m.md", "hi"), Condition::Missing)
         .await
         .unwrap();
     assert!(matches!(
-        root.note_write(&note("m.md", "again"), Condition::Missing)
+        root.note_write(&note("/m.md", "again"), Condition::Missing)
             .await
             .unwrap_err(),
         noted::error::NotedError::Conflict
     ));
 
-    root.note_write(&note("m.md", "edited"), Condition::Exists)
+    root.note_write(&note("/m.md", "edited"), Condition::Exists)
         .await
         .unwrap();
     assert!(matches!(
-        root.note_write(&note("absent.md", "x"), Condition::Exists)
+        root.note_write(&note("/absent.md", "x"), Condition::Exists)
             .await
             .unwrap_err(),
         noted::error::NotedError::NotFound
@@ -429,11 +412,11 @@ async fn create_and_replace_conditions() {
 async fn conflict_message_never_mentions_sha256() {
     let dir = fixture_dir();
     let root = root(&dir);
-    write(&root, &note("c.md", "v1")).await.unwrap();
+    write(&root, &note("/c.md", "v1")).await.unwrap();
     let err = root
         .note_write(
-            &note("c.md", "v2"),
-            Condition::Matching(note("c.md", "other").etag()),
+            &note("/c.md", "v2"),
+            Condition::Matching(note("/c.md", "other").etag()),
         )
         .await
         .unwrap_err();
@@ -444,26 +427,26 @@ async fn conflict_message_never_mentions_sha256() {
 async fn edit_replaces_and_refuses_ambiguity() {
     let dir = fixture_dir();
     let root = root(&dir);
-    write(&root, &note("e.md", "one two one\n")).await.unwrap();
+    write(&root, &note("/e.md", "one two one\n")).await.unwrap();
 
     assert!(
-        root.note_edit(&rp("e.md"), &noted::note::Edit::new("one", "1", false))
+        root.note_edit(&rp("/e.md"), &noted::note::Edit::new("one", "1", false))
             .await
             .unwrap_err()
             .to_string()
             .contains("not unique")
     );
     assert!(
-        root.note_edit(&rp("e.md"), &noted::note::Edit::new("zzz", "1", false))
+        root.note_edit(&rp("/e.md"), &noted::note::Edit::new("zzz", "1", false))
             .await
             .unwrap_err()
             .to_string()
             .contains("not found")
     );
-    root.note_edit(&rp("e.md"), &noted::note::Edit::new("one", "1", true))
+    root.note_edit(&rp("/e.md"), &noted::note::Edit::new("one", "1", true))
         .await
         .unwrap();
-    assert_eq!(read(&root, "e.md").await.unwrap(), "1 two 1\n");
+    assert_eq!(read(&root, "/e.md").await.unwrap(), "1 two 1\n");
 }
 
 #[test]
@@ -483,7 +466,7 @@ fn condition_from_str_and_etag_roundtrip() {
     assert!("exists:".parse::<Condition>().is_err());
     assert!("bogus".parse::<Condition>().is_err());
 
-    let h = note("p.md", "payload").etag();
+    let h = note("/p.md", "payload").etag();
     let round: Etag = h.to_string().parse().unwrap();
     assert!(h == round);
     assert!("zz".parse::<Etag>().is_err());
@@ -506,10 +489,7 @@ async fn search_sorted_by_modified_lists_newest_first() {
     stamp(&dir, "sortb.md", "sortable\n", 2_000);
     stamp(&dir, "sortc.md", "sortable\n", 3_000);
 
-    let recent = SearchQuery {
-        order: noted::search::SearchOrder::Modified,
-        ..query("sortable", SearchMode::File)
-    };
+    let recent = query("sortable", SearchMode::File).order(noted::search::SearchOrder::Modified);
     let paths: Vec<String> = root
         .note_search(&recent)
         .await
@@ -517,7 +497,7 @@ async fn search_sorted_by_modified_lists_newest_first() {
         .iter()
         .map(|h| h.path.to_string())
         .collect();
-    assert_eq!(paths, vec!["sortc.md", "sortb.md", "sorta.md"]);
+    assert_eq!(paths, vec!["/sortc.md", "/sortb.md", "/sorta.md"]);
 }
 
 #[tokio::test]
@@ -539,8 +519,8 @@ async fn search_without_sort_keeps_path_order() {
             .unwrap()
             .iter()
             .map(|h| h.path.to_string())
-            .filter(|p| p.starts_with("sort"))
+            .filter(|p| p.starts_with("/sort"))
             .collect();
-        assert_eq!(paths, vec!["sorta.md", "sortb.md", "sortc.md"]);
+        assert_eq!(paths, vec!["/sorta.md", "/sortb.md", "/sortc.md"]);
     }
 }

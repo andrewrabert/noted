@@ -8,13 +8,14 @@ use ignore::overrides::OverrideBuilder;
 use ignore::types::TypesBuilder;
 use ignore::{IncrementalIgnore, WalkBuilder, WalkState};
 
+use crate::disk::{atomic_create, atomic_write, normalize};
+use crate::domain::NotePath;
 use crate::error::{NotedError, Result, io_error, rejected, unavailable};
 use crate::httpurl::HttpUrl;
-use crate::path::Path;
 use crate::platform::Entry;
-use crate::search::{GlobPattern, SearchMode, SearchOrder, SearchQuery, build_matcher};
+use crate::search::{GlobPattern, SearchMode, SearchOrder, SearchQuery};
 use crate::store::RawHit;
-use crate::util::{atomic_create, atomic_write, normalize};
+use crate::util::case_order;
 
 pub(crate) type Router = axum::Router;
 
@@ -269,7 +270,7 @@ pub(crate) async fn grep(
 ) -> Result<Vec<RawHit>> {
     let matcher = match query.mode {
         SearchMode::Path => None,
-        _ => Some(build_matcher(query)?),
+        _ => Some(query.matcher()?),
     };
     let base = base.to_path_buf();
     let from = from.to_path_buf();
@@ -292,7 +293,7 @@ pub(crate) async fn grep(
             let matcher = matcher.as_ref();
             let matched = &matched;
             let walked = &walked;
-            let base = &base;
+            let from = &from;
             Box::new(move |entry| {
                 let Ok(entry) = entry else {
                     return WalkState::Continue;
@@ -306,7 +307,7 @@ pub(crate) async fn grep(
                     .and_then(|meta| meta.modified().map_err(ignore::Error::from))
                     .unwrap_or(SystemTime::UNIX_EPOCH);
                 let path = entry.into_path();
-                let Some(rel) = relative(base, &path) else {
+                let Ok(rel) = relative(from, &path) else {
                     return WalkState::Continue;
                 };
                 if let Some(matcher) = matcher {
@@ -348,20 +349,32 @@ pub(crate) async fn grep(
     .await?
 }
 
-fn relative(base: &StdPath, abs: &StdPath) -> Option<Path> {
+// the hit's name spelled from the directory the search started in; a file
+// the note grammar refuses is not a hit
+fn relative(from: &StdPath, abs: &StdPath) -> Result<NotePath> {
     let cleaned = normalize(abs);
-    let under = cleaned.strip_prefix(base).ok()?;
-    Path::new(under.to_string_lossy().as_ref()).ok()
+    let under = cleaned
+        .strip_prefix(from)
+        .map_err(|_| rejected("outside the search root"))?;
+    let mut spelled = String::new();
+    for component in under.components() {
+        let std::path::Component::Normal(part) = component else {
+            return Err(rejected("not a plain path"));
+        };
+        spelled.push('/');
+        spelled.push_str(part.to_str().ok_or_else(|| rejected("not utf-8"))?);
+    }
+    NotePath::new(&spelled)
 }
 
+// 'path' order is case-insensitive over the spelled name
 fn ordered(hits: &mut [RawHit], order: SearchOrder) {
+    let by_name = |a: &RawHit, b: &RawHit| case_order(&a.path.to_string(), &b.path.to_string());
     match order {
-        SearchOrder::Path => hits.sort_by(|a, b| a.path.cmp(&b.path)),
-        SearchOrder::Modified => hits.sort_by(|a, b| {
-            b.modified
-                .cmp(&a.modified)
-                .then_with(|| a.path.cmp(&b.path))
-        }),
+        SearchOrder::Path => hits.sort_by(by_name),
+        SearchOrder::Modified => {
+            hits.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| by_name(a, b)))
+        }
     }
 }
 

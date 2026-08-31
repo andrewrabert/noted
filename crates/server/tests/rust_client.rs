@@ -34,11 +34,11 @@ async fn client_http_success_roundtrip() {
     let out = invoke(
         &backend,
         "WriteNote",
-        json!({"path": "r.md", "content": "hi"}),
+        json!({"path": "/r.md", "content": "hi"}),
     )
     .await
     .unwrap();
-    assert_eq!(out.render(), "wrote r.md");
+    assert_eq!(out.render(), "wrote /r.md");
     assert_eq!(
         std::fs::read_to_string(common::notes_root(&dir).join("r.md")).unwrap(),
         "hi"
@@ -49,7 +49,7 @@ async fn client_http_success_roundtrip() {
 async fn client_http_missing_note_maps_to_not_found() {
     let dir = common::fixture_dir();
     let backend = remote(&dir);
-    let err = invoke(&backend, "ReadNote", json!({"path": "ghost.md"}))
+    let err = invoke(&backend, "ReadNote", json!({"path": "/ghost.md"}))
         .await
         .unwrap_err();
     assert!(matches!(err, NotedError::NotFound), "{err:?}");
@@ -80,13 +80,13 @@ async fn client_http_sends_and_checks_bearer_token() {
     let authed_app = common::origin_app(common::root(&dir), &svc).await;
 
     let ok_backend = dialing(authed_app.clone(), Some(&token));
-    let ok = invoke(&ok_backend, "ReadNote", json!({"path": "Inbox.md"}))
+    let ok = invoke(&ok_backend, "ReadNote", json!({"path": "/Inbox.md"}))
         .await
         .unwrap();
     assert!(ok.render().contains("# Inbox"));
 
     let bad_backend = dialing(authed_app, Some("noted_key_wrong"));
-    let err = invoke(&bad_backend, "ReadNote", json!({"path": "Inbox.md"}))
+    let err = invoke(&bad_backend, "ReadNote", json!({"path": "/Inbox.md"}))
         .await
         .unwrap_err();
     assert!(matches!(err, NotedError::InvalidInput(_)), "{err:?}");
@@ -105,7 +105,7 @@ async fn client_http_log_records_the_servers_provenance() {
     let text = std::fs::read_to_string(
         common::notes_root(&dir)
             .join(".logs")
-            .join(path.to_string()),
+            .join(path.to_string().trim_start_matches('/')),
     )
     .unwrap();
     assert!(text.contains("source: test"), "{text}");
@@ -124,10 +124,10 @@ async fn client_search_path_mode_lists_every_open_note() {
     .unwrap();
     let text = out.render();
     let paths: Vec<&str> = text.lines().collect();
-    assert!(paths.contains(&"Inbox.md"));
-    assert!(paths.contains(&"projects/ideas.md"));
+    assert!(paths.contains(&"/Inbox.md"));
+    assert!(paths.contains(&"/projects/ideas.md"));
     assert!(
-        !paths.iter().any(|p| p.starts_with(".logs/")),
+        !paths.iter().any(|p| p.starts_with("/.logs/")),
         "the picker offers the open region only, never the log"
     );
 }

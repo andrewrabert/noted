@@ -2,9 +2,9 @@ use std::fmt;
 
 use fast_radix_trie::StringRadixMap;
 
+use crate::domain::{NotePath, Path, Region, Segment};
 use crate::error::{NotedError, Result, rejected};
-use crate::fragment::{AccessFragment, RegionFragment};
-use crate::path::{DirPath, Path};
+use crate::fragment::{AccessFragment, PolicyFragment};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Access {
@@ -32,8 +32,22 @@ impl AccessFragment {
     }
 }
 
+// the one place a path becomes an index key: the region base and then the
+// region-relative path, a separator after every segment, so a longest-prefix
+// lookup stops at a segment boundary ('/docs/' never covers '/docsX/')
+fn key(region: Region, at: &NotePath) -> String {
+    let base = region.base();
+    let mut out = String::from(Path::SEPARATOR);
+    for part in base.segments().chain(at.segments()) {
+        out.push_str(part.as_str());
+        out.push_str(Path::SEPARATOR);
+    }
+    out
+}
+
 fn resolved(
-    at: &DirPath,
+    region: Region,
+    at: &NotePath,
     asked: AccessFragment,
     ceiling: Access,
     default: Access,
@@ -41,7 +55,8 @@ fn resolved(
     asked
         .applied_to(ceiling, default)
         .map_err(|asked| PolicyError::Exceeds {
-            path: at.clone(),
+            region,
+            at: at.clone(),
             asked,
         })
         .map_err(NotedError::from)
@@ -51,10 +66,10 @@ fn resolved(
 struct AccessEntries(StringRadixMap<Access>);
 
 impl AccessEntries {
-    fn new(base: &DirPath) -> AccessEntries {
+    fn new(region: Region) -> AccessEntries {
         let mut entries = StringRadixMap::new();
         entries.insert(
-            base.as_str(),
+            key(region, &NotePath::default()),
             Access {
                 read: true,
                 write: true,
@@ -68,111 +83,162 @@ impl AccessEntries {
     // and a fragment may deny at the base yet reopen a name beneath it
     fn with_entries(
         &self,
-        base: (DirPath, AccessFragment),
-        named: impl IntoIterator<Item = (DirPath, AccessFragment)>,
+        region: Region,
+        base: (&NotePath, AccessFragment),
+        named: impl IntoIterator<Item = (NotePath, AccessFragment)>,
     ) -> Result<AccessEntries> {
         let (at, asked) = base;
-        let prior = self.for_path(&at);
+        let prior = self.for_path(region, at);
         let mut covering = self.clone();
         covering
             .0
-            .insert(at.as_str(), resolved(&at, asked, prior, prior)?);
+            .insert(key(region, at), resolved(region, at, asked, prior, prior)?);
 
         let mut entries = covering.clone();
         for (at, asked) in named {
-            let access = resolved(&at, asked, self.for_path(&at), covering.for_path(&at))?;
-            entries.0.insert(at.as_str(), access);
+            let access = resolved(
+                region,
+                &at,
+                asked,
+                self.for_path(region, &at),
+                covering.for_path(region, &at),
+            )?;
+            entries.0.insert(key(region, &at), access);
         }
         Ok(entries)
     }
 
-    fn for_path(&self, at: &DirPath) -> Access {
-        match self.0.get_longest_common_prefix(at.as_str()) {
+    fn for_path(&self, region: Region, at: &NotePath) -> Access {
+        match self.0.get_longest_common_prefix(&key(region, at)) {
             Some((_, access)) => *access,
             None => Access::default(),
         }
     }
 }
 
+/// Where a note is inside its region: the scope joined to the name. Never the
+/// region directory itself. Only the mint builds one; it leaves as segments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RegionNotePath(NotePath);
+
+impl RegionNotePath {
+    fn new(at: NotePath) -> Result<RegionNotePath> {
+        let is_root = at.segments().next().is_none();
+        match is_root {
+            true => Err(NotedError::Forbidden),
+            false => Ok(RegionNotePath(at)),
+        }
+    }
+
+    pub(crate) fn segments(&self) -> impl Iterator<Item = &Segment> {
+        self.0.segments()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RegionPolicy {
-    scope: Option<Path>,
-    base: DirPath,
+    region: Region,
+    scope: NotePath,
     entries: AccessEntries,
 }
 
 impl RegionPolicy {
-    pub fn new(base: DirPath) -> RegionPolicy {
+    pub(crate) fn new(region: Region) -> RegionPolicy {
         RegionPolicy {
-            scope: None,
-            entries: AccessEntries::new(&base),
-            base,
+            region,
+            scope: NotePath::default(),
+            entries: AccessEntries::new(region),
         }
     }
 
-    pub(crate) fn with_policy_fragment(&self, fragment: &RegionFragment) -> Result<RegionPolicy> {
-        let (scope, base) = match (&self.scope, &fragment.scope) {
-            (_, None) => (self.scope.clone(), self.base.clone()),
-            (None, Some(deeper)) => (Some(deeper.clone()), self.base.join(deeper)),
-            (Some(scope), Some(deeper)) => (Some(scope.join(deeper)), self.base.join(deeper)),
+    pub(crate) fn with_policy_fragment(&self, fragment: &PolicyFragment) -> Result<RegionPolicy> {
+        let scope = match &fragment.scope {
+            None => self.scope.clone(),
+            Some(deeper) => self.scope.join(deeper),
         };
         let entries = self.entries.with_entries(
-            (base.clone(), fragment.access),
-            fragment.named.iter().map(|(at, asked)| {
-                let at = match at {
-                    Some(at) => base.join(at),
-                    None => base.clone(),
-                };
-                (at, *asked)
-            }),
+            self.region,
+            (&scope, fragment.access),
+            fragment
+                .paths
+                .iter()
+                .map(|(at, asked)| (scope.join(at), *asked)),
         )?;
-
         Ok(RegionPolicy {
+            region: self.region,
             scope,
-            base,
             entries,
         })
     }
 
-    pub(crate) fn readable(&self, rel: &Path) -> Result<Readable> {
-        let at = self.base.join(rel);
-        match (self.entries.for_path(&at).read, at.to_path()) {
-            (true, Some(path)) => Ok(Readable(path)),
-            _ => Err(NotedError::Forbidden),
+    pub(crate) fn readable(&self, rel: &NotePath) -> Result<Readable> {
+        let at = RegionNotePath::new(self.scope.join(rel))?;
+        match self.entries.for_path(self.region, &at.0).read {
+            true => Ok(Readable {
+                region: self.region,
+                at,
+            }),
+            false => Err(NotedError::Forbidden),
         }
     }
 
-    pub(crate) fn writeable(&self, rel: &Path) -> Result<Writeable> {
-        let at = self.base.join(rel);
-        match (self.entries.for_path(&at).write, at.to_path()) {
-            (true, Some(path)) => Ok(Writeable(path)),
-            _ => Err(NotedError::Forbidden),
+    pub(crate) fn writeable(&self, rel: &NotePath) -> Result<Writeable> {
+        let at = RegionNotePath::new(self.scope.join(rel))?;
+        match self.entries.for_path(self.region, &at.0).write {
+            true => Ok(Writeable {
+                region: self.region,
+                at,
+            }),
+            false => Err(NotedError::Forbidden),
         }
     }
 
     pub fn access(&self) -> Access {
-        self.entries.for_path(&self.base)
+        self.entries.for_path(self.region, &self.scope)
     }
 
-    pub(crate) fn base(&self) -> &DirPath {
-        &self.base
-    }
-
-    pub(crate) fn scope(&self) -> Option<&Path> {
-        self.scope.as_ref()
+    pub(crate) fn scope(&self) -> &NotePath {
+        &self.scope
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Readable(pub(crate) Path);
+pub(crate) struct Readable {
+    region: Region,
+    at: RegionNotePath,
+}
+
+impl Readable {
+    pub(crate) fn region(&self) -> Region {
+        self.region
+    }
+
+    pub(crate) fn at(&self) -> &RegionNotePath {
+        &self.at
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Writeable(pub(crate) Path);
+pub(crate) struct Writeable {
+    region: Region,
+    at: RegionNotePath,
+}
+
+impl Writeable {
+    pub(crate) fn region(&self) -> Region {
+        self.region
+    }
+
+    pub(crate) fn at(&self) -> &RegionNotePath {
+        &self.at
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PolicyError {
+pub(crate) enum PolicyError {
     Exceeds {
-        path: DirPath,
+        region: Region,
+        at: NotePath,
         asked: AccessFragment,
     },
 }
@@ -180,9 +246,10 @@ pub enum PolicyError {
 impl fmt::Display for PolicyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PolicyError::Exceeds { path, asked } => write!(
+            PolicyError::Exceeds { region, at, asked } => write!(
                 f,
-                "'{path}' asks for {asked}, which the holder does not have there"
+                "'{}' asks for {asked}, which the holder does not have there",
+                key(*region, at)
             ),
         }
     }
@@ -196,22 +263,50 @@ impl From<PolicyError> for NotedError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
-    fn at(s: &str) -> Path {
-        Path::new(s).unwrap()
+    fn at(s: &str) -> NotePath {
+        NotePath::new(s).unwrap()
     }
 
     fn asked(read: Option<bool>, write: Option<bool>) -> AccessFragment {
         AccessFragment { read, write }
     }
 
-    fn applied(policy: &RegionPolicy, fragment: RegionFragment) -> Result<RegionPolicy> {
+    fn fragment(
+        scope: Option<&str>,
+        access: AccessFragment,
+        paths: &[(&str, AccessFragment)],
+    ) -> PolicyFragment {
+        PolicyFragment {
+            scope: scope.map(at),
+            access,
+            paths: paths
+                .iter()
+                .map(|(name, asked)| (at(name), *asked))
+                .collect::<BTreeMap<_, _>>(),
+        }
+    }
+
+    fn applied(policy: &RegionPolicy, fragment: PolicyFragment) -> Result<RegionPolicy> {
         policy.with_policy_fragment(&fragment)
     }
 
     fn root() -> RegionPolicy {
-        RegionPolicy::new(DirPath::root())
+        RegionPolicy::new(Region::Notes)
+    }
+
+    fn located(proof: &Readable) -> Vec<&str> {
+        proof.at().segments().map(Segment::as_str).collect()
+    }
+
+    #[test]
+    fn a_key_closes_every_segment_with_a_separator() {
+        assert_eq!(key(Region::Notes, &at("/")), "/");
+        assert_eq!(key(Region::Log, &at("/")), "/.logs/");
+        assert_eq!(key(Region::Tasks, &at("/a/b.md")), "/.tasks/a/b.md/");
     }
 
     #[test]
@@ -224,93 +319,111 @@ mod tests {
                 write: true
             }
         );
-        assert_eq!(policy.readable(&at("a/b.md")).unwrap().0, at("a/b.md"));
+        assert_eq!(
+            located(&policy.readable(&at("/a/b.md")).unwrap()),
+            ["a", "b.md"]
+        );
+    }
+
+    #[test]
+    fn the_region_directory_itself_is_never_minted() {
+        assert!(matches!(
+            root().readable(&at("/")),
+            Err(NotedError::Forbidden)
+        ));
+        assert!(matches!(
+            root().writeable(&at("/")),
+            Err(NotedError::Forbidden)
+        ));
     }
 
     #[test]
     fn a_named_entry_never_reaches_across_a_name_boundary() {
         let policy = applied(
             &root(),
-            RegionFragment {
-                named: vec![(Some(at("work")), asked(Some(false), Some(false)))],
-                ..Default::default()
-            },
+            fragment(
+                None,
+                AccessFragment::default(),
+                &[("/work", asked(Some(false), Some(false)))],
+            ),
         )
         .unwrap();
-        assert!(policy.readable(&at("work/a.md")).is_err());
-        assert!(policy.readable(&at("workshop/a.md")).is_ok());
+        assert!(policy.readable(&at("/work/a.md")).is_err());
+        assert!(policy.readable(&at("/workshop/a.md")).is_ok());
     }
 
     #[test]
     fn the_access_covers_the_named_entries() {
         let policy = applied(
             &root(),
-            RegionFragment {
-                access: asked(None, Some(false)),
-                named: vec![(Some(at("vendor")), asked(Some(false), None))],
-                ..Default::default()
-            },
+            fragment(
+                None,
+                asked(None, Some(false)),
+                &[("/vendor", asked(Some(false), None))],
+            ),
         )
         .unwrap();
-        assert!(policy.writeable(&at("vendor/x.md")).is_err());
-        assert!(policy.readable(&at("vendor/x.md")).is_err());
-        assert!(policy.readable(&at("other/x.md")).is_ok());
-        assert!(policy.writeable(&at("other/x.md")).is_err());
+        assert!(policy.writeable(&at("/vendor/x.md")).is_err());
+        assert!(policy.readable(&at("/vendor/x.md")).is_err());
+        assert!(policy.readable(&at("/other/x.md")).is_ok());
+        assert!(policy.writeable(&at("/other/x.md")).is_err());
     }
 
     #[test]
     fn a_sibling_denial_does_not_cover_a_deeper_named_entry() {
         let policy = applied(
             &root(),
-            RegionFragment {
-                named: vec![
-                    (None, asked(Some(true), Some(false))),
-                    (Some(at("task_0001.md")), asked(Some(true), Some(true))),
+            fragment(
+                None,
+                AccessFragment::default(),
+                &[
+                    ("/", asked(Some(true), Some(false))),
+                    ("/task_0001.md", asked(Some(true), Some(true))),
                 ],
-                ..Default::default()
-            },
+            ),
         )
         .unwrap();
-        assert!(policy.writeable(&at("task_0001.md")).is_ok());
-        assert!(policy.writeable(&at("task_0002.md")).is_err());
-        assert!(policy.readable(&at("task_0002.md")).is_ok());
+        assert!(policy.writeable(&at("/task_0001.md")).is_ok());
+        assert!(policy.writeable(&at("/task_0002.md")).is_err());
+        assert!(policy.readable(&at("/task_0002.md")).is_ok());
     }
 
     #[test]
     fn a_deny_all_access_still_lets_a_named_entry_reopen() {
         let policy = applied(
             &root(),
-            RegionFragment {
-                access: asked(Some(false), Some(false)),
-                named: vec![(Some(at(".logs")), asked(Some(true), Some(true)))],
-                ..Default::default()
-            },
+            fragment(
+                None,
+                asked(Some(false), Some(false)),
+                &[("/open", asked(Some(true), Some(true)))],
+            ),
         )
         .unwrap();
-        assert!(policy.readable(&at(".logs/a.md")).is_ok());
-        assert!(policy.writeable(&at(".logs/a.md")).is_ok());
-        assert!(policy.readable(&at("other/a.md")).is_err());
-        assert!(policy.writeable(&at("other/a.md")).is_err());
+        assert!(policy.readable(&at("/open/a.md")).is_ok());
+        assert!(policy.writeable(&at("/open/a.md")).is_ok());
+        assert!(policy.readable(&at("/other/a.md")).is_err());
+        assert!(policy.writeable(&at("/other/a.md")).is_err());
     }
 
     #[test]
     fn a_later_fragment_cannot_reopen_what_an_earlier_one_closed() {
         let closed = applied(
             &root(),
-            RegionFragment {
-                named: vec![(Some(at("secrets")), asked(Some(false), Some(false)))],
-                ..Default::default()
-            },
+            fragment(
+                None,
+                AccessFragment::default(),
+                &[("/secrets", asked(Some(false), Some(false)))],
+            ),
         )
         .unwrap();
         assert!(matches!(
             applied(
                 &closed,
-                RegionFragment {
-                    access: asked(Some(false), Some(false)),
-                    named: vec![(Some(at("secrets")), asked(Some(true), None))],
-                    ..Default::default()
-                },
+                fragment(
+                    None,
+                    asked(Some(false), Some(false)),
+                    &[("/secrets", asked(Some(true), None))],
+                ),
             ),
             Err(NotedError::InvalidInput(_))
         ));
@@ -318,22 +431,9 @@ mod tests {
 
     #[test]
     fn asking_for_more_than_the_covering_key_is_refused() {
-        let closed = applied(
-            &root(),
-            RegionFragment {
-                access: asked(Some(true), Some(false)),
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let closed = applied(&root(), fragment(None, asked(Some(true), Some(false)), &[])).unwrap();
         assert!(matches!(
-            applied(
-                &closed,
-                RegionFragment {
-                    access: asked(None, Some(true)),
-                    ..Default::default()
-                },
-            ),
+            applied(&closed, fragment(None, asked(None, Some(true)), &[])),
             Err(NotedError::InvalidInput(_))
         ));
     }
@@ -342,41 +442,48 @@ mod tests {
     fn a_scope_deepens_the_base_and_nothing_above_it_is_addressable() {
         let scoped = applied(
             &root(),
-            RegionFragment {
-                scope: Some(at("projects")),
-                ..Default::default()
-            },
+            fragment(Some("/projects"), AccessFragment::default(), &[]),
         )
         .unwrap();
-        assert_eq!(scoped.scope(), Some(&at("projects")));
-        assert_eq!(scoped.readable(&at("a.md")).unwrap().0, at("projects/a.md"));
+        assert_eq!(scoped.scope(), &at("/projects"));
+        assert_eq!(
+            located(&scoped.readable(&at("/a.md")).unwrap()),
+            ["projects", "a.md"]
+        );
 
         let deeper = applied(
             &scoped,
-            RegionFragment {
-                scope: Some(at("alpha")),
-                ..Default::default()
-            },
+            fragment(Some("/alpha"), AccessFragment::default(), &[]),
         )
         .unwrap();
-        assert_eq!(deeper.scope(), Some(&at("projects/alpha")));
+        assert_eq!(deeper.scope(), &at("/projects/alpha"));
         assert_eq!(
-            deeper.readable(&at("a.md")).unwrap().0,
-            at("projects/alpha/a.md")
+            located(&deeper.readable(&at("/a.md")).unwrap()),
+            ["projects", "alpha", "a.md"]
         );
     }
 
     #[test]
+    fn a_key_is_read_from_the_scope_in_every_region() {
+        for region in [Region::Notes, Region::Log, Region::Tasks] {
+            let policy = applied(
+                &RegionPolicy::new(region),
+                fragment(
+                    Some("/dev"),
+                    AccessFragment::default(),
+                    &[("/x", asked(Some(false), Some(false)))],
+                ),
+            )
+            .unwrap();
+            assert!(policy.readable(&at("/x/a.md")).is_err(), "{region:?}");
+            assert!(policy.readable(&at("/y/a.md")).is_ok(), "{region:?}");
+        }
+    }
+
+    #[test]
     fn write_does_not_imply_read() {
-        let policy = applied(
-            &root(),
-            RegionFragment {
-                access: asked(Some(false), Some(true)),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert!(policy.writeable(&at("a.md")).is_ok());
-        assert!(policy.readable(&at("a.md")).is_err());
+        let policy = applied(&root(), fragment(None, asked(Some(false), Some(true)), &[])).unwrap();
+        assert!(policy.writeable(&at("/a.md")).is_ok());
+        assert!(policy.readable(&at("/a.md")).is_err());
     }
 }

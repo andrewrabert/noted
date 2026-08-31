@@ -2,6 +2,7 @@ use std::pin::Pin;
 use std::time::SystemTime;
 
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "platform/system.rs"]
 mod system;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use system::{
@@ -10,6 +11,7 @@ pub(crate) use system::{
 };
 
 #[cfg(target_arch = "wasm32")]
+#[path = "platform/wasm.rs"]
 mod wasm;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use wasm::{

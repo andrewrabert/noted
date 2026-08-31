@@ -175,22 +175,23 @@ A fragment is written as JSON, and prints back the same way:
 
 ```json
 {
-  "scope": "dev/myproject",
+  "scope": "/dev/myproject",
   "access": { "read": true, "write": false },
-  "paths": { "vendor": { "read": false, "write": false } }
+  "paths": { "/vendor": { "read": false, "write": false } }
 }
 ```
 
-`scope` is optional and omitting it means the whole tree. `access` is the access over
-the scope itself, and `paths` is read from the scope. Both `access` and every `paths`
+`scope` is optional and omitting it means the whole tree. Every path starts with `/`.
+`access` is the access over the scope itself, and `paths` is read from the scope. Both `access` and every `paths`
 value take `read` and `write` as optional flags: an omitted flag keeps whatever the
 enclosing policy already allows, so `{"write": false}` closes writing and leaves reading
 as it was.
 
 The scope is cumulative across the three regions: a scope of `/a/b/c` puts notes at
 `a/b/c`, log entries at `.logs/a/b/c`, and tasks at `.tasks/a/b/c`. A `paths` key is read
-from the scope, except one at or under `.logs` or `.tasks`, which names that region: under
-scope `/dev`, `--in /.tasks=read` is `.tasks/dev` and `--in /.logs=write` is `.logs/dev`.
+from the scope and applies the same way in every region: under scope `/dev`, `--in
+/x=read` covers the note `dev/x`, the log entries under `.logs/dev/x`, and the tasks
+under `.tasks/dev/x`. The region directories themselves have no spelling in a policy.
 
 A user's policy is edited in place; a key's is fixed at its mint, so narrowing one means
 minting another. Both can mint narrowed child credentials (see
@@ -203,7 +204,7 @@ noted server user policy ar --scope /dev --in /secrets=  # set the whole fragmen
 noted server user list                                   # every user, with its policy
 noted server user remove ar                              # drops the user and everything under it
 noted server key create --scope /dev/myproject           # prints the macaroon on stdout
-noted server key create --in /= --in /.logs=write
+noted server key create --in /= --in /drafts=write
 noted server key list                                    # token-id, fingerprint, policy
 ```
 
@@ -216,7 +217,7 @@ every child narrows with it. Removing the user drops every credential under it.
 ```sh
 noted auth login --url https://notes.example.com         # browser OAuth; stores the login
 noted auth status                                        # who the stored login is
-noted auth mint --scope /dev/myproject --in /=read --in /.tasks=read,write
+noted auth mint --scope /dev/myproject --in /=read --in /todo=read,write
 noted auth logout                                        # drops the stored login
 ```
 

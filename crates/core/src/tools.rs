@@ -3,11 +3,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::domain::{NotePath, Region};
 use crate::error::{Result, rejected};
 use crate::note::{Condition, Edit, LogNote, LogQuery, TextNote};
-use crate::path::Path;
 use crate::policy::RegionPolicy;
-use crate::regions::RegionDir;
 use crate::root::NotedRoot;
 use crate::search::{
     CaseMode, FileType, GlobPattern, Hit, SearchMode, SearchOrder, SearchPattern, SearchQuery,
@@ -19,19 +18,36 @@ use crate::timerange::{TimeRange, TimeRangeBound};
 use crate::types::{LogBody, NoteBody, TaskBody};
 use crate::util::slice_lines;
 
+// Clap's derive resolves NotePath fields through this factory; parsing
+// still enters through the one NotePath::new gate.
+impl clap::builder::ValueParserFactory for NotePath {
+    type Parser = clap::builder::ValueParser;
+    fn value_parser() -> Self::Parser {
+        clap::builder::ValueParser::new(|s: &str| NotePath::new(s))
+    }
+}
+
 pub struct ToolDef {
     pub name: &'static str,
     pub title: &'static str,
     pub description: &'static str,
-    pub(crate) dir: RegionDir,
+    pub(crate) dir: Region,
     pub input_schema: Value,
 }
 
 impl ToolDef {
-    pub(crate) fn described(&self, scope: Option<&Path>) -> String {
-        match placement(self.dir, scope) {
-            None => self.description.to_string(),
-            Some(where_) => format!("{} {where_}", self.description),
+    // the description, followed by where this tool's region lands for a
+    // scoped holder
+    pub(crate) fn described(&self, scope: &NotePath) -> String {
+        let text = self.description;
+        let scoped = scope != &NotePath::default();
+        match (self.dir, scoped) {
+            (Region::Notes, false) => text.to_string(),
+            (Region::Notes, true) => format!("{text} Paths are relative to {scope}."),
+            (Region::Log, false) => format!("{text} Entries are stored under .logs/."),
+            (Region::Log, true) => format!("{text} Entries are stored under .logs{scope}."),
+            (Region::Tasks, false) => format!("{text} Tasks are stored under .tasks/."),
+            (Region::Tasks, true) => format!("{text} Tasks are stored under .tasks{scope}."),
         }
     }
 }
@@ -42,26 +58,15 @@ enum Mode {
     Write,
 }
 
-fn placement(dir: RegionDir, scope: Option<&Path>) -> Option<String> {
-    match (dir, scope) {
-        (RegionDir::Notes, None) => None,
-        (RegionDir::Notes, Some(scope)) => Some(format!("Paths are relative to {scope}.")),
-        (RegionDir::Log, None) => Some("Entries are stored under .logs/.".to_string()),
-        (RegionDir::Log, Some(scope)) => Some(format!("Entries are stored under .logs/{scope}.")),
-        (RegionDir::Tasks, None) => Some("Tasks are stored under .tasks/.".to_string()),
-        (RegionDir::Tasks, Some(scope)) => Some(format!("Tasks are stored under .tasks/{scope}.")),
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum ToolOutput {
     Text(String),
-    Written { path: Path },
-    Edited { path: Path },
-    Moved { from: Path, to: Path },
-    Deleted { path: Path },
-    Logged { path: Path },
+    Written { path: NotePath },
+    Edited { path: NotePath },
+    Moved { from: NotePath, to: NotePath },
+    Deleted { path: NotePath },
+    Logged { path: NotePath },
     Record(Value),
 }
 
@@ -90,7 +95,7 @@ struct ToolSpec {
     name: &'static str,
     title: &'static str,
     description: &'static str,
-    dir: RegionDir,
+    dir: Region,
     mode: Mode,
     schema: fn() -> Value,
 }
@@ -100,7 +105,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "SearchNotes",
         title: "Search notes",
         description: D_SEARCH_NOTES,
-        dir: RegionDir::Notes,
+        dir: Region::Notes,
         mode: Mode::Read,
         schema: schema_of::<SearchNotesArgs>,
     },
@@ -108,7 +113,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "SearchLog",
         title: "Search log",
         description: D_SEARCH_LOG,
-        dir: RegionDir::Log,
+        dir: Region::Log,
         mode: Mode::Read,
         schema: schema_of::<SearchLogArgs>,
     },
@@ -116,7 +121,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "SearchTasks",
         title: "Search tasks",
         description: D_SEARCH_TASKS,
-        dir: RegionDir::Tasks,
+        dir: Region::Tasks,
         mode: Mode::Read,
         schema: schema_of::<SearchTasksArgs>,
     },
@@ -124,7 +129,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "ReadNote",
         title: "Read note",
         description: D_READ,
-        dir: RegionDir::Notes,
+        dir: Region::Notes,
         mode: Mode::Read,
         schema: schema_of::<ReadArgs>,
     },
@@ -132,7 +137,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "WriteNote",
         title: "Write note",
         description: D_WRITE,
-        dir: RegionDir::Notes,
+        dir: Region::Notes,
         mode: Mode::Write,
         schema: schema_of::<WriteArgs>,
     },
@@ -140,7 +145,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "EditNote",
         title: "Edit note",
         description: D_EDIT,
-        dir: RegionDir::Notes,
+        dir: Region::Notes,
         mode: Mode::Write,
         schema: schema_of::<EditArgs>,
     },
@@ -148,7 +153,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "MoveNote",
         title: "Move note",
         description: D_MOVE,
-        dir: RegionDir::Notes,
+        dir: Region::Notes,
         mode: Mode::Write,
         schema: schema_of::<MoveArgs>,
     },
@@ -156,7 +161,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "DeleteNote",
         title: "Delete note",
         description: D_DELETE,
-        dir: RegionDir::Notes,
+        dir: Region::Notes,
         mode: Mode::Write,
         schema: schema_of::<DeleteArgs>,
     },
@@ -164,7 +169,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "LogNote",
         title: "Log entry",
         description: D_LOG,
-        dir: RegionDir::Log,
+        dir: Region::Log,
         mode: Mode::Write,
         schema: schema_of::<LogArgs>,
     },
@@ -172,7 +177,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "GetLog",
         title: "Get log entries",
         description: D_GET_LOG,
-        dir: RegionDir::Log,
+        dir: Region::Log,
         mode: Mode::Read,
         schema: schema_of::<GetLogArgs>,
     },
@@ -180,7 +185,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "CreateTask",
         title: "Create task",
         description: D_CREATE_TASK,
-        dir: RegionDir::Tasks,
+        dir: Region::Tasks,
         mode: Mode::Write,
         schema: schema_of::<CreateTaskArgs>,
     },
@@ -188,7 +193,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "GetTasks",
         title: "Get tasks",
         description: D_GET_TASKS,
-        dir: RegionDir::Tasks,
+        dir: Region::Tasks,
         mode: Mode::Read,
         schema: schema_of::<GetTasksArgs>,
     },
@@ -196,7 +201,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "UpdateTask",
         title: "Update task",
         description: D_UPDATE_TASK,
-        dir: RegionDir::Tasks,
+        dir: Region::Tasks,
         mode: Mode::Write,
         schema: schema_of::<UpdateTaskArgs>,
     },
@@ -204,7 +209,7 @@ const TOOLS: &[ToolSpec] = &[
         name: "MoveTask",
         title: "Move task",
         description: D_MOVE_TASK,
-        dir: RegionDir::Tasks,
+        dir: Region::Tasks,
         mode: Mode::Write,
         schema: schema_of::<MoveTaskArgs>,
     },
@@ -254,9 +259,9 @@ pub(crate) fn permitted(
         .iter()
         .filter(|t| {
             let access = match t.dir {
-                RegionDir::Notes => notes.access(),
-                RegionDir::Log => log.access(),
-                RegionDir::Tasks => tasks.access(),
+                Region::Notes => notes.access(),
+                Region::Log => log.access(),
+                Region::Tasks => tasks.access(),
             };
             match t.mode {
                 Mode::Read => access.read,
@@ -350,18 +355,15 @@ impl SearchNotesArgs {
     }
 
     fn into_query(self) -> SearchQuery {
-        SearchQuery {
-            pattern: self.pattern,
-            mode: self.mode,
-            order: self.sort,
-            context: self.context.max(0) as u32,
-            fixed: self.fixed,
-            case: self.case,
-            word: self.word,
-            multiline: self.multiline,
-            globs: self.glob,
-            types: self.type_,
-        }
+        SearchQuery::new(self.pattern, self.mode)
+            .order(self.sort)
+            .context(self.context.max(0) as u32)
+            .fixed(self.fixed)
+            .case(self.case)
+            .word(self.word)
+            .multiline(self.multiline)
+            .globs(self.glob)
+            .types(self.type_)
     }
 }
 
@@ -406,18 +408,12 @@ impl SearchLogArgs {
     fn query(self) -> Result<LogQuery> {
         Ok(LogQuery {
             range: TimeRange::new(self.since, self.until)?,
-            query: SearchQuery {
-                pattern: self.pattern,
-                mode: self.mode,
-                order: SearchOrder::default(),
-                context: self.context.max(0) as u32,
-                fixed: self.fixed,
-                case: self.case,
-                word: self.word,
-                multiline: self.multiline,
-                globs: Vec::new(),
-                types: Vec::new(),
-            },
+            query: SearchQuery::new(self.pattern, self.mode)
+                .context(self.context.max(0) as u32)
+                .fixed(self.fixed)
+                .case(self.case)
+                .word(self.word)
+                .multiline(self.multiline),
             limit: self.limit.clamp(1, 1000) as u32,
         })
     }
@@ -462,18 +458,12 @@ impl SearchTasksArgs {
         TaskSearch {
             prefix: self.prefix,
             include_completed: self.include_completed,
-            query: SearchQuery {
-                pattern: self.pattern,
-                mode: self.mode,
-                order: SearchOrder::default(),
-                context: self.context.max(0) as u32,
-                fixed: self.fixed,
-                case: self.case,
-                word: self.word,
-                multiline: self.multiline,
-                globs: Vec::new(),
-                types: Vec::new(),
-            },
+            query: SearchQuery::new(self.pattern, self.mode)
+                .context(self.context.max(0) as u32)
+                .fixed(self.fixed)
+                .case(self.case)
+                .word(self.word)
+                .multiline(self.multiline),
         }
     }
 }
@@ -506,7 +496,7 @@ impl GetLogArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct ReadArgs {
-    path: Path,
+    path: NotePath,
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     offset: Option<i64>,
@@ -516,7 +506,7 @@ pub struct ReadArgs {
 }
 
 impl ReadArgs {
-    pub fn new(path: Path) -> ReadArgs {
+    pub fn new(path: NotePath) -> ReadArgs {
         ReadArgs {
             path,
             offset: None,
@@ -527,7 +517,7 @@ impl ReadArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct WriteArgs {
-    path: Path,
+    path: NotePath,
     content: NoteBody,
     #[arg(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -536,7 +526,7 @@ pub struct WriteArgs {
 }
 
 impl WriteArgs {
-    pub fn new(path: Path, content: impl Into<NoteBody>) -> WriteArgs {
+    pub fn new(path: NotePath, content: impl Into<NoteBody>) -> WriteArgs {
         WriteArgs {
             path,
             content: content.into(),
@@ -552,7 +542,7 @@ impl WriteArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct EditArgs {
-    path: Path,
+    path: NotePath,
     old_string: String,
     new_string: String,
     #[arg(long = "replace-all")]
@@ -562,8 +552,8 @@ pub struct EditArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct MoveArgs {
-    path: Path,
-    dest: Path,
+    path: NotePath,
+    dest: NotePath,
     #[arg(long)]
     #[serde(default)]
     overwrite: bool,
@@ -571,7 +561,7 @@ pub struct MoveArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct DeleteArgs {
-    path: Path,
+    path: NotePath,
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]

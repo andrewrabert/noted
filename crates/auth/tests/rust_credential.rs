@@ -18,7 +18,7 @@ fn owner() -> Owner {
 #[test]
 fn a_minted_credential_carries_its_caveats_in_mint_order() {
     let caveats = vec![
-        Caveat::Policy(fragment(r#"{"scope":"dev"}"#)),
+        Caveat::Policy(fragment(r#"{"scope":"/dev"}"#)),
         Caveat::Token(MacaroonId::fresh()),
     ];
     let macaroon = Macaroon::mint(&owner(), &KeyRecord::fresh(), &caveats).unwrap();
@@ -32,7 +32,7 @@ fn an_open_authority_takes_no_credential_at_all() {
         &owner(),
         &KeyRecord::fresh(),
         &[
-            Caveat::Policy(fragment(r#"{"scope":"dev"}"#)),
+            Caveat::Policy(fragment(r#"{"scope":"/dev"}"#)),
             Caveat::Token(MacaroonId::new("minted-elsewhere")),
         ],
     )

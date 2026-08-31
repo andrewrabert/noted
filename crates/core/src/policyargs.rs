@@ -1,8 +1,8 @@
 use serde_json::{Map, Value, json};
 
+use crate::domain::NotePath;
 use crate::error::{Result, rejected};
 use crate::fragment::PolicyFragment;
-use crate::path::Path;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PolicyArgs {
@@ -22,15 +22,11 @@ impl PolicyArgs {
             Some(raw) => read_policy(raw)?,
         };
         if let Some(scope) = &self.scope {
-            doc.insert("scope".to_string(), json!(note_path(scope)?.as_str()));
+            doc.insert("scope".to_string(), json!(NotePath::new(scope)?));
         }
         write_entries(&mut doc, "paths", &self.inside)?;
         Ok(Value::Object(doc).to_string())
     }
-}
-
-fn note_path(raw: &str) -> Result<Path> {
-    Path::new(raw.trim_start_matches('/'))
 }
 
 fn read_policy(raw: &str) -> Result<Map<String, Value>> {
@@ -71,6 +67,7 @@ fn write_entries(doc: &mut Map<String, Value>, key: &str, raws: &[String]) -> Re
     Ok(())
 }
 
+// '/' names the whole fragment's access; any other path names an entry
 fn parse_entry(raw: &str) -> Result<(Option<String>, Value)> {
     let (path, modes) = match raw.split_once('=') {
         Some((path, modes)) => (path, Some(modes)),
@@ -78,7 +75,7 @@ fn parse_entry(raw: &str) -> Result<(Option<String>, Value)> {
     };
     let at = match path.trim_start_matches('/').is_empty() {
         true => None,
-        false => Some(note_path(path)?.to_string()),
+        false => Some(NotePath::new(path)?.to_string()),
     };
     let Some(modes) = modes else {
         return Ok((at, json!({"read": true, "write": true})));

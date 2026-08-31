@@ -1,21 +1,27 @@
 mod backend;
+#[path = "fs/disk.rs"]
+mod disk;
+mod domain;
+#[path = "fs/endpoint.rs"]
+mod endpoint;
 mod fragment;
+#[path = "fs/platform.rs"]
 mod platform;
 mod policy;
 mod policyargs;
+#[path = "fs/regions.rs"]
 mod regions;
 mod root;
 mod timerange;
 mod upstream;
 
-mod endpoint;
 pub mod error;
 pub mod front_matter;
 pub mod httpurl;
 pub mod newtype;
 pub mod note;
-pub mod path;
 pub mod search;
+#[path = "fs/store.rs"]
 pub mod store;
 pub mod tasks;
 pub mod tools;
@@ -23,15 +29,14 @@ pub mod types;
 pub mod util;
 
 pub use backend::{Backend, BackendArgs, ToolCall, ToolListing};
+pub use domain::NotePath;
 pub use endpoint::Endpoint;
 pub use error::{NotedError, Result};
 pub use fragment::{AccessFragment, PolicyFragment};
 pub use httpurl::HttpUrl;
 pub use note::{Etag, LogNote, Note, TextNote, Trashed};
-pub use path::{DirPath, Path};
 pub use policy::{Access, RegionPolicy};
 pub use policyargs::PolicyArgs;
-pub use regions::RegionDir;
 pub use root::NotedRoot;
 pub use store::NotedDir;
 pub use tasks::TaskNote;

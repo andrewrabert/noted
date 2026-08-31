@@ -89,7 +89,7 @@ impl std::str::FromStr for Endpoint {
                 #[cfg(unix)]
                 {
                     Ok(Endpoint {
-                        kind: EndpointKind::Unix(socket_path(Path::new(path))?),
+                        kind: EndpointKind::Unix(socket_path(&PathBuf::from(path))?),
                     })
                 }
                 #[cfg(not(unix))]
@@ -128,7 +128,7 @@ impl std::fmt::Display for Endpoint {
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
-    use std::path::Path;
+    use std::path::PathBuf;
 
     use super::Endpoint;
 
@@ -159,7 +159,10 @@ mod tests {
     #[test]
     fn parses_an_absolute_unix_path() {
         let ep: Endpoint = "unix:///run/noted.sock".parse().unwrap();
-        assert_eq!(ep.unix_path(), Some(Path::new("/run/noted.sock")));
+        assert_eq!(
+            ep.unix_path(),
+            Some(PathBuf::from("/run/noted.sock").as_path())
+        );
         assert!(ep.tcp().is_none());
         assert_eq!(ep.base_url().unwrap().as_str(), "http://localhost/");
     }
@@ -177,14 +180,14 @@ mod tests {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
 
-        let raw = Path::new(OsStr::from_bytes(b"/run/nc\xffted.sock"));
-        assert_eq!(super::socket_path(raw).unwrap(), raw);
+        let raw = PathBuf::from(OsStr::from_bytes(b"/run/nc\xffted.sock"));
+        assert_eq!(super::socket_path(&raw).unwrap(), raw);
     }
 
     #[cfg(unix)]
     #[test]
     fn rejects_a_relative_path_given_as_a_path() {
-        assert!(super::socket_path(Path::new("noted.sock")).is_err());
+        assert!(super::socket_path(&PathBuf::from("noted.sock")).is_err());
     }
 
     #[test]
