@@ -49,11 +49,15 @@ fn start() -> Result<ExitCode> {
     let cli = Cli::parse();
     let flags = cli.flags();
     let near = Settings::resolve(vec![flags.clone(), Layer::environment()])?;
-    let settings = match EnvFile::locate(near.get(Variable::EnvFile).map(Path::new)) {
+    let environment = config::Environment::detect();
+    let settings = match EnvFile::locate(
+        near.get(Variable::EnvFile).map(Path::new),
+        environment.config_dir.as_deref(),
+    ) {
         Some(file) => Settings::resolve(vec![flags, Layer::environment(), file.layer()?])?,
         None => near,
     };
-    let config = Config::new(settings, dirs::config_dir());
+    let config = Config::new(settings, environment.config_dir);
     let _log = logging::init(config.log_filter(), config.log_file())?;
     let runtime = tokio::runtime::Runtime::new().map_err(|e| io_error("runtime", e))?;
     runtime.block_on(run(cli.command, &config))
