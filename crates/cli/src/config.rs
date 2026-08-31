@@ -10,6 +10,15 @@ use noted_server::serve::ServedConfig;
 use crate::args::EntryFlags;
 use crate::settings::{Layer, Location, Settings, Variable};
 
+/// `<config_dir>/noted.env`, the env file default.
+const ENV_FILE_NAME: &str = "noted.env";
+/// The dotenv file discovered at or above the working directory.
+const DISCOVERED_ENV_FILE_NAME: &str = ".notedenv";
+/// The subdirectory of the config dir that holds the hosts file.
+const CONFIG_SUBDIR: &str = noted::APP_NAME;
+/// `<config_dir>/noted/hosts.json`, the hosts file default.
+const HOSTS_FILE_NAME: &str = "hosts.json";
+
 /// The dotenv file read as a layer of its own: the one the nearer layers name,
 /// else a `.notedenv` discovered at or above the working directory, else
 /// `<config_dir>/noted.env`. Exactly one file is ever read.
@@ -20,12 +29,8 @@ pub struct EnvFile {
 impl EnvFile {
     /// The file `arg` names, else the discovered `.notedenv`, else
     /// `<config_dir>/noted.env`.
-    pub fn locate(arg: Option<&Path>) -> Option<EnvFile> {
-        EnvFile::resolve(
-            arg,
-            std::env::current_dir().ok().as_deref(),
-            dirs::config_dir().as_deref(),
-        )
+    pub(crate) fn locate(arg: Option<&Path>, config_dir: Option<&Path>) -> Option<EnvFile> {
+        EnvFile::resolve(arg, std::env::current_dir().ok().as_deref(), config_dir)
     }
 
     /// `arg` when given and non-empty, else the nearest `.notedenv` at or
@@ -42,7 +47,7 @@ impl EnvFile {
             }),
             None => cwd
                 .and_then(EnvFile::discover)
-                .or_else(|| config_dir.map(|dir| dir.join("noted.env")))
+                .or_else(|| config_dir.map(|dir| dir.join(ENV_FILE_NAME)))
                 .map(|path| EnvFile { path }),
         }
     }
@@ -51,7 +56,7 @@ impl EnvFile {
     /// be inspected ends the walk with nothing found.
     fn discover(start: &Path) -> Option<PathBuf> {
         for dir in start.ancestors() {
-            let candidate = dir.join(".notedenv");
+            let candidate = dir.join(DISCOVERED_ENV_FILE_NAME);
             match candidate.symlink_metadata() {
                 Ok(_) => return Some(candidate),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -92,7 +97,7 @@ pub fn credential_store_config(
         None => {
             let dir = config_dir.ok_or_else(|| rejected("cannot determine config dir"))?;
             Ok(CredentialStoreConfig {
-                hosts_path: dir.join(noted::APP_NAME).join("hosts.json"),
+                hosts_path: dir.join(CONFIG_SUBDIR).join(HOSTS_FILE_NAME),
                 storage: SecretStorage::Auto,
             })
         }
@@ -113,6 +118,17 @@ impl EditorPreference {
 #[derive(Clone, Debug, Default)]
 pub struct Environment {
     pub config_dir: Option<PathBuf>,
+}
+
+impl Environment {
+    pub(crate) fn detect() -> Environment {
+        use etcetera::BaseStrategy;
+        Environment {
+            config_dir: etcetera::choose_base_strategy()
+                .ok()
+                .map(|strategy| strategy.config_dir()),
+        }
+    }
 }
 
 /// The whole CLI configuration, resolved once: nothing below reads the
