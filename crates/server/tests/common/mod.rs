@@ -9,8 +9,8 @@ use std::sync::Arc;
 use axum::Router;
 use axum::http::{HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
+use noted::NotePath;
 use noted::note::{Condition, TextNote};
-use noted::path::Path;
 use noted::search::{Hit, SearchMode, SearchQuery};
 use noted::store::NotedDir;
 use noted::types::Source;
@@ -34,8 +34,8 @@ pub async fn bound_listener() -> Bound {
     .unwrap()
 }
 
-pub fn rp(s: &str) -> Path {
-    s.parse().unwrap()
+pub fn rp(s: &str) -> NotePath {
+    NotePath::new(s).unwrap()
 }
 
 pub fn note(rel: &str, content: &str) -> TextNote {
@@ -57,11 +57,7 @@ pub fn held(text: &str) -> PolicyFragment {
 }
 
 pub fn query(pattern: &str, mode: SearchMode) -> SearchQuery {
-    SearchQuery {
-        pattern: pattern.parse().unwrap(),
-        mode,
-        ..Default::default()
-    }
+    SearchQuery::new(pattern.parse().unwrap(), mode)
 }
 
 pub async fn grep(root: &NotedRoot, pattern: &str) -> noted::Result<Vec<Hit>> {

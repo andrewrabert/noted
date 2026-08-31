@@ -3,12 +3,12 @@ use std::path::{Path as StdPath, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use crate::domain::{NotePath, Region, Segment};
 use crate::error::{NotedError, Result, io_error, rejected};
 use crate::note::{Condition, Etag};
-use crate::path::{DirPath, Path};
 use crate::platform::{self, Entry};
-use crate::policy::{Readable, Writeable};
-use crate::search::{Hit, SearchQuery};
+use crate::policy::{Readable, RegionNotePath, Writeable};
+use crate::search::SearchQuery;
 
 const TRASH: &str = ".trash";
 
@@ -25,43 +25,25 @@ impl NotedDir {
     }
 }
 
+/// A search hit as the disk reports it: the name is spelled from the
+/// directory the search started in.
 pub(crate) struct RawHit {
-    pub(crate) path: Path,
+    pub(crate) path: NotePath,
     #[allow(dead_code)]
     pub(crate) modified: SystemTime,
     pub(crate) lines: BTreeMap<u64, String>,
 }
 
-impl RawHit {
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-
-    pub(crate) fn into_hit(self, at: Readable) -> Result<Hit> {
-        match at.0 == self.path {
-            true => Ok(Hit {
-                path: self.path,
-                lines: self.lines,
-            }),
-            false => Err(rejected("search hit unlocked by another path")),
-        }
-    }
-}
-
-fn spare_names(at: &Path) -> impl Iterator<Item = String> + use<> {
-    let full = at.to_string();
-    let name = at.file_name().to_string();
-    let dir = match full.strip_suffix(&name) {
-        Some(dir) => dir.to_string(),
-        None => String::new(),
-    };
+// the name itself, then 'stem 1.ext', 'stem 2.ext', ... for a trash that
+// already holds it
+fn spare_names(name: &str) -> impl Iterator<Item = String> + use<> {
     let (stem, ext) = match name.rsplit_once('.') {
         Some((stem, ext)) if !stem.is_empty() => (stem.to_string(), Some(ext.to_string())),
-        _ => (name, None),
+        _ => (name.to_string(), None),
     };
-    std::iter::once(full).chain((1u64..1000).map(move |n| match &ext {
-        Some(ext) => format!("{dir}{stem} {n}.{ext}"),
-        None => format!("{dir}{stem} {n}"),
+    std::iter::once(name.to_string()).chain((1u64..1000).map(move |n| match &ext {
+        Some(ext) => format!("{stem} {n}.{ext}"),
+        None => format!("{stem} {n}"),
     }))
 }
 
@@ -93,27 +75,21 @@ impl Store {
         &self.inner.base
     }
 
-    fn absolute(&self, at: &Path) -> PathBuf {
-        self.inner.base.join(at.as_str())
-    }
-
-    fn directory(&self, from: &DirPath) -> PathBuf {
-        match from.to_path() {
-            Some(at) => self.absolute(&at),
-            None => self.inner.base.clone(),
+    // the one place segments become an OS path: the store root, the region's
+    // directory, then the segments given
+    fn rooted<'a>(&self, region: Region, parts: impl Iterator<Item = &'a Segment>) -> PathBuf {
+        let mut out = self.inner.base.clone();
+        for part in region.base().segments() {
+            out.push(part.as_str());
         }
-    }
-
-    // where a listing of 'from' starts in root-relative terms
-    fn prefix(&self, from: &DirPath) -> String {
-        match from.to_path() {
-            Some(at) => format!("{at}/"),
-            None => String::new(),
+        for part in parts {
+            out.push(part.as_str());
         }
+        out
     }
 
-    async fn addressable(&self, at: &Path) -> Result<PathBuf> {
-        let abs = self.absolute(at);
+    async fn addressable(&self, region: Region, at: &RegionNotePath) -> Result<PathBuf> {
+        let abs = self.rooted(region, at.segments());
         if platform::crosses_symlink(self.base(), &abs)
             || platform::ignored(self.base(), &abs).await?
         {
@@ -144,11 +120,11 @@ impl Store {
     }
 
     pub(crate) async fn read(&self, at: &Readable) -> Result<Vec<u8>> {
-        platform::read(&self.addressable(&at.0).await?).await
+        platform::read(&self.addressable(at.region(), at.at()).await?).await
     }
 
     pub(crate) async fn write(&self, at: &Writeable, data: &[u8], when: Condition) -> Result<()> {
-        let abs = self.addressable(&at.0).await?;
+        let abs = self.addressable(at.region(), at.at()).await?;
         let _guard = self.inner.writes.hold().await;
         match when {
             Condition::Always => platform::write(&abs, data).await,
@@ -170,8 +146,8 @@ impl Store {
         to: &Writeable,
         when: Condition,
     ) -> Result<()> {
-        let source = self.addressable(&from.0).await?;
-        let target = self.addressable(&to.0).await?;
+        let source = self.addressable(from.region(), from.at()).await?;
+        let target = self.addressable(to.region(), to.at()).await?;
         let _guard = self.inner.writes.hold().await;
         match when {
             Condition::Missing => platform::rename(&source, &target, false).await,
@@ -189,12 +165,22 @@ impl Store {
         }
     }
 
+    // the trash mirrors the store: the entry lands under the same region
+    // directory and path it was removed from
     pub(crate) async fn remove(&self, at: &Writeable) -> Result<()> {
-        let from = self.addressable(&at.0).await?;
+        let from = self.addressable(at.region(), at.at()).await?;
+        let parts: Vec<&Segment> = at.at().segments().collect();
+        let Some((name, dirs)) = parts.split_last() else {
+            return Err(NotedError::Forbidden);
+        };
+        let base = at.region().base();
+        let mut dir = self.inner.base.join(TRASH);
+        for part in base.segments().chain(dirs.iter().copied()) {
+            dir.push(part.as_str());
+        }
         let _guard = self.inner.writes.hold().await;
-        for candidate in spare_names(&at.0) {
-            let target = self.inner.base.join(TRASH).join(&candidate);
-            match platform::relocate(&from, &target).await {
+        for candidate in spare_names(name.as_str()) {
+            match platform::relocate(&from, &dir.join(&candidate)).await {
                 Err(NotedError::Conflict) => continue,
                 other => return other,
             }
@@ -202,44 +188,57 @@ impl Store {
         Err(NotedError::Conflict)
     }
 
-    pub(crate) async fn walk(&self, from: &DirPath) -> Vec<Path> {
-        self.listing(from, Listing { deep: true }).await
+    pub(crate) async fn walk(&self, region: Region, start: &NotePath) -> Vec<NotePath> {
+        self.listing(region, start, Listing { deep: true }).await
     }
 
-    pub(crate) async fn children(&self, from: &DirPath) -> Vec<Path> {
-        self.listing(from, Listing { deep: false }).await
+    pub(crate) async fn children(&self, region: Region, start: &NotePath) -> Vec<NotePath> {
+        self.listing(region, start, Listing { deep: false }).await
     }
 
-    async fn listing(&self, from: &DirPath, listing: Listing) -> Vec<Path> {
+    async fn listing(&self, region: Region, start: &NotePath, listing: Listing) -> Vec<NotePath> {
         let mut out = Vec::new();
-        self.collect(&self.directory(from), &self.prefix(from), listing, &mut out)
-            .await;
+        self.collect(
+            &self.rooted(region, start.segments()),
+            "",
+            listing,
+            &mut out,
+        )
+        .await;
         out
     }
 
-    async fn collect(&self, dir: &StdPath, prefix: &str, listing: Listing, out: &mut Vec<Path>) {
+    // an entry the note grammar refuses (a dotted name, an untrimmed one) is
+    // not a note and is not entered
+    async fn collect(
+        &self,
+        dir: &StdPath,
+        prefix: &str,
+        listing: Listing,
+        out: &mut Vec<NotePath>,
+    ) {
         let found = platform::entries(self.base(), dir, false)
             .await
             .unwrap_or_default();
         for Entry { name, is_dir, .. } in found {
-            if name.starts_with('.') {
-                continue;
-            }
-            let at = format!("{prefix}{name}");
-            let Ok(rel) = Path::new(&at) else {
+            let spelled = format!("{prefix}/{name}");
+            let Ok(rel) = NotePath::new(&spelled) else {
                 continue;
             };
             if !is_dir {
-                if name.ends_with(".md") {
-                    out.push(rel);
-                }
+                out.push(rel);
             } else if listing.deep {
-                Box::pin(self.collect(&dir.join(&name), &format!("{at}/"), listing, out)).await;
+                Box::pin(self.collect(&dir.join(&name), &spelled, listing, out)).await;
             }
         }
     }
 
-    pub(crate) async fn search(&self, from: &DirPath, query: &SearchQuery) -> Result<Vec<RawHit>> {
-        platform::grep(self.base(), &self.directory(from), query).await
+    pub(crate) async fn search(
+        &self,
+        region: Region,
+        start: &NotePath,
+        query: &SearchQuery,
+    ) -> Result<Vec<RawHit>> {
+        platform::grep(self.base(), &self.rooted(region, start.segments()), query).await
     }
 }

@@ -245,7 +245,7 @@ async fn oauth_folder_confinement() {
         &[(
             "p",
             UserSpec {
-                policy: Some(r#"{"scope":"projects"}"#),
+                policy: Some(r#"{"scope":"/projects"}"#),
                 ..UserSpec::new("pw")
             },
         )],
@@ -259,12 +259,18 @@ async fn oauth_folder_confinement() {
         json!({"pattern": ".", "mode": "path"}),
     )
     .await;
-    assert!(paths.lines().all(|p| !p.contains('/')) && !paths.is_empty());
+    assert!(!paths.is_empty());
+    assert!(
+        paths
+            .lines()
+            .all(|p| matches!(p.strip_prefix('/'), Some(rest) if !rest.contains('/'))),
+        "{paths}"
+    );
     let (is_err, msg) = mcp_text(
         &app,
         &token,
         "ReadNote",
-        json!({"path": "people/contacts.md"}),
+        json!({"path": "/people/contacts.md"}),
     )
     .await;
     assert!(is_err && msg.contains("not found"), "{msg}");
@@ -289,7 +295,7 @@ async fn oauth_read_only_blocks_write() {
         &app,
         &token,
         "WriteNote",
-        json!({"path": "x.md", "content": "hi"}),
+        json!({"path": "/x.md", "content": "hi"}),
     )
     .await;
     assert!(is_err && msg.contains("forbidden"), "{msg}");
@@ -381,7 +387,7 @@ async fn refresh_token_grant_and_rotation() {
 async fn tool_realm_closed_without_a_bearer() {
     let dir = common::fixture_dir();
     let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]).await;
-    let (s, _) = post_json(&app, "/tool/ReadNote", None, &json!({"path": "Inbox.md"})).await;
+    let (s, _) = post_json(&app, "/tool/ReadNote", None, &json!({"path": "/Inbox.md"})).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 }
 
@@ -532,7 +538,7 @@ async fn a_minted_credential_attenuates_access() {
     let (access, _r, _c) = authenticate(&app, "ann", "pw").await;
     let child = mint(&app, &access, Some(&read_only())).await;
     let search = json!({"pattern": ".", "mode": "path"});
-    let write = json!({"path": "x.md", "content": "hi"});
+    let write = json!({"path": "/x.md", "content": "hi"});
     assert_eq!(
         tool(&app, &child, "SearchNotes", search).await,
         StatusCode::OK
@@ -552,14 +558,14 @@ async fn a_minted_credential_confines_paths() {
     let dir = common::fixture_dir();
     let (app, _p) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
     let (access, _r, _c) = authenticate(&app, "ann", "pw").await;
-    let policy = held(r#"{"paths":{"people":{"read":false,"write":false}}}"#);
+    let policy = held(r#"{"paths":{"/people":{"read":false,"write":false}}}"#);
     let child = mint(&app, &access, Some(&policy)).await;
     assert_eq!(
         tool(
             &app,
             &child,
             "ReadNote",
-            json!({"path": "projects/ideas.md"})
+            json!({"path": "/projects/ideas.md"})
         )
         .await,
         StatusCode::OK
@@ -569,7 +575,7 @@ async fn a_minted_credential_confines_paths() {
             &app,
             &child,
             "ReadNote",
-            json!({"path": "people/contacts.md"})
+            json!({"path": "/people/contacts.md"})
         )
         .await,
         StatusCode::FORBIDDEN
@@ -598,8 +604,8 @@ async fn a_minted_credential_cannot_exceed_its_owners_policy() {
     )
     .await;
     for (name, args) in [
-        ("WriteNote", json!({"path": "x.md", "content": "hi"})),
-        ("ReadNote", json!({"path": "Inbox.md"})),
+        ("WriteNote", json!({"path": "/x.md", "content": "hi"})),
+        ("ReadNote", json!({"path": "/Inbox.md"})),
     ] {
         let (s, b) = common::post_json(&app, &format!("/tool/{name}"), Some(&child), &args).await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{name}");

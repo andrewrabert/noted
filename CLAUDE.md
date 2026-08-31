@@ -1,53 +1,55 @@
-# CLAUDE.md
+- Noted:
+    - Store(NotedBase)
+    - Region(RegionBase=`/`)
+        - RegionNotePath
+    - Region(RegionBase=`/.logs`)
+        - RegionNotePath
+    - Region(RegionBase=`/.tasks`)
+        - RegionNotePath
 
-## General guidelines
-- HARD CONSTRAINT: Never defer change of pre-existing code for any reason or scope.
-- Always prefer using an available `just` recipe when one exists.
-- Always consider the entire codebase for all tasks regardless of scope or goal
-- Always prefer rewriting the entire or large parts codebase to improve even the narrowest of changes
-- Always make change with zero concern or acknowledgement of backwards-compatibility
-- Always fix code when identified regardless
-- All note domain behavior must be invariant with a single truth
+- Noted:
+    - Store(NotedBase: PathBuf, disk root; only Store holds it)
+        - roots RegionBase + RegionNotePath onto NotedBase
+        - Trash(`/.trash`) - store-owned; never a Region; only `remove` writes it
+    - NoteRegion(RegionBase=`/`)
+        - Policy(Scope=NotePath, default=`/`, entries keyed by RegionBase + Scope + name)
+        - RegionNotePath - region-relative location; what the mint proves; `RegionBase + RegionNotePath` is what Store roots
+        - NotePath - scope-relative; the only spelling a user types
+        - Hit<NotePath>
+        - Trashed(NotePath)
+    - LogRegion(RegionBase=`/.logs`)
+        - Policy(...)
+        - RegionNotePath
+        - NotePath
+        - Hit<NotePath>
+    - TaskRegion(RegionBase=`/.tasks`)
+        - Policy(...)
+        - RegionNotePath
+        - NotePath (- Task - TaskRef -> NotePath entry (`+ .md`), Group - GroupPath; a task's directory)
+        - Hit<NotePath>
+    - Policy key - NotePath in PolicyFragment.paths; scope-relative; applies uniformly in every region. `.logs`/`.tasks` are server-private, never on the wire
 
-## Review guidelines
+- Frames (all segment lists, no OS meaning):
+    - NotePath - measured from Scope inside a Region; may be empty (`/`, the scope itself); identity; spelled with a leading separator, never a trailing one; `/` alone is root
+    - RegionNotePath - measured from RegionBase; non-empty; location the mint proves
+    - RegionBase - measured from NotedBase; may be empty (`/`); the region's directory
+    - Trie key = RegionBase + RegionNotePath spelled with a separator after every segment; built only by the private `key` fn in policy.rs; never a type
 
-- Prioritize correctness, path safety, tool-schema stability, then clarity.
-- Embrace wide rewrites for the betterment of even the smallest scoped changes
-- Flag code that breaks the guidelines below.
-- Flag a new or renamed tool missing from the `README.md` command listing.
-- Flag a new or changed `NOTED_*` variable missing from the `README.md` config table.
-- Flag a renamed or removed field in a tool's arg schema. Added fields are fine.
-- Flag a changed default in a tool's arg schema.
-- Flag changed behavior with no test, where a crate's `tests/` can cover it.
+- Crossings:
+    - NotePath -> RegionNotePath: only in the Policy mint (readable/writeable), only after the lookup says yes
+    - OS entry name -> NotePath: only in fs/ (Store listing, platform grep), outbound, via NotePath::new spelled from the walk root, Err skipped; RegionStore then re-mints each one
+    - RegionBase + RegionNotePath -> PathBuf: only in Store
+    - NotePath never sees RegionBase, Trash, or PathBuf
 
-## Style guidelines
 
-- Avoid violating clippy under `-D warnings`.
-- `Result<T, NotedError>` → `crate::error::Result<T>` (`noted::error::Result<T>` in `crates/cli`).
-- `NotedError::Variant(m)` → the matching constructor in `crates/core/src/error.rs`.
-- A bare `String` holding a domain value → its newtype from `crates/core/src/newtype.rs`.
-- Tool names are PascalCase.
-- The args struct for tool `Foo` is `FooArgs`.
-- A new test file is `tests/rust_<area>.rs`; CLI tests live in `crates/cli/tests/`.
-- A new test helper goes in that crate's `tests/common/mod.rs`.
-
-## Core code guidelines
-- Constraint: All I/O must be non-blocking. One exception: binding the listener at server startup and its cleanup at shutdown.
-- Constraint: All files are atomically written
-
-- Non-negotiable:
-  - A new tool is one `<Verb>Args` struct in `crates/core/src/tools.rs`, one `run_tool` arm, and one `NotedRoot` method.
-  - Do not add a clap subcommand, an rmcp entry, or an axum route for a tool.
-  - `std::fs::` outside `crates/core/src/store.rs` → a `Store` method.
-  - An absolute path outside `Store` → a `RelPath`.
-  - A path reached from anywhere but `NotedRoot` → a method on `NotedRoot`.
-  - A `String` or `&str` holding a path → `RelPath`, `TaskRef`, or `GroupPath`.
-  - No `TokenScope` or scope check inside a `run_tool` arm.
-  - A Unix socket bound outside `crates/server/src/socket.rs` → `bind_unix_socket`.
-
-- Avoid, unless absolutely necessary:
-  - `std::fs::write` → `util::atomic_write()`.
-  - A write that must not clobber → `util::atomic_create()`.
-  - `unwrap()` / `expect()` outside `tests/`. Permitted after a `strip_prefix` you just joined.
-  - Blocking I/O in an `async fn`.
-  - A subprocess in `tests/`. No `assert_cmd`, no `Command::new`.
+| Term       | Type                    | Notes                                                                 |
+|------------|-------------------------|-----------------------------------------------------------------------|
+| Region     | `Region` enum           | `Region::base()` is `/`, `/.logs`, `/.tasks`; a `RegionStore` per region |
+| Scope      | `NotePath`              | holder's subtree in every region; default `/`                         |
+| Note       | `NotePath`          |                                                                       |
+| Log entry  | `NotePath`          | timestamp name, write-once                                            |
+| Policy key | `NotePath`              | in `PolicyFragment.paths`; scope-relative; uniform across regions     |
+| Hit        | `Hit<NotePath>`     |                                                                       |
+| Trashed    | `NotePath`              | the removed note's name                                               |
+| Trash      | `.trash/`               | under store root                                                      |
+| Store root | `PathBuf`               | `Store` only                                                          |

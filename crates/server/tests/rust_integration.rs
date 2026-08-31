@@ -84,18 +84,18 @@ async fn advance(
 async fn read_existing_and_missing() {
     let dir = fixture_dir();
     let root = cores(&dir);
-    assert!(read(&root, "Inbox.md").await.unwrap().contains("# Inbox"));
-    assert!(read(&root, "nope.md").await.is_err());
+    assert!(read(&root, "/Inbox.md").await.unwrap().contains("# Inbox"));
+    assert!(read(&root, "/nope.md").await.is_err());
 }
 
 #[tokio::test]
 async fn write_roundtrip_and_path_escape() {
     let dir = fixture_dir();
     let root = cores(&dir);
-    write(&root, &note("sub/new.md", "hello")).await.unwrap();
-    assert_eq!(read(&root, "sub/new.md").await.unwrap(), "hello");
-    assert!("../escape.md".parse::<noted::path::Path>().is_err());
-    assert!("../../etc/passwd".parse::<noted::path::Path>().is_err());
+    write(&root, &note("/sub/new.md", "hello")).await.unwrap();
+    assert_eq!(read(&root, "/sub/new.md").await.unwrap(), "hello");
+    assert!(noted::NotePath::new("../escape.md").is_err());
+    assert!(noted::NotePath::new("/../../etc/passwd").is_err());
 }
 
 #[tokio::test]
@@ -108,20 +108,16 @@ async fn log_is_immutable_and_recoverable_delete() {
         .unwrap()
         .path()
         .to_string();
-    assert!(rel.starts_with("20"), "{rel}");
-    let spelled = format!(".logs/{rel}");
-    let err = write(&root, &note(&spelled, "x")).await.unwrap_err();
-    assert!(matches!(err, noted::NotedError::Forbidden), "{err}");
-    assert!(root.note_delete(&rp(&spelled)).await.is_err());
+    assert!(rel.starts_with("/20"), "{rel}");
+    let spelled = format!("/.logs{rel}");
     assert!(
-        root.note_move(&rp(&spelled), &rp("moved.md"), false)
-            .await
-            .is_err()
+        noted::NotePath::new(&spelled).is_err(),
+        "a log entry is not a note path"
     );
 
-    let trashed = root.note_delete(&rp("Inbox.md")).await.unwrap();
-    assert_eq!(trashed.path().to_string(), "Inbox.md");
-    assert!(read(&root, "Inbox.md").await.is_err());
+    let trashed = root.note_delete(&rp("/Inbox.md")).await.unwrap();
+    assert_eq!(trashed.path(), &rp("/Inbox.md"));
+    assert!(read(&root, "/Inbox.md").await.is_err());
 }
 
 #[tokio::test]
@@ -130,10 +126,10 @@ async fn search_content_and_path_exclude_trash() {
     let root = cores(&dir);
 
     let hits = grep(&root, "XYZZY").await.unwrap();
-    assert!(hits.iter().any(|h| h.path == "projects/ideas.md"));
+    assert!(hits.iter().any(|h| h.path == rp("/projects/ideas.md")));
 
     let normal = found(&root, "idea").await.unwrap();
-    assert!(!normal.iter().any(|p| p.starts_with(".trash/")));
+    assert!(!normal.iter().any(|p| p.starts_with("/.trash/")));
     // FROBNICATE appears only in the fixture's trashed note
     assert!(grep(&root, "FROBNICATE").await.unwrap().is_empty());
 }
@@ -195,15 +191,10 @@ async fn write_and_edit_refused_under_tasks() {
     let root = cores(&dir);
     create(&root, "t", "grp").await.unwrap();
     assert!(
-        write(&root, &note(".tasks/grp/task_0001.md", "x"))
-            .await
-            .is_err()
+        noted::NotePath::new("/.tasks/grp/task_0001.md").is_err(),
+        "a task entry is not a note path"
     );
-    assert!(
-        root.note_delete(&rp(".tasks/grp/task_0001.md"))
-            .await
-            .is_err()
-    );
+    assert!(read(&root, "/grp/task_0001.md").await.is_err());
 }
 
 async fn mcp_raw(app: &axum::Router, body: &Value) -> axum::response::Response {
@@ -290,11 +281,11 @@ async fn mcp_initialize_list_and_call() {
     assert!(props.get("source").is_none());
     assert_eq!(lognote["inputSchema"]["required"], json!(["body"]));
 
-    let read = call(&app, "ReadNote", json!({"path": "Inbox.md"})).await;
+    let read = call(&app, "ReadNote", json!({"path": "/Inbox.md"})).await;
     assert_eq!(read["isError"], false);
     assert!(tool_text(&read).contains("# Inbox"));
 
-    let missing = call(&app, "ReadNote", json!({"path": "nope.md"})).await;
+    let missing = call(&app, "ReadNote", json!({"path": "/nope.md"})).await;
     assert_eq!(missing["isError"], true);
     assert!(tool_text(&missing).starts_with("error:"));
 
@@ -337,7 +328,7 @@ async fn mcp_read_only_hides_and_refuses_mutators() {
         "a read-only policy lists every read tool and no writer"
     );
 
-    let write = call(&app, "WriteNote", json!({"path": "x.md", "content": "y"})).await;
+    let write = call(&app, "WriteNote", json!({"path": "/x.md", "content": "y"})).await;
     assert_eq!(write["isError"], true);
     assert!(tool_text(&write).contains("forbidden"));
 }
@@ -372,7 +363,7 @@ async fn http_tool_route_and_errors() {
                 .uri("/tool/ReadNote")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(
-                    json!({"path": "Inbox.md"}).to_string(),
+                    json!({"path": "/Inbox.md"}).to_string(),
                 ))
                 .unwrap(),
         )
@@ -389,7 +380,7 @@ async fn http_tool_route_and_errors() {
                 .uri("/tool/ReadNote")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(
-                    json!({"path": "nope.md"}).to_string(),
+                    json!({"path": "/nope.md"}).to_string(),
                 ))
                 .unwrap(),
         )
@@ -411,7 +402,7 @@ async fn http_bearer_auth_gates_requests() {
                 .uri("/tool/ReadNote")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(
-                    json!({"path": "Inbox.md"}).to_string(),
+                    json!({"path": "/Inbox.md"}).to_string(),
                 ))
                 .unwrap(),
         )
@@ -427,7 +418,7 @@ async fn http_bearer_auth_gates_requests() {
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
                 .body(axum::body::Body::from(
-                    json!({"path": "Inbox.md"}).to_string(),
+                    json!({"path": "/Inbox.md"}).to_string(),
                 ))
                 .unwrap(),
         )

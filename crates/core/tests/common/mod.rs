@@ -2,8 +2,8 @@
 
 use std::path::{Path as StdPath, PathBuf};
 
+use noted::NotePath;
 use noted::note::{Condition, TextNote};
-use noted::path::Path;
 use noted::search::{Hit, SearchMode, SearchQuery};
 use noted::store::NotedDir;
 use noted::tools::ToolOutput;
@@ -11,8 +11,8 @@ use noted::types::Source;
 use noted::{Backend, BackendArgs, NotedRoot, PolicyArgs, PolicyFragment, ToolCall};
 use serde_json::Value;
 
-pub fn rp(s: &str) -> Path {
-    s.parse().unwrap()
+pub fn rp(s: &str) -> NotePath {
+    NotePath::new(s).unwrap()
 }
 
 pub fn note(rel: &str, content: &str) -> TextNote {
@@ -34,11 +34,7 @@ pub fn held(text: &str) -> PolicyFragment {
 }
 
 pub fn query(pattern: &str, mode: SearchMode) -> SearchQuery {
-    SearchQuery {
-        pattern: pattern.parse().unwrap(),
-        mode,
-        ..Default::default()
-    }
+    SearchQuery::new(pattern.parse().unwrap(), mode)
 }
 
 pub async fn grep(root: &NotedRoot, pattern: &str) -> noted::Result<Vec<Hit>> {

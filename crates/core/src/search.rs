@@ -7,9 +7,9 @@ use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::domain::NotePath;
 use crate::error::{Result, rejected};
 use crate::newtype::str_newtype_validated;
-use crate::path::Path;
 
 #[derive(Serialize, Deserialize, JsonSchema, ValueEnum, Default, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -94,22 +94,85 @@ pub enum SearchOrder {
     Modified,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct SearchQuery {
-    pub pattern: SearchPattern,
-    pub mode: SearchMode,
-    pub order: SearchOrder,
-    pub context: u32,
-    pub fixed: bool,
-    pub case: CaseMode,
-    pub word: bool,
-    pub multiline: bool,
-    pub globs: Vec<GlobPattern>,
-    pub types: Vec<FileType>,
+    pub(crate) pattern: SearchPattern,
+    pub(crate) mode: SearchMode,
+    pub(crate) order: SearchOrder,
+    pub(crate) context: u32,
+    pub(crate) fixed: bool,
+    pub(crate) case: CaseMode,
+    pub(crate) word: bool,
+    pub(crate) multiline: bool,
+    pub(crate) globs: Vec<GlobPattern>,
+    pub(crate) types: Vec<FileType>,
+}
+
+impl SearchQuery {
+    pub fn new(pattern: SearchPattern, mode: SearchMode) -> SearchQuery {
+        SearchQuery {
+            pattern,
+            mode,
+            order: SearchOrder::default(),
+            context: 0,
+            fixed: false,
+            case: CaseMode::default(),
+            word: false,
+            multiline: false,
+            globs: Vec::new(),
+            types: Vec::new(),
+        }
+    }
+
+    pub fn order(mut self, order: SearchOrder) -> SearchQuery {
+        self.order = order;
+        self
+    }
+
+    pub fn context(mut self, context: u32) -> SearchQuery {
+        self.context = context;
+        self
+    }
+
+    pub fn fixed(mut self, fixed: bool) -> SearchQuery {
+        self.fixed = fixed;
+        self
+    }
+
+    pub fn case(mut self, case: CaseMode) -> SearchQuery {
+        self.case = case;
+        self
+    }
+
+    pub fn word(mut self, word: bool) -> SearchQuery {
+        self.word = word;
+        self
+    }
+
+    pub fn multiline(mut self, multiline: bool) -> SearchQuery {
+        self.multiline = multiline;
+        self
+    }
+
+    pub fn globs(mut self, globs: Vec<GlobPattern>) -> SearchQuery {
+        self.globs = globs;
+        self
+    }
+
+    pub fn types(mut self, types: Vec<FileType>) -> SearchQuery {
+        self.types = types;
+        self
+    }
+}
+
+impl Default for SearchQuery {
+    fn default() -> SearchQuery {
+        SearchQuery::new(SearchPattern::default(), SearchMode::default())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Hit<A = Path> {
+pub struct Hit<A = NotePath> {
     pub path: A,
     pub lines: BTreeMap<u64, String>,
 }
@@ -120,38 +183,42 @@ impl<A> Hit<A> {
     }
 }
 
-pub(crate) fn build_matcher(query: &SearchQuery) -> Result<RegexMatcher> {
-    let mut b = RegexMatcherBuilder::new();
-    match query.case {
-        CaseMode::Smart => b.case_smart(true),
-        CaseMode::Insensitive => b.case_insensitive(true),
-        CaseMode::Sensitive => b.case_smart(false),
-    };
-    b.fixed_strings(query.fixed)
-        .word(query.word)
-        .multi_line(query.multiline)
-        .build(query.pattern.as_str())
-        .map_err(|e| rejected(format!("invalid search pattern: {e}")))
-}
+impl SearchQuery {
+    pub(crate) fn matcher(&self) -> Result<RegexMatcher> {
+        let mut b = RegexMatcherBuilder::new();
+        match self.case {
+            CaseMode::Smart => b.case_smart(true),
+            CaseMode::Insensitive => b.case_insensitive(true),
+            CaseMode::Sensitive => b.case_smart(false),
+        };
+        b.fixed_strings(self.fixed)
+            .word(self.word)
+            .multi_line(self.multiline)
+            .build(self.pattern.as_str())
+            .map_err(|e| rejected(format!("invalid search pattern: {e}")))
+    }
 
-pub(crate) fn assemble<A>(query: &SearchQuery, hits: Vec<Hit<A>>) -> Result<Vec<Hit<A>>>
-where
-    A: std::fmt::Display + Clone + Eq + Hash,
-{
-    if !matches!(query.mode, SearchMode::Any | SearchMode::Path) {
-        return Ok(hits);
-    }
-    let matcher = build_matcher(query)?;
-    let mut seen: HashSet<A> = HashSet::new();
-    let mut out = Vec::new();
-    for hit in hits {
-        let keep = !hit.lines.is_empty()
-            || matcher
-                .is_match(hit.path.to_string().as_bytes())
-                .unwrap_or(false);
-        if keep && seen.insert(hit.path.clone()) {
-            out.push(hit);
+    pub(crate) fn assemble<A>(&self, hits: Vec<Hit<A>>) -> Result<Vec<Hit<A>>>
+    where
+        A: std::fmt::Display + Clone + Eq + Hash,
+    {
+        if !matches!(self.mode, SearchMode::Any | SearchMode::Path) {
+            return Ok(hits);
         }
+        let matcher = self.matcher()?;
+        let mut seen: HashSet<A> = HashSet::new();
+        let mut out = Vec::new();
+        for hit in hits {
+            let keep = !hit.lines.is_empty() || {
+                let name = hit.path.to_string();
+                matcher
+                    .is_match(name.as_bytes())
+                    .map_err(|e| rejected(format!("search match failed: {e}")))?
+            };
+            if keep && seen.insert(hit.path.clone()) {
+                out.push(hit);
+            }
+        }
+        Ok(out)
     }
-    Ok(out)
 }

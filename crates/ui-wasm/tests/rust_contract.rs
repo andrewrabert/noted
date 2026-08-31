@@ -7,7 +7,7 @@ use noted::search::{SearchMode, SearchOrder};
 use noted::store::NotedDir;
 use noted::tools::ToolOutput;
 use noted::types::Source;
-use noted::{NotedRoot, Path, ToolCall, ToolListing};
+use noted::{NotePath, NotedRoot, ToolCall, ToolListing};
 use noted_ui_wasm::api;
 use serde_json::Value;
 
@@ -274,7 +274,7 @@ fn every_payload_deserializes_as_the_tools_own_args() {
 
 #[test]
 fn the_response_envelope_is_the_one_the_ui_decodes() {
-    let path = |s: &str| Path::new(s).expect("a note path");
+    let path = |s: &str| NotePath::new(s).expect("a note path");
     let outputs = [
         ToolOutput::Text("hi".into()),
         ToolOutput::Written { path: path("a.md") },

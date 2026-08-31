@@ -22,15 +22,15 @@ async fn a_whitelist_resolves_the_same_everywhere() {
         .iter()
         .map(|h| h.path.to_string())
         .collect();
-    assert!(hits.contains(&"visible.md".to_string()));
-    assert!(hits.contains(&"wip-keep.md".to_string()));
-    assert!(!hits.contains(&"wip-x.md".to_string()));
+    assert!(hits.contains(&"/visible.md".to_string()));
+    assert!(hits.contains(&"/wip-keep.md".to_string()));
+    assert!(!hits.contains(&"/wip-x.md".to_string()));
 
-    assert_eq!(found(&root, "wip").await.unwrap(), vec!["wip-keep.md"]);
+    assert_eq!(found(&root, "wip").await.unwrap(), vec!["/wip-keep.md"]);
 
-    assert!(read(&root, "wip-keep.md").await.is_ok());
-    assert!(read(&root, "visible.md").await.is_ok());
-    assert!(read(&root, "wip-x.md").await.is_err());
+    assert!(read(&root, "/wip-keep.md").await.is_ok());
+    assert!(read(&root, "/visible.md").await.is_ok());
+    assert!(read(&root, "/wip-x.md").await.is_err());
 }
 
 // '.ignore' in a directory outranks '.gitignore' in that same directory
@@ -50,8 +50,8 @@ async fn a_dot_ignore_rule_outranks_a_gitignore_rule() {
         .iter()
         .map(|h| h.path.to_string())
         .collect();
-    assert!(hits.contains(&"contested.md".to_string()));
-    assert!(read(&root, "contested.md").await.is_ok());
+    assert!(hits.contains(&"/contested.md".to_string()));
+    assert!(read(&root, "/contested.md").await.is_ok());
 }
 
 // '.ignore' at the notes root outranks a '!' rule in a nested '.gitignore'
@@ -73,9 +73,9 @@ async fn a_higher_dot_ignore_outranks_a_deeper_gitignore_whitelist() {
         .iter()
         .map(|h| h.path.to_string())
         .collect();
-    assert!(hits.contains(&"area/ok.md".to_string()));
-    assert!(!hits.contains(&"area/keep.log".to_string()));
-    assert!(read(&root, "area/keep.log").await.is_err());
+    assert!(hits.contains(&"/area/ok.md".to_string()));
+    assert!(!hits.contains(&"/area/keep.log".to_string()));
+    assert!(read(&root, "/area/keep.log").await.is_err());
 }
 
 // a rule at the notes root hides a task from both task_search and task_get,
@@ -133,10 +133,13 @@ async fn an_ignored_path_is_unaddressable() {
     std::fs::create_dir(notes.join("drafts")).unwrap();
     std::fs::write(notes.join("drafts/note.md"), "x").unwrap();
 
-    let err = read(&root, "hidden-note.md").await.unwrap_err().to_string();
+    let err = read(&root, "/hidden-note.md")
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("invalid path"), "{err}");
 
-    for rel in ["hidden-note.md", "drafts/note.md"] {
+    for rel in ["/hidden-note.md", "/drafts/note.md"] {
         assert!(read(&root, rel).await.is_err(), "read {rel} should reject");
         assert!(
             write(&root, &note(rel, "x")).await.is_err(),
@@ -147,13 +150,13 @@ async fn an_ignored_path_is_unaddressable() {
             "delete {rel} should reject"
         );
         assert!(
-            root.note_move(&rp(rel), &rp("moved.md"), false)
+            root.note_move(&rp(rel), &rp("/moved.md"), false)
                 .await
                 .is_err(),
             "move {rel} should reject"
         );
     }
-    assert!(write(&root, &note("drafts/new.md", "x")).await.is_err());
+    assert!(write(&root, &note("/drafts/new.md", "x")).await.is_err());
 }
 
 // a rule written after the root was opened takes effect on the next operation
@@ -164,24 +167,24 @@ async fn a_new_rule_needs_no_reopen() {
     let notes = notes_root(&dir);
 
     std::fs::write(notes.join("later.md"), "NEEDLE").unwrap();
-    assert!(read(&root, "later.md").await.is_ok());
+    assert!(read(&root, "/later.md").await.is_ok());
     assert!(
         grep(&root, "NEEDLE")
             .await
             .unwrap()
             .iter()
-            .any(|h| h.path == rp("later.md"))
+            .any(|h| h.path == rp("/later.md"))
     );
 
     std::fs::write(notes.join(".ignore"), "later.md\n").unwrap();
 
-    assert!(read(&root, "later.md").await.is_err());
+    assert!(read(&root, "/later.md").await.is_err());
     assert!(
         !grep(&root, "NEEDLE")
             .await
             .unwrap()
             .iter()
-            .any(|h| h.path == rp("later.md"))
+            .any(|h| h.path == rp("/later.md"))
     );
 }
 
@@ -204,7 +207,7 @@ async fn gitignore_rules_do_not_need_a_repository() {
         .iter()
         .map(|h| h.path.to_string())
         .collect();
-    assert!(hits.contains(&"visible.md".to_string()));
-    assert!(!hits.contains(&"drafts/note.md".to_string()));
-    assert!(read(&root, "drafts/note.md").await.is_err());
+    assert!(hits.contains(&"/visible.md".to_string()));
+    assert!(!hits.contains(&"/drafts/note.md".to_string()));
+    assert!(read(&root, "/drafts/note.md").await.is_err());
 }

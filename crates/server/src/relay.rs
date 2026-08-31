@@ -205,17 +205,17 @@ mod tests {
     fn a_query_carries_the_relays_confinement_ahead_of_the_callers() {
         let relay = Relay::open_stdio(
             None,
-            fragment(r#"{"scope":"a"}"#),
+            fragment(r#"{"scope":"/a"}"#),
             "http://upstream.test".parse().unwrap(),
             Transport::Router(axum::Router::new()),
         )
         .unwrap();
 
         assert_eq!(
-            relay.query(&[fragment(r#"{"scope":"b"}"#)]),
+            relay.query(&[fragment(r#"{"scope":"/b"}"#)]),
             vec![
-                ("policy", r#"{"scope":"a"}"#.to_string()),
-                ("policy", r#"{"scope":"b"}"#.to_string()),
+                ("policy", r#"{"scope":"/a"}"#.to_string()),
+                ("policy", r#"{"scope":"/b"}"#.to_string()),
             ]
         );
     }

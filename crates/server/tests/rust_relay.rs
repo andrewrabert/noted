@@ -144,28 +144,28 @@ async fn relay_app_derives_routing_and_authentication_from_one_relay() {
     )
     .await;
 
-    let (status, _) = read(&app, None, "Inbox.md").await;
+    let (status, _) = read(&app, None, "/Inbox.md").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
 async fn a_three_hop_chain_composes_scopes_in_hop_order() {
     let dir = common::fixture_dir();
-    seed(&dir, "a/b/x.md", "innermost").await;
+    seed(&dir, "/a/b/x.md", "innermost").await;
     let (origin, _seen) = upstream(&dir);
 
-    let outer_app = in_front_of(None, r#"{"scope":"a"}"#, origin).await;
-    let inner_app = in_front_of(None, r#"{"scope":"b"}"#, outer_app.clone()).await;
+    let outer_app = in_front_of(None, r#"{"scope":"/a"}"#, origin).await;
+    let inner_app = in_front_of(None, r#"{"scope":"/b"}"#, outer_app.clone()).await;
 
-    let (status, body) = read(&inner_app, None, "x.md").await;
+    let (status, body) = read(&inner_app, None, "/x.md").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(data(&body), "innermost");
 
     // the outer hop's scope is applied first, so `b/` is still below it
-    let (status, body) = read(&outer_app, None, "b/x.md").await;
+    let (status, body) = read(&outer_app, None, "/b/x.md").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(data(&body), "innermost");
-    let (status, _) = read(&outer_app, None, "x.md").await;
+    let (status, _) = read(&outer_app, None, "/x.md").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -175,7 +175,7 @@ async fn a_relay_takes_no_credential_from_its_caller() {
     let (origin, seen) = upstream(&dir);
     let app = in_front_of(None, "{}", origin).await;
 
-    let (status, body) = read(&app, Some("noted_mac_whatever"), "Inbox.md").await;
+    let (status, body) = read(&app, Some("noted_mac_whatever"), "/Inbox.md").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
         detail(&body).contains("takes no credential"),
@@ -189,9 +189,9 @@ async fn a_relay_takes_no_credential_from_its_caller() {
 async fn a_relay_carries_the_credential_it_was_configured_with_unchanged() {
     let dir = common::fixture_dir();
     let (origin, seen, held) = keyed_upstream(&dir).await;
-    let app = in_front_of(Some(held.clone()), r#"{"scope":"projects"}"#, origin).await;
+    let app = in_front_of(Some(held.clone()), r#"{"scope":"/projects"}"#, origin).await;
 
-    let (status, body) = read(&app, None, "ideas.md").await;
+    let (status, body) = read(&app, None, "/ideas.md").await;
     assert_eq!(status, StatusCode::OK);
     assert!(data(&body).contains("XYZZY"));
 
@@ -199,7 +199,7 @@ async fn a_relay_carries_the_credential_it_was_configured_with_unchanged() {
     assert_eq!(carried, format!("Bearer {}", held.expose()));
     assert_eq!(
         target,
-        narrowed("/tool/ReadNote", &[r#"{"scope":"projects"}"#])
+        narrowed("/tool/ReadNote", &[r#"{"scope":"/projects"}"#])
     );
 }
 
@@ -209,7 +209,7 @@ async fn a_relay_holding_no_credential_presents_none() {
     let (origin, seen) = upstream(&dir);
     let app = in_front_of(None, "{}", origin).await;
 
-    let (status, _) = read(&app, None, "Inbox.md").await;
+    let (status, _) = read(&app, None, "/Inbox.md").await;
     assert_eq!(status, StatusCode::OK);
 
     let (carried, target) = first(&seen);
@@ -223,7 +223,7 @@ async fn a_caller_over_a_socket_relay_runs_at_the_relays_policy() {
     use noted_server::socket::bind_unix_socket;
 
     let dir = common::fixture_dir();
-    seed(&dir, "a/x.md", "scoped").await;
+    seed(&dir, "/a/x.md", "scoped").await;
     let sock = dir.path().join("noted.sock");
     let (listener, guard) = bind_unix_socket(&sock, None).unwrap();
     let origin = common::open_app(&dir);
@@ -234,9 +234,9 @@ async fn a_caller_over_a_socket_relay_runs_at_the_relays_policy() {
 
     let endpoint: Endpoint = format!("unix://{}", sock.display()).parse().unwrap();
     let bound = common::bound_listener().await;
-    let app = relay_app(None, r#"{"scope":"a"}"#, endpoint, &bound, Transport::Real).await;
+    let app = relay_app(None, r#"{"scope":"/a"}"#, endpoint, &bound, Transport::Real).await;
 
-    let (status, body) = read(&app, None, "x.md").await;
+    let (status, body) = read(&app, None, "/x.md").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(data(&body), "scoped");
 }
@@ -244,19 +244,19 @@ async fn a_caller_over_a_socket_relay_runs_at_the_relays_policy() {
 #[tokio::test]
 async fn a_relay_confinement_dominates_the_callers() {
     let dir = common::fixture_dir();
-    seed(&dir, "a/b/x.md", "confined").await;
+    seed(&dir, "/a/b/x.md", "confined").await;
     let (origin, seen) = upstream(&dir);
     let app = in_front_of(
         None,
-        r#"{"scope":"a","access":{"read":true,"write":false}}"#,
+        r#"{"scope":"/a","access":{"read":true,"write":false}}"#,
         origin,
     )
     .await;
 
     let (status, body) = read_at(
         &app,
-        &narrowed("/tool/ReadNote", &[r#"{"scope":"b"}"#]),
-        "x.md",
+        &narrowed("/tool/ReadNote", &[r#"{"scope":"/b"}"#]),
+        "/x.md",
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -267,17 +267,17 @@ async fn a_relay_confinement_dominates_the_callers() {
         narrowed(
             "/tool/ReadNote",
             &[
-                r#"{"scope":"a","access":{"read":true,"write":false}}"#,
-                r#"{"scope":"b"}"#,
+                r#"{"scope":"/a","access":{"read":true,"write":false}}"#,
+                r#"{"scope":"/b"}"#,
             ]
         )
     );
 
     let (status, _) = post_json(
         &app,
-        &narrowed("/tool/WriteNote", &[r#"{"scope":"b"}"#]),
+        &narrowed("/tool/WriteNote", &[r#"{"scope":"/b"}"#]),
         None,
-        &json!({"path": "y.md", "content": "no"}),
+        &json!({"path": "/y.md", "content": "no"}),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -285,7 +285,7 @@ async fn a_relay_confinement_dominates_the_callers() {
     let (status, _) = read_at(
         &app,
         &narrowed("/tool/ReadNote", &[r#"{"access":{"write":true}}"#]),
-        "b/x.md",
+        "/b/x.md",
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -297,8 +297,8 @@ async fn an_upstream_status_and_detail_reach_the_caller_unchanged() {
     let origin = common::open_app(&dir);
     let app = in_front_of(None, "{}", origin.clone()).await;
 
-    let (direct_status, direct_body) = read(&origin, None, "nope.md").await;
-    let (status, body) = read(&app, None, "nope.md").await;
+    let (direct_status, direct_body) = read(&origin, None, "/nope.md").await;
+    let (status, body) = read(&app, None, "/nope.md").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(status, direct_status);
     assert_eq!(body, direct_body);
@@ -311,7 +311,7 @@ async fn an_unreachable_upstream_names_only_the_dialable_endpoint_attempted() {
     let bound = common::bound_listener().await;
     let app = relay_app(None, "{}", dead, &bound, Transport::Real).await;
 
-    let (status, body) = read(&app, None, "Inbox.md").await;
+    let (status, body) = read(&app, None, "/Inbox.md").await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(
         detail(&body).starts_with("cannot reach http://127.0.0.1:1"),
@@ -336,8 +336,8 @@ async fn mcp_bodies_cross_a_relay_byte_for_byte() {
     let origin = common::open_app(&dir);
     let app = in_front_of(None, "{}", origin.clone()).await;
 
-    let (direct_status, _h, direct_body) = post_mcp(&origin, None, &mcp_read("Inbox.md")).await;
-    let (status, _h, body) = post_mcp(&app, None, &mcp_read("Inbox.md")).await;
+    let (direct_status, _h, direct_body) = post_mcp(&origin, None, &mcp_read("/Inbox.md")).await;
+    let (status, _h, body) = post_mcp(&app, None, &mcp_read("/Inbox.md")).await;
     assert_eq!(status, direct_status);
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, direct_body);

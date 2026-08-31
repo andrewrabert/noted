@@ -5,9 +5,9 @@ use std::process::ExitCode;
 use clap::Args;
 use tempfile::TempDir;
 
+use noted::NotePath;
 use noted::error::{NotedError, Result, io_error, rejected, unavailable};
 use noted::note::{Condition, TextNote};
-use noted::path::Path;
 use noted::tools::{ReadArgs, SearchNotesArgs, ToolOutput, WriteArgs};
 use noted::{Backend, ToolCall};
 
@@ -18,7 +18,7 @@ use crate::text_editor::TextEditor;
 #[derive(Args)]
 pub(crate) struct OpenArgs {
     /// Note to open, by relative path; omit to pick one interactively
-    path: Option<Path>,
+    path: Option<NotePath>,
     /// Overwrite unconditionally, ignoring concurrent changes
     #[arg(short, long)]
     force: bool,
@@ -92,7 +92,7 @@ pub(crate) async fn run_open(config: &Config, args: OpenArgs) -> Result<ExitCode
     let path = match args.path {
         Some(path) => path,
         None => match pick_path(&backend).await? {
-            Pick::Chosen(choice) => choice.parse()?,
+            Pick::Chosen(choice) => NotePath::new(&choice)?,
             Pick::Aborted => return Ok(ExitCode::SUCCESS),
         },
     };
@@ -132,7 +132,7 @@ fn parse_paths(text: &str) -> Vec<String> {
 async fn edit_note(
     backend: &Backend,
     editor: &TextEditor,
-    path: Path,
+    path: NotePath,
     force: bool,
 ) -> Result<ExitCode> {
     let original = match read_note(backend, &path).await {
@@ -198,7 +198,7 @@ async fn edit_note(
     }
 }
 
-async fn read_note(backend: &Backend, path: &Path) -> Result<TextNote> {
+async fn read_note(backend: &Backend, path: &NotePath) -> Result<TextNote> {
     let call = ToolCall::new(ReadArgs::new(path.clone()))?;
     match backend.invoke(&call).await? {
         ToolOutput::Text(s) => Ok(TextNote::new(path.clone(), s)),

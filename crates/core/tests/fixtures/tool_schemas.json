@@ -149,6 +149,7 @@
           ]
         },
         "path": {
+          "default": "/",
           "type": "string"
         }
       },
@@ -166,6 +167,7 @@
           "type": "string"
         },
         "path": {
+          "default": "/",
           "type": "string"
         }
       },
@@ -187,6 +189,7 @@
           "type": "string"
         },
         "path": {
+          "default": "/",
           "type": "string"
         },
         "replace_all": {
@@ -207,6 +210,7 @@
     "input_schema": {
       "properties": {
         "dest": {
+          "default": "/",
           "type": "string"
         },
         "overwrite": {
@@ -214,6 +218,7 @@
           "type": "boolean"
         },
         "path": {
+          "default": "/",
           "type": "string"
         }
       },
@@ -229,6 +234,7 @@
     "input_schema": {
       "properties": {
         "path": {
+          "default": "/",
           "type": "string"
         }
       },

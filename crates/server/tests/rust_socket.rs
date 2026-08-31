@@ -79,7 +79,7 @@ async fn tools_round_trip_over_a_unix_socket() {
     let dir = common::fixture_dir();
     let (sock, token) = serve(&dir).await;
     let backend = dialing(&sock, &token);
-    let call = ToolCall::new(ReadArgs::new(common::rp("Inbox.md"))).unwrap();
+    let call = ToolCall::new(ReadArgs::new(common::rp("/Inbox.md"))).unwrap();
     let out = backend.invoke(&call).await.unwrap();
     assert!(out.render().contains("follow up with Dana"));
 }
@@ -89,7 +89,7 @@ async fn an_unknown_bearer_is_refused_over_the_socket() {
     let dir = common::fixture_dir();
     let (sock, _token) = serve(&dir).await;
     let backend = dialing(&sock, "not-a-token");
-    let call = ToolCall::new(ReadArgs::new(common::rp("Inbox.md"))).unwrap();
+    let call = ToolCall::new(ReadArgs::new(common::rp("/Inbox.md"))).unwrap();
     let err = backend.invoke(&call).await.unwrap_err();
     assert!(err.is_rejection(), "{err}");
 }

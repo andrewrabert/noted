@@ -81,7 +81,7 @@ async fn a_read_only_policy_refuses_the_mutators() {
         &app,
         "/tool/ReadNote",
         Some(&ro),
-        &json!({"path": "Inbox.md"}),
+        &json!({"path": "/Inbox.md"}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -89,7 +89,7 @@ async fn a_read_only_policy_refuses_the_mutators() {
         &app,
         "/tool/WriteNote",
         Some(&ro),
-        &json!({"path": "x.md", "content": "y"}),
+        &json!({"path": "/x.md", "content": "y"}),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -100,14 +100,14 @@ async fn a_denied_folder_confines_paths() {
     let dir = common::fixture_dir();
     let (app, f) = keyed_app(
         &dir,
-        held(r#"{"paths":{"people":{"read":false,"write":false}}}"#),
+        held(r#"{"paths":{"/people":{"read":false,"write":false}}}"#),
     )
     .await;
     let (s, _) = post_json(
         &app,
         "/tool/ReadNote",
         Some(&f),
-        &json!({"path": "projects/ideas.md"}),
+        &json!({"path": "/projects/ideas.md"}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -115,7 +115,7 @@ async fn a_denied_folder_confines_paths() {
         &app,
         "/tool/ReadNote",
         Some(&f),
-        &json!({"path": "people/contacts.md"}),
+        &json!({"path": "/people/contacts.md"}),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -128,37 +128,9 @@ async fn a_denied_folder_confines_paths() {
 }
 
 #[tokio::test]
-async fn a_log_only_policy_reaches_nothing_else() {
-    let dir = common::fixture_dir();
-    let (app, l) = keyed_app(
-        &dir,
-        held(
-            r#"{"access":{"read":false,"write":false},"paths":{".logs":{"read":true,"write":true}}}"#,
-        ),
-    )
-    .await;
-    let (s, _) = post_json(
-        &app,
-        "/tool/LogNote",
-        Some(&l),
-        &json!({"body": "hi\n-- t · s"}),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    let (s, _) = post_json(
-        &app,
-        "/tool/ReadNote",
-        Some(&l),
-        &json!({"path": "Inbox.md"}),
-    )
-    .await;
-    assert_eq!(s, StatusCode::FORBIDDEN);
-}
-
-#[tokio::test]
 async fn mcp_policy_confines_search() {
     let dir = common::fixture_dir();
-    let (app, f) = keyed_app(&dir, held(r#"{"scope":"projects"}"#)).await;
+    let (app, f) = keyed_app(&dir, held(r#"{"scope":"/projects"}"#)).await;
     let (s, _h, b) = post_mcp(
         &app,
         Some(&f),
@@ -171,7 +143,11 @@ async fn mcp_policy_confines_search() {
         .unwrap()
         .to_string();
     assert!(!text.is_empty());
-    assert!(text.lines().all(|l| !l.contains('/')), "{text}");
+    assert!(
+        text.lines()
+            .all(|l| matches!(l.strip_prefix('/'), Some(rest) if !rest.contains('/'))),
+        "{text}"
+    );
 }
 
 #[tokio::test]
@@ -181,7 +157,7 @@ async fn mcp_refuses_a_write_the_policy_denies() {
     let (s, _h, b) = post_mcp(
         &app,
         Some(&ro),
-        &mcp_call("WriteNote", json!({"path": "x.md", "content": "y"})),
+        &mcp_call("WriteNote", json!({"path": "/x.md", "content": "y"})),
     )
     .await;
     assert_eq!(s, StatusCode::OK); // JSON-RPC ok envelope...
@@ -209,7 +185,7 @@ async fn only_a_macaroon_of_this_server_reaches_a_tool() {
                 &app,
                 "/tool/ReadNote",
                 tok.as_deref(),
-                &json!({"path": "Inbox.md"}),
+                &json!({"path": "/Inbox.md"}),
             )
             .await;
             s
@@ -246,11 +222,11 @@ async fn a_tools_call_posted_under_a_public_path_is_unauthorized() {
 }
 
 #[tokio::test]
-async fn a_read_only_task_region_lists_but_never_writes() {
+async fn a_read_only_key_lists_its_task_group_but_never_writes_it() {
     let dir = common::fixture_dir();
     let (app, t) = keyed_app(
         &dir,
-        held(r#"{"paths":{".tasks":{"read":true,"write":false}}}"#),
+        held(r#"{"paths":{"/dev":{"read":true,"write":false}}}"#),
     )
     .await;
     common::root(&dir)
@@ -264,7 +240,13 @@ async fn a_read_only_task_region_lists_but_never_writes() {
 
     let (s, _) = post_json(&app, "/tool/GetTasks", Some(&t), &json!({})).await;
     assert_eq!(s, StatusCode::OK);
-    let (s, _) = post_json(&app, "/tool/CreateTask", Some(&t), &json!({"task": "x"})).await;
+    let (s, _) = post_json(
+        &app,
+        "/tool/CreateTask",
+        Some(&t),
+        &json!({"task": "x", "group": "dev"}),
+    )
+    .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     let (s, _) = post_json(
         &app,
@@ -277,12 +259,12 @@ async fn a_read_only_task_region_lists_but_never_writes() {
 }
 
 #[tokio::test]
-async fn a_write_only_folder_leaves_the_task_region_open() {
+async fn a_write_only_key_confines_notes_while_an_open_key_admits_tasks() {
     let dir = common::fixture_dir();
     let (app, t) = keyed_app(
         &dir,
         held(
-            r#"{"access":{"read":false,"write":false},"paths":{".tasks":{"read":true,"write":true},"projects":{"read":false,"write":true}}}"#,
+            r#"{"access":{"read":false,"write":false},"paths":{"/ops":{"read":true,"write":true},"/projects":{"read":false,"write":true}}}"#,
         ),
     )
     .await;
@@ -291,7 +273,7 @@ async fn a_write_only_folder_leaves_the_task_region_open() {
         &app,
         "/tool/WriteNote",
         Some(&t),
-        &json!({"path": "projects/n.md", "content": "x"}),
+        &json!({"path": "/projects/n.md", "content": "x"}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -299,7 +281,7 @@ async fn a_write_only_folder_leaves_the_task_region_open() {
         &app,
         "/tool/WriteNote",
         Some(&t),
-        &json!({"path": "people/n.md", "content": "x"}),
+        &json!({"path": "/people/n.md", "content": "x"}),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -321,7 +303,7 @@ async fn a_write_only_folder_leaves_the_task_region_open() {
         &app,
         "/tool/ReadNote",
         Some(&t),
-        &json!({"path": "projects/n.md"}),
+        &json!({"path": "/projects/n.md"}),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -411,7 +393,7 @@ async fn conditional_write_over_http() {
         &app,
         "/tool/WriteNote",
         Some(&t),
-        &json!({"path": "http_cw.md", "content": "a", "when": "missing"}),
+        &json!({"path": "/http_cw.md", "content": "a", "when": "missing"}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -419,7 +401,7 @@ async fn conditional_write_over_http() {
         &app,
         "/tool/WriteNote",
         Some(&t),
-        &json!({"path": "http_cw.md", "content": "b", "when": "missing"}),
+        &json!({"path": "/http_cw.md", "content": "b", "when": "missing"}),
     )
     .await;
     assert_eq!(s, StatusCode::CONFLICT);
@@ -429,7 +411,7 @@ async fn conditional_write_over_http() {
         &app,
         "/tool/WriteNote",
         Some(&t),
-        &json!({"path": "http_cw.md", "content": "b", "when": "whenever"}),
+        &json!({"path": "/http_cw.md", "content": "b", "when": "whenever"}),
     )
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
@@ -476,7 +458,7 @@ async fn a_query_policy_narrows_a_key_that_holds_more() {
         &app,
         &query_policy("/tool/ReadNote", &[read_only]),
         Some(&t),
-        &json!({"path": "Inbox.md"}),
+        &json!({"path": "/Inbox.md"}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -484,7 +466,7 @@ async fn a_query_policy_narrows_a_key_that_holds_more() {
         &app,
         &query_policy("/tool/WriteNote", &[read_only]),
         Some(&t),
-        &json!({"path": "narrowed.md", "content": "x"}),
+        &json!({"path": "/narrowed.md", "content": "x"}),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -500,7 +482,7 @@ async fn a_query_policy_narrows_a_key_that_holds_more() {
         &app,
         "/tool/WriteNote",
         Some(&t),
-        &json!({"path": "narrowed.md", "content": "x"}),
+        &json!({"path": "/narrowed.md", "content": "x"}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -510,12 +492,12 @@ async fn a_query_policy_narrows_a_key_that_holds_more() {
 async fn a_query_scope_confines_the_paths_a_call_names() {
     let dir = common::fixture_dir();
     let (app, t) = keyed_app(&dir, PolicyFragment::default()).await;
-    let scoped = query_policy("/tool/ReadNote", &[r#"{"scope":"projects"}"#]);
+    let scoped = query_policy("/tool/ReadNote", &[r#"{"scope":"/projects"}"#]);
 
-    let (s, b) = post_json(&app, &scoped, Some(&t), &json!({"path": "ideas.md"})).await;
+    let (s, b) = post_json(&app, &scoped, Some(&t), &json!({"path": "/ideas.md"})).await;
     assert_eq!(s, StatusCode::OK);
     assert!(json_body(&b)["ok"]["data"].as_str().is_some());
-    let (s, _) = post_json(&app, &scoped, Some(&t), &json!({"path": "Inbox.md"})).await;
+    let (s, _) = post_json(&app, &scoped, Some(&t), &json!({"path": "/Inbox.md"})).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
 
@@ -528,14 +510,14 @@ async fn query_policies_apply_outermost_first() {
     let ordered = query_policy(
         "/tool/ReadNote",
         &[
-            r#"{"scope":"projects"}"#,
-            r#"{"paths":{"ideas.md":{"read":false}}}"#,
+            r#"{"scope":"/projects"}"#,
+            r#"{"paths":{"/ideas.md":{"read":false}}}"#,
         ],
     );
 
-    let (s, _) = post_json(&app, &ordered, Some(&t), &json!({"path": "ideas.md"})).await;
+    let (s, _) = post_json(&app, &ordered, Some(&t), &json!({"path": "/ideas.md"})).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
-    let (s, _) = post_json(&app, &ordered, Some(&t), &json!({"path": "notes-mcp.md"})).await;
+    let (s, _) = post_json(&app, &ordered, Some(&t), &json!({"path": "/notes-mcp.md"})).await;
     assert_eq!(s, StatusCode::OK);
 }
 
@@ -548,7 +530,7 @@ async fn a_query_policy_never_widens_the_key_that_carries_it() {
         &app,
         &query_policy("/tool/WriteNote", &[r#"{"access":{"write":true}}"#]),
         Some(&ro),
-        &json!({"path": "widened.md", "content": "x"}),
+        &json!({"path": "/widened.md", "content": "x"}),
     )
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
@@ -567,12 +549,12 @@ async fn an_unparseable_query_policy_is_refused_before_the_tool_runs() {
     let dir = common::fixture_dir();
     let (app, t) = keyed_app(&dir, PolicyFragment::default()).await;
 
-    for bad in ["notjson", "{}}", r#"{"nope":1}"#, r#"{"scope":".logs"}"#] {
+    for bad in ["notjson", "{}}", r#"{"nope":1}"#, r#"{"scope":"/.logs"}"#] {
         let (s, b) = post_json(
             &app,
             &query_policy("/tool/WriteNote", &[bad]),
             Some(&t),
-            &json!({"path": "never.md", "content": "x"}),
+            &json!({"path": "/never.md", "content": "x"}),
         )
         .await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}");
@@ -583,7 +565,7 @@ async fn an_unparseable_query_policy_is_refused_before_the_tool_runs() {
         &app,
         "/tool/ReadNote",
         Some(&t),
-        &json!({"path": "never.md"}),
+        &json!({"path": "/never.md"}),
     )
     .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
@@ -598,7 +580,7 @@ async fn a_query_with_no_policy_narrows_nothing() {
         &app,
         "/tool/WriteNote?cachebust=1&policies=nope",
         Some(&t),
-        &json!({"path": "unnarrowed.md", "content": "x"}),
+        &json!({"path": "/unnarrowed.md", "content": "x"}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -616,7 +598,7 @@ async fn an_open_origin_refuses_every_call_that_carries_a_credential() {
             &app,
             "/tool/ReadNote",
             Some(bearer),
-            &json!({"path": "Inbox.md"}),
+            &json!({"path": "/Inbox.md"}),
         )
         .await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
@@ -639,7 +621,7 @@ async fn an_open_origin_refuses_every_call_that_carries_a_credential() {
             .contains("takes no credential")
     );
 
-    let (s, _) = post_json(&app, "/tool/ReadNote", None, &json!({"path": "Inbox.md"})).await;
+    let (s, _) = post_json(&app, "/tool/ReadNote", None, &json!({"path": "/Inbox.md"})).await;
     assert_eq!(s, StatusCode::OK);
 }
 
@@ -655,7 +637,7 @@ async fn an_open_origin_holds_a_bearerless_call_to_its_query_policy() {
             &[r#"{"access":{"read":true,"write":false}}"#],
         ),
         None,
-        &json!({"path": "open.md", "content": "x"}),
+        &json!({"path": "/open.md", "content": "x"}),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -663,7 +645,7 @@ async fn an_open_origin_holds_a_bearerless_call_to_its_query_policy() {
         &app,
         "/tool/WriteNote",
         None,
-        &json!({"path": "open.md", "content": "x"}),
+        &json!({"path": "/open.md", "content": "x"}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -681,7 +663,7 @@ async fn mcp_holds_a_tool_call_to_its_query_policy() {
         Some(&t),
         &mcp_call(
             "WriteNote",
-            json!({"path": "mcp_narrowed.md", "content": "x"}),
+            json!({"path": "/mcp_narrowed.md", "content": "x"}),
         ),
     )
     .await;
@@ -700,7 +682,7 @@ async fn mcp_holds_a_tool_call_to_its_query_policy() {
         Some(&t),
         &mcp_call(
             "WriteNote",
-            json!({"path": "mcp_narrowed.md", "content": "x"}),
+            json!({"path": "/mcp_narrowed.md", "content": "x"}),
         ),
     )
     .await;
@@ -750,7 +732,7 @@ async fn an_mcp_query_policy_never_widens_the_key_that_carries_it() {
         Some(&ro),
         &mcp_call(
             "WriteNote",
-            json!({"path": "mcp_widened.md", "content": "x"}),
+            json!({"path": "/mcp_widened.md", "content": "x"}),
         ),
     )
     .await;
@@ -775,7 +757,10 @@ async fn an_unparseable_mcp_query_policy_is_refused_before_the_transport() {
         &app,
         &query_policy("/mcp", &["notjson"]),
         Some(&t),
-        &mcp_call("WriteNote", json!({"path": "never_mcp.md", "content": "x"})),
+        &mcp_call(
+            "WriteNote",
+            json!({"path": "/never_mcp.md", "content": "x"}),
+        ),
     )
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);

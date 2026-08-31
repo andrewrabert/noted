@@ -1,6 +1,6 @@
 mod common;
 
-use common::{backend, confined_backend, fixture_dir, invoke, note, notes_root, root, rp, write};
+use common::{backend, confined_backend, fixture_dir, invoke, note, notes_root, read, root, write};
 use noted::tasks::{
     GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskState, TaskTitle, parse_task_file,
 };
@@ -497,27 +497,15 @@ async fn tasks_subtree_is_managed() {
     let dir = fixture_dir();
     let root = root(&dir);
     create(&root, "t", "", "").await.unwrap();
-    write(&root, &note("loose.md", "x")).await.unwrap();
+    write(&root, &note("/loose.md", "x")).await.unwrap();
 
-    for err in [
-        write(&root, &note(".tasks/task_0009.md", "nope"))
-            .await
-            .unwrap_err(),
-        root.note_delete(&rp(".tasks/task_0001.md"))
-            .await
-            .unwrap_err(),
-        root.note_move(&rp(".tasks/task_0001.md"), &rp("elsewhere.md"), false)
-            .await
-            .unwrap_err(),
-        root.note_move(&rp("loose.md"), &rp(".tasks/task_0002.md"), false)
-            .await
-            .unwrap_err(),
-    ] {
+    for spelled in ["/.tasks/task_0009.md", "/.tasks/task_0001.md"] {
         assert!(
-            matches!(err, noted::NotedError::Forbidden),
-            "expected a policy refusal, got {err}"
+            noted::NotePath::new(spelled).is_err(),
+            "a task entry is not a note path: {spelled}"
         );
     }
+    assert!(read(&root, "/task_0001.md").await.is_err());
 }
 
 #[test]
@@ -704,10 +692,7 @@ async fn search_admits_only_what_the_grant_allows() {
     create(&root, "visible", "dev", "MARK\n").await.unwrap();
     create(&root, "hidden", "ops", "MARK\n").await.unwrap();
 
-    let confined = confined_backend(
-        &dir,
-        r#"{"paths":{".tasks/ops":{"read":false,"write":false}}}"#,
-    );
+    let confined = confined_backend(&dir, r#"{"paths":{"/ops":{"read":false,"write":false}}}"#);
     let out = find(&confined, serde_json::json!({"pattern": "MARK"})).await;
     assert_eq!(out.lines().collect::<Vec<_>>(), vec!["dev/task_0001"]);
     assert_eq!(

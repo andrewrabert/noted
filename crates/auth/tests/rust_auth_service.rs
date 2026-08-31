@@ -59,19 +59,19 @@ fn setting_a_user_policy_replaces_the_stored_one() {
 
     svc.user_set_policy(
         &un("alice"),
-        held(r#"{"paths":{"projects":{"read":true,"write":false}}}"#),
+        held(r#"{"paths":{"/projects":{"read":true,"write":false}}}"#),
     )
     .unwrap();
     let stored = svc.user_get(&un("alice")).unwrap().unwrap();
     assert_eq!(
         stored.policy.to_string(),
-        r#"{"paths":{"projects":{"read":true,"write":false}}}"#
+        r#"{"paths":{"/projects":{"read":true,"write":false}}}"#
     );
 
-    svc.user_set_policy(&un("alice"), held(r#"{"scope":"dev"}"#))
+    svc.user_set_policy(&un("alice"), held(r#"{"scope":"/dev"}"#))
         .unwrap();
     let stored = svc.user_get(&un("alice")).unwrap().unwrap();
-    assert_eq!(stored.policy.to_string(), r#"{"scope":"dev"}"#);
+    assert_eq!(stored.policy.to_string(), r#"{"scope":"/dev"}"#);
 
     assert!(
         svc.user_set_policy(&un("bob"), PolicyFragment::default())
@@ -205,7 +205,7 @@ fn a_minted_credential_is_ledgered() {
     let (_d, svc) = service();
     let authority = OriginAuthority::new(svc.clone());
     let ask = Mint {
-        policy: held(r#"{"scope":"dev"}"#),
+        policy: held(r#"{"scope":"/dev"}"#),
     };
     let minted = authority.mint(authority.own(), &ask).unwrap();
     assert!(minted.macaroon.expose().starts_with(PREFIX_MAC));
@@ -219,7 +219,7 @@ fn a_minted_credential_is_ledgered() {
     assert!(
         fragments
             .iter()
-            .any(|f| f.to_string() == r#"{"scope":"dev"}"#)
+            .any(|f| f.to_string() == r#"{"scope":"/dev"}"#)
     );
 }
 

@@ -3,11 +3,11 @@ use std::ops::RangeBounds as _;
 
 use chrono::{DateTime, FixedOffset, Local};
 
+use crate::domain::NotePath;
 use crate::error::{NotedError, Result, rejected};
 use crate::note::{LogFront, LogNote, LogQuery, Note as _};
-use crate::path::Path;
 use crate::regions::RegionStore;
-use crate::search::{Hit, assemble};
+use crate::search::Hit;
 use crate::types::{LogBody, Source, Timestamp};
 
 /// 2026-08-03T09-15-30.123456-0700
@@ -15,6 +15,14 @@ const STAMP: &str = "%Y-%m-%dT%H-%M-%S.%6f%z";
 
 fn stamp_of(name: &str) -> Option<DateTime<FixedOffset>> {
     DateTime::parse_from_str(name.get(..31)?, STAMP).ok()
+}
+
+// the instant an entry's name carries, read from its last segment
+fn stamped(path: &NotePath) -> Result<DateTime<FixedOffset>> {
+    path.segments()
+        .last()
+        .and_then(|name| stamp_of(name.as_str()))
+        .ok_or_else(|| rejected(format!("{path}: not a log entry name")))
 }
 
 pub(super) struct LogTools {
@@ -40,7 +48,7 @@ impl LogTools {
 
         let stamp = now.format(STAMP).to_string();
         for name in LogTools::spare_stamps(&stamp) {
-            let entry = LogNote::new(Path::new(&name)?, front.clone(), body.as_str());
+            let entry = LogNote::new(NotePath::new(&name)?, front.clone(), body.as_str());
             match self
                 .region
                 .write(
@@ -61,8 +69,8 @@ impl LogTools {
     fn spare_stamps(stamp: &str) -> impl Iterator<Item = String> {
         let stamp = stamp.to_string();
         (0u64..1000).map(move |n| match n {
-            0 => format!("{stamp}.md"),
-            n => format!("{stamp}-{n}.md"),
+            0 => format!("/{stamp}.md"),
+            n => format!("/{stamp}-{n}.md"),
         })
     }
 
@@ -82,11 +90,14 @@ impl LogTools {
     }
 
     pub(super) async fn search(&self, query: &LogQuery) -> Result<Vec<Hit>> {
-        let hits = self.region.search(None, &query.query).await?;
+        let hits = self
+            .region
+            .search(&NotePath::default(), &query.query)
+            .await?;
 
         let mut dated = Vec::new();
-        for hit in assemble(&query.query, hits)? {
-            if stamp_of(hit.path.file_name()).is_none_or(|at| !query.range.contains(&at)) {
+        for hit in query.query.assemble(hits)? {
+            if !stamped(&hit.path).is_ok_and(|at| query.range.contains(&at)) {
                 continue;
             }
             let Ok(bytes) = self.region.read(&hit.path).await else {
@@ -105,15 +116,15 @@ impl LogTools {
             .collect())
     }
 
-    async fn within(&self, query: &LogQuery) -> Vec<Path> {
-        let names = self.region.walk(None).await;
+    async fn within(&self, query: &LogQuery) -> Vec<NotePath> {
+        let names = self.region.walk(&NotePath::default()).await;
         names
             .into_iter()
-            .filter(|path| stamp_of(path.file_name()).is_some_and(|at| query.range.contains(&at)))
+            .filter(|path| stamped(path).is_ok_and(|at| query.range.contains(&at)))
             .collect()
     }
 
-    fn newest_first(entry: &LogNote) -> (Reverse<Timestamp>, Path) {
+    fn newest_first(entry: &LogNote) -> (Reverse<Timestamp>, NotePath) {
         (Reverse(entry.front().created), entry.path().clone())
     }
 }

@@ -5,12 +5,12 @@ mod note;
 mod task;
 
 use crate::backend::{ToolCall, ToolListing};
+use crate::domain::{NotePath, Region};
 use crate::error::Result;
 use crate::fragment::PolicyFragment;
 use crate::note::{Condition, Edit, LogNote, LogQuery, TextNote, Trashed};
-use crate::path::Path;
 use crate::policy::RegionPolicy;
-use crate::regions::{RegionDir, Regions};
+use crate::regions::Regions;
 use crate::search::{Hit, SearchQuery};
 use crate::store::NotedDir;
 use crate::tasks::{GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskTitle};
@@ -69,11 +69,11 @@ impl NotedRoot {
 
     pub fn tools(&self) -> Vec<ToolListing> {
         let allowed = permitted(
-            self.policy(RegionDir::Notes),
-            self.policy(RegionDir::Log),
-            self.policy(RegionDir::Tasks),
+            self.policy(Region::Notes),
+            self.policy(Region::Log),
+            self.policy(Region::Tasks),
         );
-        let scope = self.policy(RegionDir::Notes).scope();
+        let scope = self.policy(Region::Notes).scope();
         tool_defs()
             .into_iter()
             .filter(|def| allowed.contains(&def.name))
@@ -88,11 +88,12 @@ impl NotedRoot {
 
     pub fn instructions(&self) -> String {
         let mut out = String::from(INSTRUCTIONS);
-        match self.policy(RegionDir::Notes).scope() {
-            None => out.push_str(
+        let scope = self.policy(Region::Notes).scope();
+        match scope == &NotePath::default() {
+            true => out.push_str(
                 " Notes live at the top of the tree. Tasks are under .tasks/, log entries under .logs/.",
             ),
-            Some(scope) => out.push_str(&format!(
+            false => out.push_str(&format!(
                 " You are working in {scope}. Every path you write is relative to it. \
 Tasks you create land in its task region; log entries you write are stamped with it."
             )),
@@ -100,11 +101,11 @@ Tasks you create land in its task region; log entries you write are stamped with
         out
     }
 
-    pub(crate) fn policy(&self, dir: RegionDir) -> &RegionPolicy {
+    pub(crate) fn policy(&self, dir: Region) -> &RegionPolicy {
         match dir {
-            RegionDir::Notes => self.0.regions.notes.policy(),
-            RegionDir::Log => self.0.regions.log.policy(),
-            RegionDir::Tasks => self.0.regions.tasks.policy(),
+            Region::Notes => self.0.regions.notes.policy(),
+            Region::Log => self.0.regions.log.policy(),
+            Region::Tasks => self.0.regions.tasks.policy(),
         }
     }
 
@@ -120,7 +121,7 @@ Tasks you create land in its task region; log entries you write are stamped with
         self.0.task.search(search).await
     }
 
-    pub async fn note_read(&self, path: &Path) -> Result<TextNote> {
+    pub async fn note_read(&self, path: &NotePath) -> Result<TextNote> {
         self.0.note.read(path).await
     }
 
@@ -128,15 +129,15 @@ Tasks you create land in its task region; log entries you write are stamped with
         self.0.note.write(note, condition).await
     }
 
-    pub async fn note_edit(&self, path: &Path, edit: &Edit) -> Result<TextNote> {
+    pub async fn note_edit(&self, path: &NotePath, edit: &Edit) -> Result<TextNote> {
         self.0.note.edit(path, edit).await
     }
 
-    pub async fn note_move(&self, path: &Path, dest: &Path, overwrite: bool) -> Result<()> {
+    pub async fn note_move(&self, path: &NotePath, dest: &NotePath, overwrite: bool) -> Result<()> {
         self.0.note.move_(path, dest, overwrite).await
     }
 
-    pub async fn note_delete(&self, path: &Path) -> Result<Trashed> {
+    pub async fn note_delete(&self, path: &NotePath) -> Result<Trashed> {
         self.0.note.delete(path).await
     }
 

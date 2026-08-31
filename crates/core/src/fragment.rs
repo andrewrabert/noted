@@ -4,8 +4,8 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::NotePath;
 use crate::error::{NotedError, Result, rejected};
-use crate::path::Path;
 
 /// What a fragment asks for: an absent flag keeps whatever is already there.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,15 +32,17 @@ impl fmt::Display for AccessFragment {
     }
 }
 
+/// One holder's narrowing. `scope` deepens the holder's subtree; `paths` are
+/// read from that scope and apply the same way in every region.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyFragment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<Path>,
+    pub scope: Option<NotePath>,
     #[serde(default, skip_serializing_if = "AccessFragment::is_empty")]
     pub access: AccessFragment,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub paths: BTreeMap<Path, AccessFragment>,
+    pub paths: BTreeMap<NotePath, AccessFragment>,
 }
 
 impl fmt::Display for PolicyFragment {
@@ -59,22 +61,13 @@ impl FromStr for PolicyFragment {
     }
 }
 
-/// A fragment as one region reads it: `named` keys are region-base-relative,
-/// with `None` naming the region base itself.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct RegionFragment {
-    pub(crate) scope: Option<Path>,
-    pub(crate) access: AccessFragment,
-    pub(crate) named: Vec<(Option<Path>, AccessFragment)>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn a_fragment_round_trips_through_its_canonical_json() {
-        let text = r#"{"scope":"dev","access":{"read":true,"write":false},"paths":{"vendor":{"read":false}}}"#;
+        let text = r#"{"scope":"/dev","access":{"read":true,"write":false},"paths":{"/vendor":{"read":false}}}"#;
         let parsed: PolicyFragment = text.parse().unwrap();
         assert_eq!(parsed.to_string(), text);
         assert_eq!(
@@ -93,6 +86,14 @@ mod tests {
     #[test]
     fn an_unknown_field_is_refused() {
         assert!("{\"nope\": 1}".parse::<PolicyFragment>().is_err());
-        assert!(r#"{"paths":{"a":"rw"}}"#.parse::<PolicyFragment>().is_err());
+        assert!(r#"{"paths":{"/a":"rw"}}"#.parse::<PolicyFragment>().is_err());
+    }
+
+    #[test]
+    fn a_key_is_a_note_path() {
+        assert!(r#"{"paths":{"a":{"read":true}}}"#.parse::<PolicyFragment>().is_ok());
+        assert!(r#"{"paths":{"a/":{"read":true}}}"#.parse::<PolicyFragment>().is_err());
+        assert!(r#"{"scope":".logs"}"#.parse::<PolicyFragment>().is_err());
+        assert!(r#"{"paths":{"/.tasks":{"read":true}}}"#.parse::<PolicyFragment>().is_err());
     }
 }
