@@ -285,7 +285,7 @@ fn the_response_envelope_is_the_one_the_ui_decodes() {
         },
         ToolOutput::Deleted { path: path("a.md") },
         ToolOutput::Logged {
-            path: path(".logs/2026/07/x.md"),
+            path: path("2026/07/x.md"),
         },
         ToolOutput::Record(serde_json::json!([{"path": "dev/task_0001"}])),
     ];

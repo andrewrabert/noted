@@ -26,8 +26,16 @@ build-android:
 test package="" test_name="":
     #!/usr/bin/env sh
     set -eu
+    # ui-wasm is excluded from the workspace, so it gets its own manifest.
     if [ -z '{{package}}' ]; then
         cargo test --manifest-path {{justfile_directory()}}/Cargo.toml --workspace
+        cargo test --manifest-path {{justfile_directory()}}/crates/ui-wasm/Cargo.toml
+    elif [ '{{package}}' = noted-ui-wasm ]; then
+        if [ -z '{{test_name}}' ]; then
+            cargo test --manifest-path {{justfile_directory()}}/crates/ui-wasm/Cargo.toml
+        else
+            cargo test --manifest-path {{justfile_directory()}}/crates/ui-wasm/Cargo.toml --lib '{{test_name}}' -- --exact --include-ignored
+        fi
     elif [ -z '{{test_name}}' ]; then
         cargo test --manifest-path {{justfile_directory()}}/Cargo.toml -p '{{package}}'
     else
