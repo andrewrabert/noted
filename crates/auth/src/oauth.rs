@@ -19,8 +19,12 @@ pub struct OAuthProtocol {
 }
 
 impl OAuthProtocol {
-    pub fn open(service: std::sync::Arc<crate::service::AuthService>) -> Result<OAuthProtocol> {
-        let state = engine::open(service.clone())?;
+    /// Knows `web_client` before any persisted client.
+    pub fn open(
+        service: std::sync::Arc<crate::service::AuthService>,
+        web_client: RegisterOAuthClient,
+    ) -> Result<OAuthProtocol> {
+        let state = engine::open(service.clone(), web_client)?;
         Ok(OAuthProtocol {
             service,
             state: std::sync::Mutex::new(state),
@@ -107,6 +111,16 @@ impl OAuthClient {
     pub fn registered(request: RegisterOAuthClient) -> Result<OAuthClient> {
         Ok(OAuthClient {
             client_id: ClientId::new(random_token(24)),
+            redirect_uris: request.redirect_uris,
+            issued_at: UnixEpochSeconds::now()?,
+        })
+    }
+
+    /// The server-known public client; its id is `noted::oauth::WEB_CLIENT_ID`,
+    /// never random.
+    pub fn built_in(request: RegisterOAuthClient) -> Result<OAuthClient> {
+        Ok(OAuthClient {
+            client_id: ClientId::new(noted::oauth::WEB_CLIENT_ID),
             redirect_uris: request.redirect_uris,
             issued_at: UnixEpochSeconds::now()?,
         })
@@ -334,7 +348,14 @@ mod tests {
         let service = Arc::new(crate::service::AuthService::new(Arc::new(
             crate::db::Db::open(&directory.path().join("auth.redb")).unwrap(),
         )));
-        let protocol = Arc::new(OAuthProtocol::open(service).unwrap());
+        let protocol = Arc::new(
+            OAuthProtocol::open(
+                service,
+                RegisterOAuthClient::new(vec![RedirectUri::new("https://notes.example/").unwrap()])
+                    .unwrap(),
+            )
+            .unwrap(),
+        );
         let poisoner = Arc::clone(&protocol);
 
         let panic = std::thread::spawn(move || {

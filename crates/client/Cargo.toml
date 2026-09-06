@@ -13,13 +13,11 @@ publish = false
 [dependencies]
 noted-auth = { workspace = true }
 noted-core = { workspace = true }
-base64 = "0.23"
 keyring = "4"
 open = "5"
 reqwest = { version = "0.13", features = ["json", "form"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = "0.11"
 tokio = { version = "1", features = ["io-util", "net", "rt"] }
 
 [dev-dependencies]

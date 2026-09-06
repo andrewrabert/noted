@@ -128,22 +128,24 @@ async fn login(
     user: &str,
     password: &str,
     challenge: &str,
-) -> (StatusCode, HeaderMap, Vec<u8>) {
+) -> (StatusCode, Vec<u8>) {
     let txn = authorize_txn(app, client_id, challenge).await;
-    post_form(
+    let (status, _headers, body) = post_form(
         app,
         "/login",
         &[("txn", &txn), ("username", user), ("password", password)],
     )
-    .await
+    .await;
+    (status, body)
 }
 
 async fn authenticate(app: &Router, user: &str, password: &str) -> (String, String, String) {
     let client_id = register(app).await;
     let (verifier, challenge) = pkce();
-    let (s, headers, _) = login(app, &client_id, user, password, &challenge).await;
-    assert_eq!(s, StatusCode::SEE_OTHER);
-    let code = query_param(&location(&headers), "code").unwrap();
+    let (s, b) = login(app, &client_id, user, password, &challenge).await;
+    assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&b));
+    let redirect = json_body(&b)["redirect"].as_str().unwrap().to_string();
+    let code = query_param(&redirect, "code").unwrap();
     let (s, b) = post_form_token(
         app,
         &[
@@ -307,9 +309,9 @@ async fn bad_password_rejected() {
     let (app, _) = build(&dir, &[("a", UserSpec::new("right"))]).await;
     let client_id = register(&app).await;
     let (_v, challenge) = pkce();
-    let (s, _h, b) = login(&app, &client_id, "a", "wrong", &challenge).await;
+    let (s, b) = login(&app, &client_id, "a", "wrong", &challenge).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
-    assert!(String::from_utf8_lossy(&b).contains("invalid credentials"));
+    assert_eq!(json_body(&b)["error"], "invalid_credentials");
 }
 
 #[tokio::test]
@@ -318,13 +320,22 @@ async fn unknown_user_rejected() {
     let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]).await;
     let client_id = register(&app).await;
     let (_v, challenge) = pkce();
-    let (s, _h, _b) = login(&app, &client_id, "ghost", "pw", &challenge).await;
-    eprintln!("REUSED_REFRESH_STATUS={s}");
+    let (s, b) = login(&app, &client_id, "ghost", "pw", &challenge).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert_eq!(json_body(&b)["error"], "invalid_credentials");
 }
 
 #[tokio::test]
-async fn login_get_renders_form() {
+async fn login_without_a_txn_redirects_to_the_app() {
+    let dir = common::fixture_dir();
+    let (app, _) = build(&dir, &[]).await;
+    let (status, headers, _) = request(&app, "GET", "/login", None, "text/html", Vec::new()).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(location(&headers), "/");
+}
+
+#[tokio::test]
+async fn login_serves_the_app_document_for_a_pending_txn() {
     let dir = common::fixture_dir();
     let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]).await;
     let client_id = register(&app).await;
@@ -332,22 +343,26 @@ async fn login_get_renders_form() {
     let txn = authorize_txn(&app, &client_id, &challenge).await;
     let (s, b) = get(&app, &format!("/login?txn={txn}")).await;
     assert_eq!(s, StatusCode::OK);
-    assert!(String::from_utf8_lossy(&b).contains("password"));
+    let body = String::from_utf8_lossy(&b).into_owned();
+    assert!(body.starts_with("<!DOCTYPE html>"));
+    assert!(!body.contains("<form"));
 }
 
 #[tokio::test]
 async fn login_rejects_bad_txn() {
     let dir = common::fixture_dir();
     let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]).await;
-    let (s, _) = get(&app, "/login?txn=nope").await;
+    let (s, b) = get(&app, "/login?txn=nope").await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
-    let (s, _h, _b) = post_form(
+    assert!(String::from_utf8_lossy(&b).contains("unknown or expired login request"));
+    let (s, _h, b) = post_form(
         &app,
         "/login",
         &[("txn", "nope"), ("username", "a"), ("password", "pw")],
     )
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(&b)["error"], "unknown_txn");
 }
 
 #[tokio::test]
@@ -437,31 +452,13 @@ async fn login_cannot_distinguish_unknown_names() {
     let (_v, challenge) = pkce();
     let mut bodies = Vec::new();
     for (user, pw) in [("real", "wrong"), ("ghost", "wrong"), ("bot", "wrong")] {
-        let (s, _h, b) = login(&app, &client_id, user, pw, &challenge).await;
+        let (s, b) = login(&app, &client_id, user, pw, &challenge).await;
         assert_eq!(s, StatusCode::UNAUTHORIZED);
-        let body = String::from_utf8_lossy(&b).into_owned();
-        let redacted = regex_lite_redact_txn(&body);
-        assert!(redacted.contains("invalid credentials"));
-        bodies.push(redacted);
+        assert_eq!(json_body(&b)["error"], "invalid_credentials");
+        bodies.push(String::from_utf8_lossy(&b).into_owned());
     }
     assert_eq!(bodies[0], bodies[1]);
     assert_eq!(bodies[1], bodies[2]);
-}
-
-/// Blank out the `value="<txn>"` attribute — the per-attempt txn handle is the
-/// one legitimate difference between rejection pages.
-fn regex_lite_redact_txn(body: &str) -> String {
-    let mut out = String::new();
-    let mut rest = body;
-    while let Some(i) = rest.find("value=\"") {
-        out.push_str(&rest[..i + 7]);
-        rest = &rest[i + 7..];
-        let end = rest.find('"').unwrap_or(rest.len());
-        out.push_str("REDACTED");
-        rest = &rest[end..];
-    }
-    out.push_str(rest);
-    out
 }
 
 #[tokio::test]
@@ -768,19 +765,6 @@ async fn authorization_preserves_pkce_redirect_state_and_invalid_request_edges()
 }
 
 #[tokio::test]
-async fn login_preserves_exact_html_success_and_unknown_forms() {
-    let dir = common::fixture_dir();
-    let (app, _) = build(&dir, &[]).await;
-    let (status, body) = get(&app, "/login?txn=missing").await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(
-        String::from_utf8(body)
-            .unwrap()
-            .contains("unknown login request")
-    );
-}
-
-#[tokio::test]
 async fn token_and_refresh_preserve_json_headers_errors_rotation_and_expiry() {
     let dir = common::fixture_dir();
     let (app, _) = build(&dir, &[]).await;
@@ -830,4 +814,96 @@ async fn unauthorized_resources_preserve_the_resource_metadata_challenge() {
 
 fn pw(s: &str) -> noted_auth::types::Password {
     noted_auth::types::Password::new(s)
+}
+
+/// The app's own client is known without registration: `/authorize` parks a
+/// transaction for it, and the code it answers exchanges at `/token`.
+#[tokio::test]
+async fn the_built_in_web_client_exchanges_a_code_for_a_token() {
+    let dir = common::fixture_dir();
+    let (app, _) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
+    let (verifier, challenge) = pkce();
+    let redirect = format!("{PUBLIC}/");
+    let uri = format!(
+        "/authorize?response_type=code&client_id={}&redirect_uri={redirect}&code_challenge={challenge}&code_challenge_method=S256&state=st",
+        noted::oauth::WEB_CLIENT_ID
+    );
+    let (s, headers, _) = request(&app, "GET", &uri, None, "text/html", Vec::new()).await;
+    assert_eq!(s, StatusCode::SEE_OTHER);
+    let txn = query_param(&location(&headers), "txn").unwrap();
+
+    let (s, _h, b) = post_form(
+        &app,
+        "/login",
+        &[("txn", &txn), ("username", "ann"), ("password", "pw")],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&b));
+    let code = query_param(json_body(&b)["redirect"].as_str().unwrap(), "code").unwrap();
+
+    let (s, b) = post_form_token(
+        &app,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", &redirect),
+            ("client_id", noted::oauth::WEB_CLIENT_ID),
+            ("code_verifier", &verifier),
+        ],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&b));
+    assert!(json_body(&b)["access_token"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn a_backend_submits_a_transaction_and_exchanges_the_code_it_answers() {
+    let dir = common::fixture_dir();
+    let (app, _) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
+    let verifier = noted::util::random_token(48);
+    let challenge = noted::oauth::code_challenge(&verifier);
+    let redirect = format!("{PUBLIC}/");
+    let uri = format!(
+        "/authorize?response_type=code&client_id={}&redirect_uri={redirect}&code_challenge={challenge}&code_challenge_method=S256&state=st",
+        noted::oauth::WEB_CLIENT_ID
+    );
+    let (_s, headers, _) = request(&app, "GET", &uri, None, "text/html", Vec::new()).await;
+    let txn = query_param(&location(&headers), "txn").unwrap();
+
+    let backend = noted::Backend::new(noted::BackendArgs::Remote {
+        endpoint: PUBLIC.parse().unwrap(),
+        bearer: None,
+        transport: noted::Transport::Router(app.clone()),
+    })
+    .unwrap();
+    let answered = backend.submit_txn(&txn, "ann", "pw").await.unwrap();
+    let code = query_param(&answered, "code").unwrap();
+    let tokens = backend
+        .exchange_code(noted::oauth::WEB_CLIENT_ID, &code, &verifier, &redirect)
+        .await
+        .unwrap();
+    assert!(!tokens.access.expose().is_empty());
+
+    assert!(matches!(
+        backend.submit_txn("nope", "ann", "pw").await,
+        Err(noted::NotedError::UnknownTxn)
+    ));
+}
+
+#[tokio::test]
+async fn a_tool_call_without_a_bearer_reaches_the_backend_as_unauthorized() {
+    let dir = common::fixture_dir();
+    let (app, _) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
+    let backend = noted::Backend::new(noted::BackendArgs::Remote {
+        endpoint: PUBLIC.parse().unwrap(),
+        bearer: None,
+        transport: noted::Transport::Router(app),
+    })
+    .unwrap();
+    let call =
+        noted::ToolCall::raw("SearchNotes", json!({"pattern": ".", "mode": "path"})).unwrap();
+    assert!(matches!(
+        backend.invoke(&call).await,
+        Err(noted::NotedError::Unauthorized)
+    ));
 }

@@ -53,3 +53,5 @@
 | Trashed    | `NotePath`              | the removed note's name                                               |
 | Trash      | `.trash/`               | under store root                                                      |
 | Store root | `PathBuf`               | `Store` only                                                          |
+
+- Web UI is served as one HTML file: the wasm-bindgen JS and the wasm bytes are inline; never a separate JS route

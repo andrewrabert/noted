@@ -42,6 +42,7 @@ pub use store::NotedDir;
 pub use tasks::TaskNote;
 pub use timerange::{TimeRange, TimeRangeBound};
 pub use types::Bearer;
+pub use upstream::oauth;
 pub use upstream::{Reply, Transport, Upstream};
 
 pub const APP_NAME: &str = env!("CARGO_CRATE_NAME");

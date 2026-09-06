@@ -105,7 +105,7 @@ fn user_refresh_mint_and_root_records_keep_their_shapes() {
 fn oauth_records_are_canonical_and_restore_exact_facts() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("auth.redb");
-    let protocol = OAuthProtocol::open(open(&path)).unwrap();
+    let protocol = OAuthProtocol::open(open(&path), web_client()).unwrap();
     let client = protocol.register_client(registration()).unwrap();
     let expected_id = client.client_id().clone();
     let expected_issued_at = client.issued_at();
@@ -134,7 +134,7 @@ fn oauth_records_are_canonical_and_restore_exact_facts() {
     drop(read);
     drop(database);
 
-    let restored = OAuthProtocol::open(open(&path)).unwrap();
+    let restored = OAuthProtocol::open(open(&path), web_client()).unwrap();
     assert!(matches!(
         restored.begin_authorization(authorization_request(expected_id)),
         BeginAuthorizationOutcome::LoginRequired(_)
@@ -153,7 +153,7 @@ fn authentication_open_accepts_canonical_oauth_client_records() {
     );
 
     let database = Arc::new(Db::open(&path).unwrap());
-    let protocol = OAuthProtocol::open(Arc::new(AuthService::new(database))).unwrap();
+    let protocol = OAuthProtocol::open(Arc::new(AuthService::new(database)), web_client()).unwrap();
     assert!(matches!(
         protocol.begin_authorization(authorization_request(ClientId::new("client"))),
         BeginAuthorizationOutcome::LoginRequired(_)
@@ -246,7 +246,7 @@ fn every_auth_table_including_oauth_reopens_together() {
     {
         let service = open(&path);
         populate(&service);
-        OAuthProtocol::open(service.clone())
+        OAuthProtocol::open(service.clone(), web_client())
             .unwrap()
             .register_client(registration())
             .unwrap();
@@ -254,7 +254,7 @@ fn every_auth_table_including_oauth_reopens_together() {
     let reopened = open(&path);
     assert_eq!(reopened.user_list().unwrap().len(), 1);
     assert_eq!(reopened.db().all_minted().unwrap().len(), 1);
-    assert!(OAuthProtocol::open(reopened).is_ok());
+    assert!(OAuthProtocol::open(reopened, web_client()).is_ok());
 }
 
 #[test]
@@ -296,4 +296,8 @@ fn reopen_then_write_preserves_table_names_keys_and_value_encodings() {
     let users = read.open_table(USERS).unwrap();
     assert!(users.get("alice").unwrap().is_some());
     assert!(users.get("bob").unwrap().is_some());
+}
+
+fn web_client() -> RegisterOAuthClient {
+    RegisterOAuthClient::new(vec![RedirectUri::new("https://notes.example/").unwrap()]).unwrap()
 }

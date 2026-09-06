@@ -15,7 +15,6 @@ noted-auth = { workspace = true }
 noted-core = { workspace = true }
 axum = "0.8"
 http = "1"
-maud = "0.27"
 rand = "0.10"
 rustix = { version = "1", features = ["fs", "net", "process"] }
 rmcp = { version = "3", default-features = false, features = ["server", "transport-streamable-http-server", "transport-io"] }

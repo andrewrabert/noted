@@ -6,6 +6,8 @@ use crate::httpurl::HttpUrl;
 use crate::platform::Router;
 use crate::types::Bearer;
 
+pub mod oauth;
+
 /// How an upstream reaches the far side: a real client, or a router served in
 /// this very process.
 #[derive(Clone)]
@@ -96,10 +98,20 @@ impl Upstream {
         if let Some(accept) = accept {
             headers.push(("accept", accept));
         }
+        self.send(&target, &headers, body).await
+    }
+
+    /// One POST through this upstream's transport, whichever it is.
+    async fn send(
+        &self,
+        target: &HttpUrl,
+        headers: &[(&str, &str)],
+        body: Vec<u8>,
+    ) -> Result<Reply> {
         let sent = match &self.transport {
-            Transport::Real => send_reqwest(&self.client, &target, &headers, body).await,
+            Transport::Real => send_reqwest(&self.client, target, headers, body).await,
             Transport::Router(router) => {
-                crate::platform::route(router, &target, &headers, body).await
+                crate::platform::route(router, target, headers, body).await
             }
         };
         match sent {
@@ -110,6 +122,10 @@ impl Upstream {
             }),
             Err(e) => Err(unavailable(format!("cannot reach {}: {e}", self.endpoint))),
         }
+    }
+
+    pub(crate) fn base(&self) -> &HttpUrl {
+        &self.base
     }
 }
 

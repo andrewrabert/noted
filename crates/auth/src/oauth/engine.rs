@@ -68,10 +68,17 @@ impl Transactions {
     }
 }
 
-pub(super) fn open(service: Arc<AuthService>) -> Result<ProtocolState> {
+pub(super) fn open(
+    service: Arc<AuthService>,
+    web_client: RegisterOAuthClient,
+) -> Result<ProtocolState> {
     let clients = service.oauth_clients()?;
     let mut registrar = ClientMap::new();
+    register(&mut registrar, &OAuthClient::built_in(web_client)?);
     for client in clients {
+        if client.client_id().as_str() == noted::oauth::WEB_CLIENT_ID {
+            continue;
+        }
         register(&mut registrar, &client);
     }
     Ok(ProtocolState {
@@ -462,13 +469,41 @@ mod tests {
         RedirectUri, SubmittedRedirectUri,
     };
 
+    fn web_client() -> RegisterOAuthClient {
+        RegisterOAuthClient::new(vec![RedirectUri::new("https://notes.example/").unwrap()]).unwrap()
+    }
+
+    #[test]
+    fn the_built_in_web_client_is_known_without_registration() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = Arc::new(AuthService::new(Arc::new(
+            Db::open(&dir.path().join("auth.redb")).unwrap(),
+        )));
+        let protocol = OAuthProtocol::open(service, web_client()).unwrap();
+        let request = AuthorizationRequest::new(
+            Some(AuthorizationResponseType::Code),
+            Some(crate::types::ClientId::new(noted::oauth::WEB_CLIENT_ID)),
+            Some(SubmittedRedirectUri::submitted("https://notes.example/")),
+            None,
+            None,
+            Some(CodeChallenge::submitted(
+                "0123456789012345678901234567890123456789012",
+            )),
+            Some(CodeChallengeMethod::S256),
+        );
+        assert!(matches!(
+            protocol.begin_authorization(request),
+            BeginAuthorizationOutcome::LoginRequired(_)
+        ));
+    }
+
     #[test]
     fn parking_past_1024_drops_the_oldest_pending_authorization() {
         let dir = tempfile::tempdir().unwrap();
         let service = Arc::new(AuthService::new(Arc::new(
             Db::open(&dir.path().join("auth.redb")).unwrap(),
         )));
-        let protocol = OAuthProtocol::open(service).unwrap();
+        let protocol = OAuthProtocol::open(service, web_client()).unwrap();
         let client = protocol
             .register_client(
                 RegisterOAuthClient::new(vec![

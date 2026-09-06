@@ -4,7 +4,7 @@ use axum::{
     Extension, Json, Router,
     body::Bytes,
     extract::{OriginalUri, Path, State},
-    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -21,13 +21,19 @@ use noted::{APP_NAME, NotedRoot, PolicyFragment, ToolCall};
 use noted_auth::{Denial, Verified};
 use url::form_urlencoded;
 
-const APP_JS: &str = "/noted_ui.js";
-const GLUE: &str = include_str!(concat!(env!("OUT_DIR"), "/noted_ui.js"));
+const MODULE: &str = include_str!(concat!(env!("OUT_DIR"), "/noted_ui.module.js"));
 
-static DOCUMENT: LazyLock<String> = LazyLock::new(|| {
+/// The page for an open server: tool calls need no bearer.
+static OPEN_DOCUMENT: LazyLock<String> = LazyLock::new(|| page("open"));
+
+/// The page for a server that mints tokens: tool calls need a bearer.
+static BEARER_DOCUMENT: LazyLock<String> = LazyLock::new(|| page("bearer"));
+
+/// The one document, wasm inside it, `data-auth` on `<html>` naming the mode.
+fn page(auth: &str) -> String {
     format!(
         "<!DOCTYPE html>\
-         <html lang=\"en\">\
+         <html lang=\"en\" data-auth=\"{auth}\">\
          <head>\
          <meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
@@ -36,23 +42,20 @@ static DOCUMENT: LazyLock<String> = LazyLock::new(|| {
          </head>\
          <body>\
          <script type=\"module\">\
-         import init, {{ WASM }} from \"{APP_JS}\";\
-         init({{ module_or_path: Uint8Array.from(atob(WASM), c => c.charCodeAt(0)) }});\
+         {MODULE}\
          </script>\
          </body>\
          </html>"
     )
-});
-
-async fn document() -> Html<&'static str> {
-    Html(DOCUMENT.as_str())
 }
 
-async fn glue() -> ([(HeaderName, &'static str); 1], &'static str) {
-    (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        GLUE,
-    )
+/// The page stamped with whether tool calls need a bearer.
+pub(crate) fn document(requires_bearer: bool) -> Html<&'static str> {
+    Html(if requires_bearer {
+        BEARER_DOCUMENT.as_str()
+    } else {
+        OPEN_DOCUMENT.as_str()
+    })
 }
 
 fn error_response(error: NotedError) -> Response {
@@ -61,6 +64,8 @@ fn error_response(error: NotedError) -> Response {
         NotedError::Forbidden => StatusCode::FORBIDDEN,
         NotedError::InvalidInput(_) => StatusCode::BAD_REQUEST,
         NotedError::Conflict => StatusCode::CONFLICT,
+        NotedError::Unauthorized | NotedError::InvalidCredentials => StatusCode::UNAUTHORIZED,
+        NotedError::UnknownTxn => StatusCode::BAD_REQUEST,
         NotedError::Unavailable(_)
         | NotedError::Io { .. }
         | NotedError::Json { .. }
@@ -124,6 +129,7 @@ pub fn build_app(served: Served) -> Router {
     let state = AppState {
         auth: served.auth.clone(),
     };
+    let requires_bearer = state.requires_bearer();
 
     let inner = match &served.kind {
         ServedKind::Origin(root) => Router::new()
@@ -142,8 +148,7 @@ pub fn build_app(served: Served) -> Router {
             state.clone(),
             |State(state): State<AppState>, request, next| auth_middleware(state, request, next),
         ))
-        .route("/", get(document))
-        .route(APP_JS, get(glue))
+        .route("/", get(move || async move { document(requires_bearer) }))
 }
 
 fn mcp_service(root: NotedRoot) -> StreamableHttpService<McpContext, LocalSessionManager> {

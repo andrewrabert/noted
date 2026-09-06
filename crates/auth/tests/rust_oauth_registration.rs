@@ -33,7 +33,7 @@ fn put_raw_client(path: &std::path::Path, key: &str, value: &str) {
 fn registration_persists_before_the_client_enters_the_live_registrar() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("auth.redb");
-    let protocol = OAuthProtocol::open(service(&path)).unwrap();
+    let protocol = OAuthProtocol::open(service(&path), web_client()).unwrap();
 
     let client = protocol.register_client(registration()).unwrap();
     drop(protocol);
@@ -58,7 +58,7 @@ fn a_protocol_restores_every_canonical_registered_client() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("auth.redb");
     {
-        let protocol = OAuthProtocol::open(service(&path)).unwrap();
+        let protocol = OAuthProtocol::open(service(&path), web_client()).unwrap();
         protocol.register_client(registration()).unwrap();
         protocol
             .register_client(
@@ -70,7 +70,7 @@ fn a_protocol_restores_every_canonical_registered_client() {
             .unwrap();
     }
 
-    assert!(OAuthProtocol::open(service(&path)).is_ok());
+    assert!(OAuthProtocol::open(service(&path), web_client()).is_ok());
 }
 
 #[test]
@@ -85,4 +85,8 @@ fn restoration_rejects_an_invalid_canonical_client_before_protocol_startup() {
     );
 
     assert!(Db::open(&path).is_err());
+}
+
+fn web_client() -> RegisterOAuthClient {
+    RegisterOAuthClient::new(vec![RedirectUri::new("https://notes.example/").unwrap()]).unwrap()
 }

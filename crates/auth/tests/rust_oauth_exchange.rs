@@ -23,7 +23,7 @@ fn protocol() -> (tempfile::TempDir, Arc<AuthService>, OAuthProtocol, ClientId) 
     service
         .user_add(&Username::new("alice").unwrap(), &Password::new("correct"))
         .unwrap();
-    let protocol = OAuthProtocol::open(service.clone()).unwrap();
+    let protocol = OAuthProtocol::open(service.clone(), web_client()).unwrap();
     let client = protocol
         .register_client(
             RegisterOAuthClient::new(vec![RedirectUri::new(REDIRECT).unwrap()]).unwrap(),
@@ -236,4 +236,8 @@ fn refresh_exchange_keeps_failures_distinct() {
         ))),
         TokenOutcome::Rejected(TokenRejection::InvalidGrant)
     ));
+}
+
+fn web_client() -> RegisterOAuthClient {
+    RegisterOAuthClient::new(vec![RedirectUri::new("https://notes.example/").unwrap()]).unwrap()
 }

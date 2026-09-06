@@ -97,10 +97,48 @@ impl Backend {
     pub async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput> {
         self.inner.invoke(call).await
     }
+
+    pub async fn submit_txn(&self, txn: &str, username: &str, password: &str) -> Result<String> {
+        self.inner.submit_txn(txn, username, password).await
+    }
+
+    pub async fn exchange_code(
+        &self,
+        client_id: &str,
+        code: &str,
+        verifier: &str,
+        redirect_uri: &str,
+    ) -> Result<crate::oauth::Tokens> {
+        self.inner
+            .exchange_code(client_id, code, verifier, redirect_uri)
+            .await
+    }
 }
 
 trait BackendImpl: Threadsafe {
     fn invoke<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, Result<ToolOutput>>;
+
+    /// A notes tree on this host has no login.
+    fn submit_txn<'a>(
+        &'a self,
+        txn: &'a str,
+        username: &'a str,
+        password: &'a str,
+    ) -> BoxFuture<'a, Result<String>> {
+        let _ = (txn, username, password);
+        Box::pin(async move { Err(rejected("a local notes tree has no login")) })
+    }
+
+    fn exchange_code<'a>(
+        &'a self,
+        client_id: &'a str,
+        code: &'a str,
+        verifier: &'a str,
+        redirect_uri: &'a str,
+    ) -> BoxFuture<'a, Result<crate::oauth::Tokens>> {
+        let _ = (client_id, code, verifier, redirect_uri);
+        Box::pin(async move { Err(rejected("a local notes tree has no login")) })
+    }
 }
 
 struct LocalBackend {
@@ -121,6 +159,29 @@ struct RemoteBackend {
 impl BackendImpl for RemoteBackend {
     fn invoke<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, Result<ToolOutput>> {
         Box::pin(async move { self.roundtrip(&call.name, &call.args).await })
+    }
+
+    fn submit_txn<'a>(
+        &'a self,
+        txn: &'a str,
+        username: &'a str,
+        password: &'a str,
+    ) -> BoxFuture<'a, Result<String>> {
+        Box::pin(async move { self.upstream.submit_txn(txn, username, password).await })
+    }
+
+    fn exchange_code<'a>(
+        &'a self,
+        client_id: &'a str,
+        code: &'a str,
+        verifier: &'a str,
+        redirect_uri: &'a str,
+    ) -> BoxFuture<'a, Result<crate::oauth::Tokens>> {
+        Box::pin(async move {
+            self.upstream
+                .exchange_code(client_id, code, verifier, redirect_uri)
+                .await
+        })
     }
 }
 
@@ -152,6 +213,7 @@ impl RemoteBackend {
             return Err(match reply.status {
                 404 => NotedError::NotFound,
                 403 => NotedError::Forbidden,
+                401 => NotedError::Unauthorized,
                 409 => NotedError::Conflict,
                 _ => rejected(msg),
             });

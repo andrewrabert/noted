@@ -1,73 +1,17 @@
 use std::collections::HashMap;
 
-use base64::Engine;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use crate::credentials::{Credential, CredentialStore};
-use noted::HttpUrl;
-use noted::error::{Result, http_error, io_error, rejected, unavailable};
+use noted::error::{Result, io_error, rejected, unavailable};
 use noted::util::random_token;
-use noted::{Bearer, PolicyFragment};
+use noted::{Bearer, HttpUrl, PolicyFragment, Transport, Upstream};
 use noted_auth::credential::{Macaroon, MacaroonId};
 use noted_auth::types::{ClientId, Fingerprint, RefreshToken};
 
-async fn get_json(client: &reqwest::Client, url: &HttpUrl) -> Result<Value> {
-    let resp = client
-        .get(url.as_str())
-        .send()
-        .await
-        .map_err(|e| http_error(format!("cannot reach {url}"), e))?;
-    if !resp.status().is_success() {
-        return Err(unavailable(format!("{url}: HTTP {}", resp.status())));
-    }
-    resp.json()
-        .await
-        .map_err(|e| http_error(format!("{url}"), e))
-}
-
-async fn post_form(
-    client: &reqwest::Client,
-    url: &HttpUrl,
-    form: &[(&str, &str)],
-) -> Result<Value> {
-    let resp = client
-        .post(url.as_str())
-        .form(form)
-        .send()
-        .await
-        .map_err(|e| http_error(format!("cannot reach {url}"), e))?;
-    let status = resp.status();
-    let body: Value = resp.json().await.unwrap_or(Value::Null);
-    if !status.is_success() {
-        let detail = body
-            .get("error_description")
-            .or_else(|| body.get("error"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("HTTP {status}"));
-        return Err(rejected(format!("{url}: {detail}")));
-    }
-    Ok(body)
-}
-
-fn pkce() -> (String, String) {
-    let verifier = random_token(48);
-    let digest = Sha256::digest(verifier.as_bytes());
-    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);
-    (verifier, challenge)
-}
-
 pub async fn login(url: &HttpUrl) -> Result<Credential> {
-    let client = reqwest::Client::new();
-
-    let meta = get_json(&client, &url.join(".well-known/oauth-authorization-server")).await?;
-    let auth_ep = endpoint(&meta, "authorization_endpoint")?;
-    let token_ep = endpoint(&meta, "token_endpoint")?;
-    let reg_ep = endpoint(&meta, "registration_endpoint")?;
-
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| io_error("cannot bind loopback listener", e))?;
@@ -77,32 +21,17 @@ pub async fn login(url: &HttpUrl) -> Result<Credential> {
         .port();
     let redirect_uri = format!("http://127.0.0.1:{port}/callback");
 
-    let reg: Value = client
-        .post(reg_ep.as_str())
-        .json(&json!({ "redirect_uris": [redirect_uri], "token_endpoint_auth_method": "none" }))
-        .send()
-        .await
-        .map_err(|e| http_error(format!("cannot reach {reg_ep}"), e))?
-        .json()
-        .await
-        .map_err(|e| http_error(format!("{reg_ep}"), e))?;
-    let client_id = reg
-        .get("client_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| unavailable("registration returned no client_id"))?
-        .to_string();
-
-    let (verifier, challenge) = pkce();
+    let upstream = Upstream::open(url.as_str().parse()?, Transport::Real)?;
+    let client_id = upstream.register_client(&redirect_uri).await?;
+    let verifier = random_token(48);
     let state = random_token(24);
-    let mut authorize = auth_ep.as_url().clone();
-    authorize
-        .query_pairs_mut()
-        .append_pair("response_type", "code")
-        .append_pair("client_id", &client_id)
-        .append_pair("redirect_uri", &redirect_uri)
-        .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "S256")
-        .append_pair("state", &state);
+    let authorize = noted::oauth::authorize_url(
+        url,
+        &client_id,
+        &redirect_uri,
+        &noted::oauth::code_challenge(&verifier),
+        &state,
+    );
 
     eprintln!("Opening your browser to log in. If it does not open, visit:\n  {authorize}");
     let _ = open::that(authorize.as_str());
@@ -114,29 +43,11 @@ pub async fn login(url: &HttpUrl) -> Result<Credential> {
     let code = params
         .get("code")
         .ok_or_else(|| rejected("login failed: no code returned"))?;
+    let tokens = upstream
+        .exchange_code(&client_id, code, &verifier, &redirect_uri)
+        .await?;
 
-    let tokens = post_form(
-        &client,
-        &token_ep,
-        &[
-            ("grant_type", "authorization_code"),
-            ("code", code),
-            ("code_verifier", &verifier),
-            ("client_id", &client_id),
-            ("redirect_uri", &redirect_uri),
-        ],
-    )
-    .await?;
-
-    let access_token = tokens
-        .get("access_token")
-        .and_then(Value::as_str)
-        .ok_or_else(|| unavailable("token endpoint returned no access_token"))?
-        .to_string();
-    let refresh_token = tokens
-        .get("refresh_token")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let access_token = tokens.access.expose().to_string();
     let user = Macaroon::from_encoded(access_token.clone())
         .and_then(|access| access.owner())
         .map(|owner| owner.to_string())
@@ -146,7 +57,7 @@ pub async fn login(url: &HttpUrl) -> Result<Credential> {
         user,
         client_id: ClientId::new(client_id),
         access_token: Bearer::new(access_token),
-        refresh_token: refresh_token.map(RefreshToken::new),
+        refresh_token: tokens.refresh.map(RefreshToken::new),
     })
 }
 
@@ -204,41 +115,22 @@ impl Session {
             .await?
             .ok_or_else(|| rejected("not logged in; run `noted auth login`"))?;
         let endpoint = self.url.join("macaroon/mint");
-        let body = json!({ "policy": ask.policy });
-        let answer = post_json(&endpoint, credential.expose(), &body).await?;
+        let body = serde_json::to_vec(&json!({ "policy": ask.policy })).unwrap_or_default();
+        let credential = Bearer::new(credential.expose().to_string());
+        let reply = Upstream::open(self.url.as_str().parse()?, Transport::Real)?
+            .post("macaroon/mint", &[], Some(&credential), None, body)
+            .await?;
+        if reply.status >= 400 {
+            let detail = reply
+                .detail()
+                .unwrap_or_else(|| format!("HTTP {}", reply.status));
+            return Err(rejected(format!("{endpoint}: {detail}")));
+        }
+        let answer: Value = serde_json::from_slice(&reply.body)
+            .map_err(|e| unavailable(format!("{endpoint}: unreadable answer: {e}")))?;
         serde_json::from_value(answer)
             .map_err(|e| unavailable(format!("{endpoint}: unreadable answer: {e}")))
     }
-}
-
-async fn post_json(endpoint: &HttpUrl, bearer: &str, body: &Value) -> Result<Value> {
-    let resp = reqwest::Client::new()
-        .post(endpoint.as_str())
-        .bearer_auth(bearer)
-        .json(body)
-        .send()
-        .await
-        .map_err(|e| http_error(format!("cannot reach {endpoint}"), e))?;
-    let status = resp.status();
-    let answer: Value = resp.json().await.unwrap_or(Value::Null);
-    if !status.is_success() {
-        let detail = answer
-            .get("detail")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("HTTP {status}"));
-        return Err(rejected(format!("{endpoint}: {detail}")));
-    }
-    Ok(answer)
-}
-
-fn endpoint(meta: &Value, key: &str) -> Result<HttpUrl> {
-    let raw = meta
-        .get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| unavailable(format!("discovery document missing {key}")))?;
-    raw.parse()
-        .map_err(|e| unavailable(format!("discovery {key} is not a valid URL: {e}")))
 }
 
 async fn wait_for_code(listener: &TcpListener) -> Result<HashMap<String, String>> {

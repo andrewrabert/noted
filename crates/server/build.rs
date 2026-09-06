@@ -75,7 +75,19 @@ fn inline(wasm: &Path, out_dir: &Path) {
         snippets == 0 && output.local_modules().is_empty(),
         "the UI pulled in a JS snippet; the served bundle is one file"
     );
-    let module = base64::engine::general_purpose::STANDARD.encode(output.wasm_mut().emit_wasm());
-    let glue = format!("{}\nexport const WASM = \"{module}\";\n", output.js());
-    std::fs::write(out_dir.join("noted_ui.js"), glue).expect("write noted_ui.js");
+    let wasm = base64::engine::general_purpose::STANDARD.encode(output.wasm_mut().emit_wasm());
+    assert!(
+        output.js().contains("async function __wbg_init("),
+        "wasm-bindgen renamed its initializer; the inline module cannot boot"
+    );
+    let module = format!(
+        "{}\nexport const WASM = \"{wasm}\";\n\
+         __wbg_init({{ module_or_path: Uint8Array.from(atob(WASM), c => c.charCodeAt(0)) }});\n",
+        output.js()
+    );
+    assert!(
+        !module.contains("</script"),
+        "the module would close its own inline script tag"
+    );
+    std::fs::write(out_dir.join("noted_ui.module.js"), module).expect("write noted_ui.module.js");
 }

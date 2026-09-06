@@ -318,29 +318,56 @@ pub fn record(output: ToolOutput) -> serde_json::Value {
     }
 }
 
-pub async fn invoke(call: noted::Result<ToolCall>) -> Result<ToolOutput, String> {
-    let call = call.map_err(message)?;
-    let backend = Backend::new(BackendArgs::Remote {
-        endpoint: origin()?.parse().map_err(message)?,
-        bearer: None,
+/// The Clone-able projection a `Message` can hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApiError {
+    Unauthorized,
+    InvalidCredentials,
+    UnknownTxn,
+    Failed(String),
+}
+
+impl ApiError {
+    pub fn of(error: noted::NotedError) -> ApiError {
+        match error {
+            noted::NotedError::Unauthorized => ApiError::Unauthorized,
+            noted::NotedError::InvalidCredentials => ApiError::InvalidCredentials,
+            noted::NotedError::UnknownTxn => ApiError::UnknownTxn,
+            other => ApiError::Failed(other.message().into_owned()),
+        }
+    }
+
+    /// The sentence the status bar or the overlay shows.
+    pub fn message(&self) -> String {
+        match self {
+            ApiError::Unauthorized => noted::NotedError::Unauthorized.message().into_owned(),
+            ApiError::InvalidCredentials => {
+                noted::NotedError::InvalidCredentials.message().into_owned()
+            }
+            ApiError::UnknownTxn => noted::NotedError::UnknownTxn.message().into_owned(),
+            ApiError::Failed(message) => message.clone(),
+        }
+    }
+}
+
+/// The same construction whether or not a token exists yet.
+pub fn remote(endpoint: String, bearer: Option<noted::Bearer>) -> noted::Result<Backend> {
+    Backend::new(BackendArgs::Remote {
+        endpoint: endpoint.parse()?,
+        bearer,
         transport: Transport::Real,
     })
-    .map_err(message)?;
-    backend.invoke(&call).await.map_err(message)
 }
 
-#[cfg(target_arch = "wasm32")]
-fn origin() -> Result<String, String> {
-    web_sys::window()
-        .and_then(|window| window.location().origin().ok())
-        .ok_or_else(|| "the page has no origin".to_string())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn origin() -> Result<String, String> {
-    Err("the noted web UI runs in a browser".to_string())
-}
-
-fn message(error: noted::NotedError) -> String {
-    error.message().into_owned()
+pub async fn invoke(
+    call: noted::Result<ToolCall>,
+    endpoint: String,
+    bearer: Option<noted::Bearer>,
+) -> Result<ToolOutput, ApiError> {
+    async move {
+        let call = call?;
+        remote(endpoint, bearer)?.invoke(&call).await
+    }
+    .await
+    .map_err(ApiError::of)
 }

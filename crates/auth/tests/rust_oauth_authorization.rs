@@ -18,7 +18,7 @@ fn protocol() -> (tempfile::TempDir, OAuthProtocol, ClientId) {
     service
         .user_add(&Username::new("alice").unwrap(), &Password::new("correct"))
         .unwrap();
-    let protocol = OAuthProtocol::open(service).unwrap();
+    let protocol = OAuthProtocol::open(service, web_client()).unwrap();
     let client = protocol
         .register_client(
             RegisterOAuthClient::new(vec![
@@ -178,4 +178,8 @@ fn invalid_logins_keep_the_transaction_but_success_consumes_it() {
         protocol.authorization_status(&success),
         AuthorizationStatus::Unknown
     );
+}
+
+fn web_client() -> RegisterOAuthClient {
+    RegisterOAuthClient::new(vec![RedirectUri::new("https://notes.example/").unwrap()]).unwrap()
 }

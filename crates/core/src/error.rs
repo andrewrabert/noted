@@ -10,6 +10,12 @@ pub enum NotedError {
     Forbidden,
     #[error("conflict")]
     Conflict,
+    #[error("unauthorized")]
+    Unauthorized,
+    #[error("wrong username or password")]
+    InvalidCredentials,
+    #[error("unknown or expired login request")]
+    UnknownTxn,
     #[error("{0}")]
     InvalidInput(String),
     #[error("{0}")]
@@ -46,6 +52,9 @@ impl NotedError {
             NotedError::NotFound => Cow::Borrowed("not found"),
             NotedError::Forbidden => Cow::Borrowed("forbidden"),
             NotedError::Conflict => Cow::Borrowed("conflict"),
+            NotedError::Unauthorized => Cow::Borrowed("unauthorized"),
+            NotedError::InvalidCredentials => Cow::Borrowed("wrong username or password"),
+            NotedError::UnknownTxn => Cow::Borrowed("unknown or expired login request"),
             NotedError::InvalidInput(m) | NotedError::Unavailable(m) => Cow::Borrowed(m),
             NotedError::Io { context, .. }
             | NotedError::Json { context, .. }
@@ -59,6 +68,9 @@ impl NotedError {
             self,
             NotedError::NotFound
                 | NotedError::Forbidden
+                | NotedError::Unauthorized
+                | NotedError::InvalidCredentials
+                | NotedError::UnknownTxn
                 | NotedError::InvalidInput(_)
                 | NotedError::Conflict
         )

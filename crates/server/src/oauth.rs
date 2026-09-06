@@ -6,7 +6,7 @@ use axum::{
     body::Bytes,
     extract::{RawQuery, State},
     http::StatusCode,
-    response::{Html, IntoResponse, Response},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use serde_json::{Value, json};
@@ -31,10 +31,11 @@ pub struct OAuthProvider {
 impl OAuthProvider {
     pub async fn new(public_url: &str, auth: Arc<AuthService>) -> Result<OAuthProvider> {
         let public_url = public_url.trim_end_matches('/').to_string();
+        let web_client = web_client(&public_url)?;
         let protocol = Arc::new(
             run_blocking({
                 let auth = auth.clone();
-                move || noted_auth::oauth::OAuthProtocol::open(auth)
+                move || noted_auth::oauth::OAuthProtocol::open(auth, web_client)
             })
             .await??,
         );
@@ -69,6 +70,21 @@ impl OAuthProvider {
             self.resource_metadata_url()
         )
     }
+}
+
+/// The built-in client's redirect URIs: the public URL, and the public URL
+/// with a trailing slash, deduplicated.
+fn web_client(public_url: &str) -> Result<noted_auth::oauth::RegisterOAuthClient> {
+    let bare = public_url.trim_end_matches('/').to_string();
+    let slashed = format!("{bare}/");
+    let mut redirects = Vec::new();
+    for spelling in [slashed, bare] {
+        let redirect = RedirectUri::new(&spelling)?;
+        if !redirects.contains(&redirect) {
+            redirects.push(redirect);
+        }
+    }
+    noted_auth::oauth::RegisterOAuthClient::new(redirects)
 }
 
 #[derive(serde::Serialize)]
@@ -251,7 +267,10 @@ async fn authorize(State(state): State<AuthState>, RawQuery(raw): RawQuery) -> R
 async fn login_get(State(state): State<AuthState>, RawQuery(raw): RawQuery) -> Response {
     let p = provider(&state);
     let q = query_map(&raw);
-    let txn = AuthorizationTransactionId::submitted(q.get("txn").cloned().unwrap_or_default());
+    let Some(asked) = q.get("txn").cloned() else {
+        return (StatusCode::SEE_OTHER, [(axum::http::header::LOCATION, "/")]).into_response();
+    };
+    let txn = AuthorizationTransactionId::submitted(asked);
     let protocol = p.protocol.clone();
     let status = match run_blocking(move || protocol.authorization_status(&txn)).await {
         Ok(status) => status,
@@ -261,14 +280,13 @@ async fn login_get(State(state): State<AuthState>, RawQuery(raw): RawQuery) -> R
         }
     };
     match status {
-        noted_auth::oauth::AuthorizationStatus::Pending => Html(presentation::login_page(
-            q.get("txn").map_or("", String::as_str),
-            None,
-        ))
-        .into_response(),
+        // A login transaction exists only when the server mints tokens.
+        noted_auth::oauth::AuthorizationStatus::Pending => {
+            crate::http::document(true).into_response()
+        }
         noted_auth::oauth::AuthorizationStatus::Unknown => (
             StatusCode::BAD_REQUEST,
-            Html(presentation::login_page("", Some("unknown login request"))),
+            noted::NotedError::UnknownTxn.message().into_owned(),
         )
             .into_response(),
     }
@@ -280,7 +298,7 @@ async fn login_post(State(state): State<AuthState>, body: Bytes) -> Response {
     let txn = form.get("txn").cloned().unwrap_or_default();
     let name = LoginName::submitted(form.get("username").cloned().unwrap_or_default());
     let password = Password::new(form.get("password").cloned().unwrap_or_default());
-    let transaction = AuthorizationTransactionId::submitted(txn.clone());
+    let transaction = AuthorizationTransactionId::submitted(txn);
     let protocol = p.protocol.clone();
     let outcome = match run_blocking(move || {
         protocol.authorize_login(noted_auth::oauth::AuthorizationLogin::new(
@@ -297,7 +315,7 @@ async fn login_post(State(state): State<AuthState>, body: Bytes) -> Response {
             noted_auth::oauth::AuthorizationLoginOutcome::ServerError
         }
     };
-    presentation::authorization_login(&txn, outcome)
+    presentation::authorization_login(outcome)
 }
 
 async fn token(State(state): State<AuthState>, body: Bytes) -> Response {
