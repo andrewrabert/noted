@@ -13,14 +13,21 @@ use super::path::Path;
 use super::segment::Segment;
 use crate::error::{Result, rejected};
 
+const RESERVED_PREFIXES: [char; 2] = ['.', '#'];
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NotePath(Path);
 
 impl NotePath {
     pub fn new(raw: &str) -> Result<NotePath> {
         let path = Path::new(raw)?;
-        if path.segments().any(|part| part.as_str().starts_with('.')) {
-            return Err(rejected(format!("{raw}: a segment starts with '.'")));
+        if path
+            .segments()
+            .any(|part| part.as_str().starts_with(RESERVED_PREFIXES))
+        {
+            return Err(rejected(format!(
+                "{raw}: a segment starts with a reserved prefix {RESERVED_PREFIXES:?}"
+            )));
         }
         Ok(NotePath(path))
     }
@@ -97,6 +104,18 @@ mod tests {
         assert_eq!(at("a/b.md"), at("/a/b.md"));
         for bad in ["/.logs", ".logs", "/.tasks", "/a/.hidden", "", "/a/"] {
             assert!(NotePath::new(bad).is_err(), "accepted '{bad}'");
+        }
+    }
+
+    #[test]
+    fn hash_prefixes_are_reserved_at_every_depth() {
+        for bad in ["#", "#42", "/#ideas.md", "/a/#42/note.md", "/a/#note.md"] {
+            assert!(NotePath::new(bad).is_err(), "accepted '{bad}'");
+            let json = serde_json::to_string(bad).unwrap();
+            assert!(serde_json::from_str::<NotePath>(&json).is_err());
+        }
+        for good in ["/a#42.md", "/a#b/note.md"] {
+            assert_eq!(at(good).to_string(), good);
         }
     }
 
