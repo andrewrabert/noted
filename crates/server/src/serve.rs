@@ -15,8 +15,9 @@ use crate::relay::Relay;
 use noted::error::{Result, rejected, unavailable};
 use noted::store::NotedDir;
 use noted::types::Source;
-use noted::{Bearer, Endpoint, NotedRoot, PolicyArgs, PolicyFragment, Transport};
+use noted::{Bearer, Endpoint, NotedRoot, PolicyArgs, PolicyFragment};
 use noted_auth::AuthService;
+use noted_client::Transport;
 
 /// What a served process stands on: its own notes tree, or another server.
 pub enum ServedConfig {

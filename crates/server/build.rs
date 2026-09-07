@@ -10,6 +10,8 @@ fn main() {
         "../ui-wasm/Cargo.lock",
         "../picker/src",
         "../picker/Cargo.toml",
+        "../client/src",
+        "../client/Cargo.toml",
         "../core/src",
         "../core/Cargo.toml",
     ] {

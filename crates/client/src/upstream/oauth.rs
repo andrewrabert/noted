@@ -7,12 +7,12 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::{Reply, Upstream};
-use crate::error::{NotedError, Result, rejected, unavailable};
-use crate::httpurl::HttpUrl;
-use crate::types::Bearer;
+use noted::error::{NotedError, Result, rejected, unavailable};
+use noted::httpurl::HttpUrl;
+use noted::types::Bearer;
 
 /// The built-in public client every noted server knows.
-pub const WEB_CLIENT_ID: &str = "noted-web";
+pub use noted::oauth::WEB_CLIENT_ID;
 
 pub struct Tokens {
     pub access: Bearer,

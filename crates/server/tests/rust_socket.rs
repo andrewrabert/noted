@@ -5,7 +5,8 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use noted::tools::ReadArgs;
-use noted::{Backend, BackendArgs, Bearer, Endpoint, PolicyFragment, ToolCall, Transport};
+use noted::{Bearer, Endpoint, PolicyFragment, ToolCall};
+use noted_client::{Backend, BackendArgs, Transport};
 use noted_server::serve::{Bind, HttpConfig, ServedConfig, serve_http};
 use noted_server::socket::{
     SocketBind, SocketEnv, bind_unix_socket, lock_path, socket_base_dir, socket_root, staging_dir,

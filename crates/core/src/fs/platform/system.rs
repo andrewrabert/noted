@@ -11,13 +11,10 @@ use ignore::{IncrementalIgnore, WalkBuilder, WalkState};
 use crate::disk::{atomic_create, atomic_write, normalize};
 use crate::domain::NotePath;
 use crate::error::{NotedError, Result, io_error, rejected, unavailable};
-use crate::httpurl::HttpUrl;
 use crate::platform::Entry;
 use crate::search::{GlobPattern, SearchMode, SearchOrder, SearchQuery};
 use crate::store::RawHit;
 use crate::util::case_order;
-
-pub(crate) type Router = axum::Router;
 
 pub(crate) struct Lock(tokio::sync::Mutex<()>);
 
@@ -188,57 +185,6 @@ pub(crate) fn host() -> String {
     hostname::get()
         .map(|h| h.to_string_lossy().into_owned())
         .unwrap_or_default()
-}
-
-fn authority(target: &HttpUrl) -> String {
-    let url = target.as_url();
-    match (url.host_str(), url.port()) {
-        (Some(host), Some(port)) => format!("{host}:{port}"),
-        (Some(host), None) => host.to_string(),
-        (None, _) => "localhost".to_string(),
-    }
-}
-
-pub(crate) async fn route(
-    router: &Router,
-    target: &HttpUrl,
-    headers: &[(&str, &str)],
-    body: Vec<u8>,
-) -> std::result::Result<(u16, Option<String>, Vec<u8>), String> {
-    use axum::http::Request;
-    use http_body_util::BodyExt;
-    use tower::ServiceExt;
-
-    // a real client names the authority it dialed; a routed request carries no
-    // socket to infer one from, so the target url supplies it
-    let mut builder = Request::builder()
-        .method("POST")
-        .uri(target.path_and_query())
-        .header("host", authority(target));
-    for (name, value) in headers {
-        builder = builder.header(*name, *value);
-    }
-    let request = builder
-        .body(axum::body::Body::from(body))
-        .map_err(|e| e.to_string())?;
-    let resp = router
-        .clone()
-        .oneshot(request)
-        .await
-        .map_err(|e| e.to_string())?;
-    let status = resp.status().as_u16();
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    let bytes = resp
-        .into_body()
-        .collect()
-        .await
-        .map_err(|e| e.to_string())?
-        .to_bytes();
-    Ok((status, content_type, bytes.to_vec()))
 }
 
 // the tree's only ignore configuration: '.ignore' and '.gitignore' as the

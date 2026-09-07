@@ -22,6 +22,7 @@ iced = { git = "https://github.com/iced-rs/iced", rev = "3c81aac2e1b48125efdf0c9
     "highlighter",
     "advanced",
 ] }
+noted-client = { path = "../client", default-features = false }
 noted-core = { path = "../core" }
 noted-picker = { path = "../picker" }
 serde = { version = "1", features = ["derive"] }

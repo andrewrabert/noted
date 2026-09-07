@@ -1,12 +1,9 @@
 use std::path::Path as StdPath;
 
 use crate::error::{Result, unavailable};
-use crate::httpurl::HttpUrl;
 use crate::platform::Entry;
 use crate::search::SearchQuery;
 use crate::store::RawHit;
-
-pub(crate) type Router = std::convert::Infallible;
 
 pub(crate) struct Lock;
 
@@ -72,13 +69,4 @@ pub(crate) fn crosses_symlink(_base: &StdPath, _abs: &StdPath) -> bool {
 
 pub(crate) fn host() -> String {
     String::new()
-}
-
-pub(crate) async fn route(
-    router: &Router,
-    _target: &HttpUrl,
-    _headers: &[(&str, &str)],
-    _body: Vec<u8>,
-) -> std::result::Result<(u16, Option<String>, Vec<u8>), String> {
-    match *router {}
 }

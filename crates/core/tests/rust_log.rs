@@ -1,13 +1,13 @@
 mod common;
 
 use common::{backend, confined_backend, fixture_dir, invoke, root};
-use noted::{Backend, Note as _};
+use noted::{Note as _, NotedRoot};
 use serde_json::{Value, json};
 
 const JUNE: &str = "/2026-06-15T08-30-00.000000-0700.md";
 const JULY: &str = "/2026-07-01T09-00-00.000000-0700.md";
 
-async fn records(backend: &Backend, args: Value) -> Vec<Value> {
+async fn records(backend: &NotedRoot, args: Value) -> Vec<Value> {
     let out = invoke(backend, "GetLog", args).await.unwrap();
     out.record()
         .and_then(|v| v.as_array())
@@ -15,7 +15,7 @@ async fn records(backend: &Backend, args: Value) -> Vec<Value> {
         .clone()
 }
 
-async fn paths(backend: &Backend, args: Value) -> Vec<String> {
+async fn paths(backend: &NotedRoot, args: Value) -> Vec<String> {
     records(backend, args)
         .await
         .iter()
@@ -23,7 +23,7 @@ async fn paths(backend: &Backend, args: Value) -> Vec<String> {
         .collect()
 }
 
-async fn search(backend: &Backend, args: Value) -> String {
+async fn search(backend: &NotedRoot, args: Value) -> String {
     invoke(backend, "SearchLog", args).await.unwrap().render()
 }
 

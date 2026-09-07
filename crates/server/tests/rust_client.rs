@@ -2,7 +2,8 @@ mod common;
 
 use noted::error::NotedError;
 use noted::tools::ToolOutput;
-use noted::{Backend, BackendArgs, Bearer, ToolCall, Transport};
+use noted::{Bearer, ToolCall};
+use noted_client::{Backend, BackendArgs, Transport};
 use serde_json::json;
 
 fn dialing(router: axum::Router, token: Option<&str>) -> Backend {

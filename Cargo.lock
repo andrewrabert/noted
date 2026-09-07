@@ -3128,6 +3128,8 @@ name = "noted-client"
 version = "0.1.0-dev"
 dependencies = [
  "axum",
+ "base64 0.23.1",
+ "http-body-util",
  "keyring",
  "noted-auth",
  "noted-core",
@@ -3135,15 +3137,17 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "tokio",
+ "tower",
+ "url",
 ]
 
 [[package]]
 name = "noted-core"
 version = "0.1.0-dev"
 dependencies = [
- "axum",
  "base64 0.23.1",
  "chrono",
  "clap",
@@ -3154,13 +3158,11 @@ dependencies = [
  "grep-searcher",
  "hex",
  "hostname",
- "http-body-util",
  "humantime",
  "ignore",
  "iso8601",
  "path-clean",
  "rand 0.10.2",
- "reqwest",
  "schemars",
  "serde",
  "serde_json",
@@ -3168,7 +3170,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
- "tower",
  "tracing",
  "url",
  "vergen-gix",
@@ -3190,6 +3191,7 @@ dependencies = [
  "http",
  "http-body-util",
  "noted-auth",
+ "noted-client",
  "noted-core",
  "rand 0.10.2",
  "rmcp",

@@ -1,6 +1,7 @@
+use noted::ToolCall;
 use noted::search::{SearchMode, SearchOrder};
 use noted::tools::ToolOutput;
-use noted::{Backend, BackendArgs, ToolCall, Transport};
+use noted_client::{Backend, BackendArgs, Transport};
 use serde::Serialize;
 
 #[derive(Clone, Serialize)]

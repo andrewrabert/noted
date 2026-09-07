@@ -1,14 +1,15 @@
 use serde_json::Value;
 
-use crate::endpoint::Endpoint;
-use crate::error::{NotedError, Result, json_error, rejected, unavailable};
 use crate::platform::{BoxFuture, Threadsafe};
-use crate::policyargs::PolicyArgs;
-use crate::root::NotedRoot;
-use crate::store::NotedDir;
-use crate::tools::{ToolArgs, ToolOutput, is_tool};
-use crate::types::{Bearer, Source};
 use crate::upstream::{Transport, Upstream};
+use noted::Endpoint;
+use noted::NotedRoot;
+use noted::PolicyArgs;
+use noted::ToolCall;
+use noted::error::{NotedError, Result, json_error, rejected, unavailable};
+use noted::store::NotedDir;
+use noted::tools::ToolOutput;
+use noted::types::{Bearer, Source};
 
 /// What a client invokes against: a notes tree on this host, or another
 /// server reached over an upstream.
@@ -23,45 +24,6 @@ pub enum BackendArgs {
         bearer: Option<Bearer>,
         transport: Transport,
     },
-}
-
-pub struct ToolCall {
-    name: String,
-    args: Value,
-}
-
-impl ToolCall {
-    pub fn new<A: ToolArgs>(args: A) -> Result<ToolCall> {
-        Ok(ToolCall {
-            name: A::TOOL.to_string(),
-            args: serde_json::to_value(args).map_err(|e| json_error("tool arguments", e))?,
-        })
-    }
-
-    pub fn raw(name: &str, args: Value) -> Result<ToolCall> {
-        if !is_tool(name) {
-            return Err(NotedError::NotFound);
-        }
-        Ok(ToolCall {
-            name: name.to_string(),
-            args,
-        })
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub(crate) fn args(&self) -> &Value {
-        &self.args
-    }
-}
-
-pub struct ToolListing {
-    pub name: &'static str,
-    pub title: &'static str,
-    pub description: String,
-    pub input_schema: Value,
 }
 
 pub struct Backend {
@@ -158,7 +120,7 @@ struct RemoteBackend {
 
 impl BackendImpl for RemoteBackend {
     fn invoke<'a>(&'a self, call: &'a ToolCall) -> BoxFuture<'a, Result<ToolOutput>> {
-        Box::pin(async move { self.roundtrip(&call.name, &call.args).await })
+        Box::pin(async move { self.roundtrip(call.name(), call.args()).await })
     }
 
     fn submit_txn<'a>(

@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use noted::error::{Result, rejected};
 use noted::store::NotedDir;
 use noted::types::Source;
-use noted::{Backend, BackendArgs, Endpoint, HttpUrl, PolicyArgs, PolicyFragment, Transport};
+use noted::{Endpoint, HttpUrl, PolicyArgs, PolicyFragment};
 use noted_client::credentials::{CredentialStore, CredentialStoreConfig, SecretStorage};
+use noted_client::{Backend, BackendArgs, Transport};
 use noted_server::serve::ServedConfig;
 
 use crate::args::EntryFlags;

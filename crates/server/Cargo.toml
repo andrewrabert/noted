@@ -11,6 +11,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+noted-client = { workspace = true }
 noted-auth = { workspace = true }
 noted-core = { workspace = true }
 axum = "0.8"

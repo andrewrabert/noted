@@ -1,3 +1,4 @@
+#![cfg(feature = "desktop")]
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};

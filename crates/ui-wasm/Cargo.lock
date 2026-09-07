@@ -3688,10 +3688,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9737e026353e5cd0736f98eddae28665118eb6f6600902a7f50db585621fecb6"
 
 [[package]]
-name = "noted-core"
+name = "noted-client"
 version = "0.1.0-dev"
 dependencies = [
  "axum",
+ "base64 0.23.0",
+ "http-body-util",
+ "noted-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tower",
+ "url",
+]
+
+[[package]]
+name = "noted-core"
+version = "0.1.0-dev"
+dependencies = [
  "base64 0.23.0",
  "chrono",
  "clap",
@@ -3702,12 +3717,10 @@ dependencies = [
  "grep-searcher",
  "hex",
  "hostname",
- "http-body-util",
  "ignore",
  "iso8601",
  "path-clean",
  "rand",
- "reqwest",
  "schemars",
  "serde",
  "serde_json",
@@ -3715,7 +3728,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
- "tower",
  "tracing",
  "url",
  "vergen-gix",
@@ -3737,6 +3749,7 @@ dependencies = [
  "iced",
  "js-sys",
  "log",
+ "noted-client",
  "noted-core",
  "noted-picker",
  "serde",

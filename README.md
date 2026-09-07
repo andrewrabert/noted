@@ -229,6 +229,21 @@ UI requires; sign in with a username/password from the auth DB.
 
 ## Development
 
+Crate responsibilities:
+
+- `noted-core`: note storage, policy enforcement, domain types, and tool contracts.
+- `noted-client`: local/remote backend selection, HTTP transport, and OAuth client
+  requests. The optional `desktop` feature adds credential storage, browser login,
+  and administration; the CLI enables it, while the server and web UI use the
+  transport API without it.
+- `noted-auth`: authentication, authorization, and persistent credential state.
+- `noted-server`: HTTP/MCP endpoints, relays, and embedded UI serving.
+- `noted` (CLI) and `noted-ui-wasm`: application configuration and presentation.
+- `noted-picker`: shared fuzzy matching.
+
+Core has no HTTP client or router dependency. Shared tool calls stay in core so
+local execution and client requests use the same validated contracts.
+
 Uses [just](https://github.com/casey/just):
 
 ```

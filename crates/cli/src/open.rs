@@ -6,10 +6,11 @@ use clap::Args;
 use tempfile::TempDir;
 
 use noted::NotePath;
+use noted::ToolCall;
 use noted::error::{NotedError, Result, io_error, rejected, unavailable};
 use noted::note::{Condition, TextNote};
 use noted::tools::{ReadArgs, SearchNotesArgs, ToolOutput, WriteArgs};
-use noted::{Backend, ToolCall};
+use noted_client::Backend;
 
 use crate::config::Config;
 use crate::picker::Pick;

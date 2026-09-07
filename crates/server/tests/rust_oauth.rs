@@ -826,7 +826,7 @@ async fn the_built_in_web_client_exchanges_a_code_for_a_token() {
     let redirect = format!("{PUBLIC}/");
     let uri = format!(
         "/authorize?response_type=code&client_id={}&redirect_uri={redirect}&code_challenge={challenge}&code_challenge_method=S256&state=st",
-        noted::oauth::WEB_CLIENT_ID
+        noted_client::oauth::WEB_CLIENT_ID
     );
     let (s, headers, _) = request(&app, "GET", &uri, None, "text/html", Vec::new()).await;
     assert_eq!(s, StatusCode::SEE_OTHER);
@@ -847,7 +847,7 @@ async fn the_built_in_web_client_exchanges_a_code_for_a_token() {
             ("grant_type", "authorization_code"),
             ("code", &code),
             ("redirect_uri", &redirect),
-            ("client_id", noted::oauth::WEB_CLIENT_ID),
+            ("client_id", noted_client::oauth::WEB_CLIENT_ID),
             ("code_verifier", &verifier),
         ],
     )
@@ -861,25 +861,30 @@ async fn a_backend_submits_a_transaction_and_exchanges_the_code_it_answers() {
     let dir = common::fixture_dir();
     let (app, _) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
     let verifier = noted::util::random_token(48);
-    let challenge = noted::oauth::code_challenge(&verifier);
+    let challenge = noted_client::oauth::code_challenge(&verifier);
     let redirect = format!("{PUBLIC}/");
     let uri = format!(
         "/authorize?response_type=code&client_id={}&redirect_uri={redirect}&code_challenge={challenge}&code_challenge_method=S256&state=st",
-        noted::oauth::WEB_CLIENT_ID
+        noted_client::oauth::WEB_CLIENT_ID
     );
     let (_s, headers, _) = request(&app, "GET", &uri, None, "text/html", Vec::new()).await;
     let txn = query_param(&location(&headers), "txn").unwrap();
 
-    let backend = noted::Backend::new(noted::BackendArgs::Remote {
+    let backend = noted_client::Backend::new(noted_client::BackendArgs::Remote {
         endpoint: PUBLIC.parse().unwrap(),
         bearer: None,
-        transport: noted::Transport::Router(app.clone()),
+        transport: noted_client::Transport::Router(app.clone()),
     })
     .unwrap();
     let answered = backend.submit_txn(&txn, "ann", "pw").await.unwrap();
     let code = query_param(&answered, "code").unwrap();
     let tokens = backend
-        .exchange_code(noted::oauth::WEB_CLIENT_ID, &code, &verifier, &redirect)
+        .exchange_code(
+            noted_client::oauth::WEB_CLIENT_ID,
+            &code,
+            &verifier,
+            &redirect,
+        )
         .await
         .unwrap();
     assert!(!tokens.access.expose().is_empty());
@@ -894,10 +899,10 @@ async fn a_backend_submits_a_transaction_and_exchanges_the_code_it_answers() {
 async fn a_tool_call_without_a_bearer_reaches_the_backend_as_unauthorized() {
     let dir = common::fixture_dir();
     let (app, _) = build(&dir, &[("ann", UserSpec::new("pw"))]).await;
-    let backend = noted::Backend::new(noted::BackendArgs::Remote {
+    let backend = noted_client::Backend::new(noted_client::BackendArgs::Remote {
         endpoint: PUBLIC.parse().unwrap(),
         bearer: None,
-        transport: noted::Transport::Router(app),
+        transport: noted_client::Transport::Router(app),
     })
     .unwrap();
     let call =

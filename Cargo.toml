@@ -19,7 +19,7 @@ rust-version = "1.90"
 
 [workspace.dependencies]
 noted-auth = { path = "crates/auth" }
-noted-client = { path = "crates/client" }
+noted-client = { path = "crates/client", default-features = false }
 noted-core = { path = "crates/core" }
 noted-picker = { path = "crates/picker" }
 noted-server = { path = "crates/server" }

@@ -5,9 +5,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use crate::credentials::{Credential, CredentialStore};
+use crate::{Transport, Upstream};
 use noted::error::{Result, io_error, rejected, unavailable};
 use noted::util::random_token;
-use noted::{Bearer, HttpUrl, PolicyFragment, Transport, Upstream};
+use noted::{Bearer, HttpUrl, PolicyFragment};
 use noted_auth::credential::{Macaroon, MacaroonId};
 use noted_auth::types::{ClientId, Fingerprint, RefreshToken};
 
@@ -25,11 +26,11 @@ pub async fn login(url: &HttpUrl) -> Result<Credential> {
     let client_id = upstream.register_client(&redirect_uri).await?;
     let verifier = random_token(48);
     let state = random_token(24);
-    let authorize = noted::oauth::authorize_url(
+    let authorize = crate::oauth::authorize_url(
         url,
         &client_id,
         &redirect_uri,
-        &noted::oauth::code_challenge(&verifier),
+        &crate::oauth::code_challenge(&verifier),
         &state,
     );
 

@@ -187,7 +187,7 @@ async fn mint(State(state): State<AuthState>, headers: HeaderMap, body: Bytes) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use noted::Transport;
+    use noted_client::Transport;
 
     async fn relay_state() -> (crate::serve::Bound, AuthState) {
         let bound = crate::serve::Bind::Tcp {

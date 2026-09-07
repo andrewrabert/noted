@@ -8,7 +8,7 @@ use noted::search::{Hit, SearchMode, SearchQuery};
 use noted::store::NotedDir;
 use noted::tools::ToolOutput;
 use noted::types::Source;
-use noted::{Backend, BackendArgs, NotedRoot, PolicyArgs, PolicyFragment, ToolCall};
+use noted::{NotedRoot, PolicyFragment, ToolCall};
 use serde_json::Value;
 
 pub fn rp(s: &str) -> NotePath {
@@ -91,27 +91,19 @@ pub fn policed_root(dir: &tempfile::TempDir, policy: PolicyFragment) -> NotedRoo
         .unwrap()
 }
 
-pub fn backend(dir: &tempfile::TempDir) -> Backend {
+pub fn backend(dir: &tempfile::TempDir) -> NotedRoot {
     policed_backend(dir, PolicyFragment::default())
 }
 
-pub fn confined_backend(dir: &tempfile::TempDir, policy: &str) -> Backend {
+pub fn confined_backend(dir: &tempfile::TempDir, policy: &str) -> NotedRoot {
     policed_backend(dir, held(policy))
 }
 
-pub fn policed_backend(dir: &tempfile::TempDir, policy: PolicyFragment) -> Backend {
-    Backend::new(BackendArgs::Local {
-        dir: NotedDir::new(notes_root(dir)),
-        source: Some(Source::new("test")),
-        policy: PolicyArgs {
-            policy: Some(policy.to_string()),
-            ..Default::default()
-        },
-    })
-    .unwrap()
+pub fn policed_backend(dir: &tempfile::TempDir, policy: PolicyFragment) -> NotedRoot {
+    policed_root(dir, policy)
 }
 
-pub async fn invoke(backend: &Backend, name: &str, args: Value) -> noted::Result<ToolOutput> {
+pub async fn invoke(backend: &NotedRoot, name: &str, args: Value) -> noted::Result<ToolOutput> {
     let call = ToolCall::raw(name, args)?;
     backend.invoke(&call).await
 }

@@ -8,7 +8,8 @@ use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use noted::error::{NotedError, Result, io_error};
-use noted::{Bearer, Endpoint, PolicyFragment, Transport, Upstream};
+use noted::{Bearer, Endpoint, PolicyFragment};
+use noted_client::{Transport, Upstream};
 
 use crate::serve::{Bound, ListenerEndpoint};
 

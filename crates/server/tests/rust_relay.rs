@@ -9,7 +9,8 @@ use axum::middleware::{self, Next};
 use axum::response::Response;
 use serde_json::{Value, json};
 
-use noted::{Bearer, Endpoint, PolicyFragment, Transport};
+use noted::{Bearer, Endpoint, PolicyFragment};
+use noted_client::Transport;
 use noted_server::http::{Served, build_app};
 use noted_server::relay::Relay;
 use noted_server::serve::Bound;

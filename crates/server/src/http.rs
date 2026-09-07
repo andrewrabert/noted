@@ -301,7 +301,7 @@ async fn relay_forward(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use noted::Transport;
+    use noted_client::Transport;
 
     #[tokio::test]
     async fn relay_middleware_blocking_failure_names_the_relays_listener_endpoint() {

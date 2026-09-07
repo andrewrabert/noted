@@ -1,3 +1,5 @@
+#![cfg(feature = "desktop")]
+
 use noted::Bearer;
 use noted::HttpUrl;
 use noted_auth::types::{ClientId, RefreshToken};

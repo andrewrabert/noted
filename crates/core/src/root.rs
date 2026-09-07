@@ -4,7 +4,7 @@ mod log;
 mod note;
 mod task;
 
-use crate::backend::{ToolCall, ToolListing};
+use crate::call::{ToolCall, ToolListing};
 use crate::domain::{NotePath, Region};
 use crate::error::Result;
 use crate::fragment::PolicyFragment;

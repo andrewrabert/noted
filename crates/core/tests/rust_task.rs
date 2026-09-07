@@ -1,10 +1,10 @@
 mod common;
 
 use common::{backend, confined_backend, fixture_dir, invoke, note, notes_root, read, root, write};
+use noted::NotedRoot;
 use noted::tasks::{
     GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskState, TaskTitle, parse_task_file,
 };
-use noted::{Backend, NotedRoot};
 
 fn task_file(dir: &tempfile::TempDir, rel: &str) -> std::path::PathBuf {
     notes_root(dir).join(".tasks").join(format!("{rel}.md"))
@@ -579,7 +579,7 @@ async fn symlinked_group_dir_is_ignored() {
     );
 }
 
-async fn find(backend: &Backend, args: serde_json::Value) -> String {
+async fn find(backend: &NotedRoot, args: serde_json::Value) -> String {
     invoke(backend, "SearchTasks", args).await.unwrap().render()
 }
 

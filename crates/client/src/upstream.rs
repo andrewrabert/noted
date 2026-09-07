@@ -1,10 +1,10 @@
 use serde_json::Value;
 
-use crate::endpoint::Endpoint;
-use crate::error::{Result, unavailable};
-use crate::httpurl::HttpUrl;
 use crate::platform::Router;
-use crate::types::Bearer;
+use noted::Endpoint;
+use noted::error::{Result, unavailable};
+use noted::httpurl::HttpUrl;
+use noted::types::Bearer;
 
 pub mod oauth;
 
@@ -46,7 +46,7 @@ impl Upstream {
     pub fn open(endpoint: Endpoint, transport: Transport) -> Result<Upstream> {
         #[cfg(unix)]
         if endpoint.unix_path().is_some() && matches!(transport, Transport::Router(_)) {
-            return Err(crate::error::rejected(
+            return Err(noted::error::rejected(
                 "a socket is dialed by a real client: it takes no in-process router",
             ));
         }
@@ -56,7 +56,7 @@ impl Upstream {
             Some(_) => builder,
             None => {
                 let Some(path) = endpoint.unix_path() else {
-                    return Err(crate::error::rejected("endpoint has no dialable transport"));
+                    return Err(noted::error::rejected("endpoint has no dialable transport"));
                 };
                 builder.unix_socket(path.to_path_buf())
             }

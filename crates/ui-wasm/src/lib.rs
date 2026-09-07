@@ -264,7 +264,7 @@ impl State {
                             async move {
                                 api::remote(endpoint, None)?
                                     .exchange_code(
-                                        noted::oauth::WEB_CLIENT_ID,
+                                        noted_client::oauth::WEB_CLIENT_ID,
                                         &code,
                                         &verifier,
                                         &redirect,
@@ -401,7 +401,7 @@ fn list_notes() -> noted::Result<ToolCall> {
 /// The built-in client's redirect URI for this origin.
 fn redirect_uri(endpoint: &str) -> String {
     match endpoint.parse::<noted::HttpUrl>() {
-        Ok(base) => noted::oauth::web_redirect_uri(&base),
+        Ok(base) => noted_client::oauth::web_redirect_uri(&base),
         Err(_) => format!("{}/", endpoint.trim_end_matches('/')),
     }
 }
@@ -469,11 +469,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let secret = noted::util::random_token(24);
             state.host.stash(&verifier, &secret);
             state.host.navigate(
-                noted::oauth::authorize_url(
+                noted_client::oauth::authorize_url(
                     &base,
-                    noted::oauth::WEB_CLIENT_ID,
-                    &noted::oauth::web_redirect_uri(&base),
-                    &noted::oauth::code_challenge(&verifier),
+                    noted_client::oauth::WEB_CLIENT_ID,
+                    &noted_client::oauth::web_redirect_uri(&base),
+                    &noted_client::oauth::code_challenge(&verifier),
                     &secret,
                 )
                 .as_str(),
@@ -1225,8 +1225,8 @@ mod tests {
         let (verifier, secret) = host.stash.borrow().clone().expect("a stash");
         let navigated = host.navigated.borrow().clone().expect("a navigation");
         assert!(navigated.starts_with("http://notes.test/authorize?"));
-        assert!(navigated.contains(&format!("client_id={}", noted::oauth::WEB_CLIENT_ID)));
-        assert!(navigated.contains(&noted::oauth::code_challenge(&verifier)));
+        assert!(navigated.contains(&format!("client_id={}", noted_client::oauth::WEB_CLIENT_ID)));
+        assert!(navigated.contains(&noted_client::oauth::code_challenge(&verifier)));
         assert!(navigated.contains(&format!("state={secret}")));
     }
 
