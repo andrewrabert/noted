@@ -1037,7 +1037,7 @@ fn editor<'a>(
     content: &'a text_editor::Content,
     which: Editor,
     on_action: fn(text_editor::Action) -> Message,
-) -> text_editor::TextEditor<'a, iced::advanced::text::highlighter::PlainText, Message> {
+) -> text_editor::TextEditor<'a, iced::advanced::text::parser::PlainText, Message> {
     text_editor(content)
         .on_action(on_action)
         .key_binding(move |press| {

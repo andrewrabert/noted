@@ -54,13 +54,20 @@ fn note(state: &State) -> Element<'_, Message> {
             .placeholder("write Markdown here")
             .height(Fill)
             .padding(10)
-            .highlight("markdown", iced::highlighter::Theme::Base16Ocean)
+            .highlight("markdown")
             .into()
     } else {
-        scrollable(markdown::view(state.preview.items(), &state.theme).map(Message::LinkClicked))
-            .spacing(10)
-            .height(Fill)
-            .into()
+        scrollable(
+            markdown::view(
+                state.preview.items(),
+                markdown::Settings::default(),
+                state.theme.clone(),
+            )
+            .map(Message::LinkClicked),
+        )
+        .spacing(10)
+        .height(Fill)
+        .into()
     };
 
     column![header, body, replace(state), rename(state)]
