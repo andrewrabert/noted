@@ -17,16 +17,23 @@ pub(crate) fn view(auth: &Auth) -> Element<'_, Message> {
             let busy = form.busy;
             let username = text_input("username", &form.username)
                 .id(USERNAME)
+                .autocomplete("username")
                 .on_input_maybe((!busy).then_some(Message::LoginUsernameChanged))
                 .on_submit(Message::LoginUsernameSubmitted);
             let password = text_input("password", &form.password)
                 .id(PASSWORD)
+                .autocomplete("current-password")
                 .secure(true)
                 .on_input_maybe((!busy).then_some(Message::LoginPasswordChanged))
                 .on_submit(Message::LoginSubmitted);
-            let submit = button(text("Sign in"))
-                .on_press_maybe(form.can_submit().then_some(Message::LoginSubmitted));
-            let mut card = column![text(noted::APP_NAME).size(24), username, password, submit];
+            let submit =
+                button(text("Sign in")).on_press_maybe((!busy).then_some(Message::LoginSubmitted));
+            let mut card = column![
+                text(noted::APP_NAME).size(24),
+                username,
+                password,
+                crate::browser::submit(submit, !busy)
+            ];
             if let Some(error) = &form.error {
                 card = card.push(text(error.clone()));
             }

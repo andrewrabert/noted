@@ -494,6 +494,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LoginUsernameSubmitted => iced::widget::operation::focus(screen::login::PASSWORD),
         Message::LoginSubmitted => {
+            #[cfg(target_arch = "wasm32")]
+            if let (Auth::Txn { form, .. }, Some((username, password))) =
+                (&mut state.auth, browser::login_credentials())
+            {
+                form.username = username;
+                form.password = password;
+            }
             let Some(endpoint) = state.host.endpoint() else {
                 return Task::none();
             };

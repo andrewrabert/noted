@@ -5,13 +5,21 @@ use wasm_bindgen::{closure::Closure, prelude::*};
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = notedInput, js_name = create)]
-    fn create(callback: &js_sys::Function, multiline: bool, secure: bool, label: &str) -> u32;
+    fn create(
+        callback: &js_sys::Function,
+        multiline: bool,
+        secure: bool,
+        label: &str,
+        purpose: &str,
+    ) -> u32;
     #[wasm_bindgen(js_namespace = notedInput, js_name = sync)]
     fn sync_js(id: u32, state: &str);
     #[wasm_bindgen(js_namespace = notedInput)]
     fn remove(id: u32);
     #[wasm_bindgen(js_namespace = notedInput)]
     fn font(bytes: &[u8]);
+    #[wasm_bindgen(js_namespace = notedInput)]
+    fn credentials() -> String;
 }
 
 #[derive(serde::Deserialize)]
@@ -32,7 +40,7 @@ pub struct Target {
 }
 
 impl Target {
-    pub fn new(multiline: bool, secure: bool, label: &str) -> Self {
+    pub fn new(multiline: bool, secure: bool, label: &str, purpose: &str) -> Self {
         let events = Rc::new(RefCell::new(VecDeque::new()));
         let waker: Rc<RefCell<Option<Waker>>> = Rc::default();
         let sink = events.clone();
@@ -45,7 +53,13 @@ impl Target {
                 }
             }
         });
-        let id = create(callback.as_ref().unchecked_ref(), multiline, secure, label);
+        let id = create(
+            callback.as_ref().unchecked_ref(),
+            multiline,
+            secure,
+            label,
+            purpose,
+        );
         Self {
             id,
             events,
@@ -73,4 +87,8 @@ impl Drop for Target {
 
 pub fn install() {
     font(iced::advanced::graphics::text::FIRA_SANS_REGULAR);
+}
+
+pub fn login_credentials() -> Option<(String, String)> {
+    serde_json::from_str(&credentials()).ok()
 }

@@ -3750,6 +3750,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "unicode-segmentation",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",

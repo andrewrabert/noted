@@ -27,6 +27,7 @@ noted-core = { path = "../core" }
 noted-picker = { path = "../picker" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+unicode-segmentation = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 iced = { git = "https://github.com/iced-rs/iced", rev = "cfeef0bb3a4a3dbf6615fd193539e454ccd06a6a", features = [

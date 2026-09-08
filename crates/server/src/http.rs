@@ -47,6 +47,37 @@ fn page(auth: &str) -> String {
 (() => {{
   const fields = new Map();
   let nextId = 0;
+  let loginForm = null;
+  let autofillTimer = null;
+  function form() {{
+    if (loginForm) return loginForm;
+    loginForm = document.createElement("form");
+    loginForm.id = "noted-login";
+    loginForm.method = "post";
+    loginForm.action = "/login";
+    loginForm.autocomplete = "on";
+    loginForm.style.display = "contents";
+    const transaction = document.createElement("input");
+    transaction.type = "hidden";
+    transaction.name = "txn";
+    transaction.value = new URLSearchParams(location.search).get("txn") || "";
+    loginForm.append(transaction);
+    loginForm.addEventListener("submit", event => {{
+      event.preventDefault();
+      const submit = [...fields.values()].find(field => field.purpose === "submit");
+      if (submit && !submit.el.disabled) emit(submit, "submit");
+    }});
+    document.body.append(loginForm);
+    // Extensions do not all dispatch input/change when filling a field.
+    autofillTimer = setInterval(() => {{
+      for (const field of fields.values()) detectAutofill(field);
+    }}, 200);
+    return loginForm;
+  }}
+  function detectAutofill(field) {{
+    if ((field.purpose === "username" || field.purpose === "current-password") &&
+        field.el.value !== field.observed && !field.composing) emit(field, "input");
+  }}
   const style = document.createElement("style");
   style.textContent = `
     .noted-input {{
@@ -67,6 +98,7 @@ fn page(auth: &str) -> String {
 
   function emit(field, kind) {{
     const el = field.el;
+    field.observed = el.value;
     field.seq += 1;
     field.send(JSON.stringify({{
       seq: field.seq, kind, value: el.value,
@@ -94,16 +126,24 @@ fn page(auth: &str) -> String {
       const face = new FontFace("Noted Fira Sans", bytes);
       document.fonts.add(await face.load());
     }},
-    create(send, multiline, secure, label) {{
+    create(send, multiline, secure, label, purpose) {{
       const id = ++nextId;
-      const el = document.createElement(multiline ? "textarea" : "input");
-      if (!multiline) el.type = secure ? "password" : "text";
+      const el = document.createElement(purpose === "submit" ? "button" : multiline ? "textarea" : "input");
+      if (!multiline) el.type = purpose === "submit" ? "submit" : secure ? "password" : "text";
       el.className = "noted-input";
       el.setAttribute("aria-label", label);
-      el.autocomplete = "off";
+      el.autocomplete = purpose === "username" || purpose === "current-password" ? purpose : "off";
+      if (purpose) {{
+        el.id = `noted-login-${{purpose}}`;
+        el.name = purpose === "current-password" ? "password" : purpose;
+        if (purpose !== "submit") {{
+          el.required = true;
+          el.autocapitalize = "none";
+        }}
+      }}
       el.spellcheck = false;
       el.style.display = "none";
-      const field = {{ el, send, seq: 0, composing: false, selection: "", scroll: 0, scrollDelta: 0 }};
+      const field = {{ el, send, purpose, observed: "", seq: 0, composing: false, selection: "", scroll: 0, scrollDelta: 0 }};
       fields.set(id, field);
       el.addEventListener("focus", () => emit(field, "focus"));
       el.addEventListener("blur", () => emit(field, "focus"));
@@ -111,6 +151,7 @@ fn page(auth: &str) -> String {
         field.selection = selected(field);
         emit(field, "input");
       }});
+      el.addEventListener("change", () => detectAutofill(field));
       el.addEventListener("select", () => selection(field));
       el.addEventListener("compositionstart", () => {{ field.composing = true; }});
       el.addEventListener("compositionend", () => {{
@@ -123,7 +164,8 @@ fn page(auth: &str) -> String {
         event.stopPropagation();
         if (!multiline && event.key === "Enter" && !event.isComposing) {{
           event.preventDefault();
-          emit(field, "submit");
+          if (purpose === "current-password" || purpose === "submit") form().requestSubmit();
+          else emit(field, "submit");
         }}
       }});
       if (secure) {{
@@ -150,7 +192,7 @@ fn page(auth: &str) -> String {
           document.querySelector("canvas")?.dispatchEvent(new WheelEvent("wheel", event));
         }}
       }}, {{ passive: false }});
-      document.body.append(el);
+      (purpose ? form() : document.body).append(el);
       return id;
     }},
     sync(id, json) {{
@@ -158,9 +200,13 @@ fn page(auth: &str) -> String {
       if (!field) return;
       const s = JSON.parse(json), el = field.el;
       field.state = s;
-      const visible = s.enabled && s.clip[2] > 0 && s.clip[3] > 0;
+      detectAutofill(field);
+      const visible = s.clip[2] > 0 && s.clip[3] > 0;
       el.style.display = visible ? "block" : "none";
-      el.disabled = !s.enabled;
+      el.disabled = field.purpose === "submit" && !s.enabled;
+      el.readOnly = !s.enabled;
+      el.tabIndex = s.enabled ? 0 : -1;
+      el.style.pointerEvents = s.enabled ? "auto" : "none";
       el.style.left = `${{s.x}}px`;
       el.style.top = `${{s.y}}px`;
       el.style.width = `${{s.width}}px`;
@@ -174,11 +220,21 @@ fn page(auth: &str) -> String {
         if (el.value !== s.value) {{
           const start = el.selectionStart, end = el.selectionEnd, direction = el.selectionDirection;
           el.value = s.value;
-          el.setSelectionRange(Math.min(start, el.value.length), Math.min(end, el.value.length), direction);
+          if (typeof el.setSelectionRange === "function") {{
+            el.setSelectionRange(Math.min(start, el.value.length), Math.min(end, el.value.length), direction);
+          }}
+          field.observed = el.value;
           field.selection = selected(field);
         }}
         if (visible && s.focused && document.activeElement !== el) el.focus({{ preventScroll: true }});
       }}
+    }},
+    credentials() {{
+      if (!loginForm) return "null";
+      return JSON.stringify([
+        loginForm.elements.namedItem("username")?.value || "",
+        loginForm.elements.namedItem("password")?.value || "",
+      ]);
     }},
     remove(id) {{
       const field = fields.get(id);
@@ -187,6 +243,10 @@ fn page(auth: &str) -> String {
       field.send = () => {{}};
       field.el.remove();
       fields.delete(id);
+      if (loginForm && ![...fields.values()].some(field => field.purpose)) {{
+        loginForm.remove(); loginForm = null;
+        clearInterval(autofillTimer); autofillTimer = null;
+      }}
     }},
   }};
   document.addEventListener("selectionchange", () => {{

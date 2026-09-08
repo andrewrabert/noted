@@ -11,6 +11,8 @@ pub struct Input<'a> {
     on_input: Option<fn(String) -> Message>,
     on_submit: Option<Message>,
     secure: bool,
+    purpose: &'static str,
+    id: Option<widget::Id>,
 }
 
 pub fn input<'a>(label: &'a str, value: &'a str) -> Input<'a> {
@@ -21,11 +23,19 @@ pub fn input<'a>(label: &'a str, value: &'a str) -> Input<'a> {
         on_input: None,
         on_submit: None,
         secure: false,
+        purpose: "",
+        id: None,
     }
 }
 
 impl<'a> Input<'a> {
+    pub fn autocomplete(mut self, value: &'static str) -> Self {
+        self.purpose = value;
+        self
+    }
+
     pub fn id(mut self, id: widget::Id) -> Self {
+        self.id = Some(id.clone());
         self.inner = self.inner.id(id);
         self
     }
@@ -52,8 +62,24 @@ impl<'a> Input<'a> {
 impl<'a> From<Input<'a>> for Element<'a, Message> {
     fn from(input: Input<'a>) -> Self {
         let enabled = input.on_input.is_some();
+        // Iced's secure Input currently moves only its unmasked buffer when
+        // operated on. Render the mask through a normal Iced input so DOM
+        // selections also move the visible caret; secrets stay in app/DOM state.
+        #[cfg(target_arch = "wasm32")]
+        let inner: Element<'a, Message> = if input.secure {
+            let mut masked =
+                text_input(input.label, super::mask(input.value)).on_input_maybe(input.on_input);
+            if let Some(id) = input.id {
+                masked = masked.id(id);
+            }
+            masked.into()
+        } else {
+            input.inner.into()
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let inner = input.inner.into();
         Self::new(Field {
-            inner: input.inner.into(),
+            inner,
             value: input.value.to_owned(),
             label: input.label.to_owned(),
             key: input.label.to_owned(),
@@ -63,6 +89,7 @@ impl<'a> From<Input<'a>> for Element<'a, Message> {
             on_submit: input.on_submit,
             multiline: false,
             secure: input.secure,
+            purpose: input.purpose,
             padding: Padding::new(5.0),
             enabled,
         })
@@ -78,6 +105,22 @@ pub struct Editor<'a> {
     padding: Padding,
     highlight: bool,
     key: Option<String>,
+}
+
+pub fn submit<'a>(inner: impl Into<Element<'a, Message>>, enabled: bool) -> Element<'a, Message> {
+    Element::new(Field {
+        inner: inner.into(),
+        value: String::new(),
+        label: "Sign in".into(),
+        key: "login-submit".into(),
+        on_edit: None,
+        on_submit: Some(Message::LoginSubmitted),
+        multiline: false,
+        secure: false,
+        purpose: "submit",
+        padding: Padding::ZERO,
+        enabled,
+    })
 }
 
 pub fn editor(
@@ -144,6 +187,7 @@ impl<'a> From<Editor<'a>> for Element<'a, Message> {
             on_submit: None,
             multiline: true,
             secure: false,
+            purpose: "",
             padding: editor.padding,
             enabled: true,
         })
@@ -161,6 +205,7 @@ struct Field<'a> {
     secure: bool,
     padding: Padding,
     enabled: bool,
+    purpose: &'static str,
 }
 
 #[derive(Default)]
@@ -250,7 +295,7 @@ impl Widget<Message, Theme, Renderer> for Field<'_> {
         {
             let state = tree.state.downcast_mut::<State>();
             let target = state.target.get_or_insert_with(|| {
-                super::target::Target::new(self.multiline, self.secure, &self.label)
+                super::target::Target::new(self.multiline, self.secure, &self.label, self.purpose)
             });
             target.listen(shell.waker());
             if state
@@ -293,7 +338,13 @@ impl Widget<Message, Theme, Renderer> for Field<'_> {
                     .selection
                     .as_ref()
                     .filter(|edit| edit.value == self.value)
-                    .map(Edit::cursor);
+                    .map(|edit| {
+                        if self.secure {
+                            super::masked_cursor(edit)
+                        } else {
+                            edit.cursor()
+                        }
+                    });
                 let mut focus = Focus {
                     set: Some(state.focused && self.enabled),
                     focused: false,
