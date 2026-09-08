@@ -1,4 +1,5 @@
-use iced::widget::{button, column, container, row, scrollable, text, text_input};
+use crate::browser::input as text_input;
+use iced::widget::{button, column, container, row, scrollable, text};
 use iced::{Element, Fill};
 
 use crate::{Editor, LogRow, Message, State, editor};

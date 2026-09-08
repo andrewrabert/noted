@@ -1,4 +1,5 @@
-use iced::widget::{button, column, container, markdown, row, scrollable, text, text_input};
+use crate::browser::input as text_input;
+use iced::widget::{button, column, container, markdown, row, scrollable, text};
 use iced::{Element, Fill, FillPortion};
 
 use crate::{Editor, Message, State, editor};
@@ -51,6 +52,7 @@ fn note(state: &State) -> Element<'_, Message> {
 
     let body: Element<'_, Message> = if state.editing {
         editor(&state.note, Editor::Note, Message::NoteAction)
+            .key(path)
             .placeholder("write Markdown here")
             .height(Fill)
             .padding(10)

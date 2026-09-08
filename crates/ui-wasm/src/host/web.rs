@@ -1,10 +1,6 @@
 //! The only file in the crate that names `web_sys`.
 
-use std::cell::RefCell;
 use std::rc::Rc;
-
-use wasm_bindgen::JsCast;
-use wasm_bindgen::closure::Closure;
 
 use super::{Entry, Host};
 
@@ -12,34 +8,11 @@ const TOKEN_KEY: &str = "noted.token";
 const VERIFIER_KEY: &str = "noted.verifier";
 const STATE_KEY: &str = "noted.state";
 
-pub struct WebHost {
-    pasted: RefCell<Option<String>>,
-}
+pub struct WebHost;
 
 impl WebHost {
-    /// Registers the document's `paste` listener, which fills `pasted`.
     pub fn install() -> Rc<dyn Host> {
-        let host = Rc::new(WebHost {
-            pasted: RefCell::new(None),
-        });
-        if let Some(document) = web_sys::window().and_then(|window| window.document()) {
-            let sink = Rc::clone(&host);
-            let listener = Closure::<dyn Fn(web_sys::ClipboardEvent)>::new(
-                move |event: web_sys::ClipboardEvent| {
-                    let Some(text) = event
-                        .clipboard_data()
-                        .and_then(|data| data.get_data("text").ok())
-                    else {
-                        return;
-                    };
-                    *sink.pasted.borrow_mut() = Some(text);
-                },
-            );
-            let _ = document
-                .add_event_listener_with_callback("paste", listener.as_ref().unchecked_ref());
-            listener.forget();
-        }
-        host
+        Rc::new(Self)
     }
 }
 
@@ -142,16 +115,6 @@ impl Host for WebHost {
     fn replace_url(&self, path: &str) {
         if let Some(history) = web_sys::window().and_then(|window| window.history().ok()) {
             let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(path));
-        }
-    }
-
-    fn clipboard_read(&self) -> Option<String> {
-        self.pasted.borrow_mut().take()
-    }
-
-    fn clipboard_write(&self, text: String) {
-        if let Some(navigator) = web_sys::window().map(|window| window.navigator()) {
-            let _ = navigator.clipboard().write_text(&text);
         }
     }
 }

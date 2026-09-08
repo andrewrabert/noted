@@ -1,4 +1,5 @@
-use iced::widget::{button, column, container, text, text_input};
+use crate::browser::input as text_input;
+use iced::widget::{button, column, container, text};
 use iced::{Element, Fill};
 
 use crate::{Auth, Message};

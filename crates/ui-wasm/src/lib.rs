@@ -1,9 +1,11 @@
 pub mod api;
+mod browser;
 pub mod host;
 mod screen;
 
+use browser::{editor, input as text_input};
 use iced::widget::{
-    button, column, container, markdown, row, scrollable, space, text, text_editor, text_input,
+    button, column, container, markdown, row, scrollable, space, text, text_editor,
 };
 use iced::{Element, Fill, Task, Theme};
 
@@ -145,9 +147,7 @@ pub enum Message {
     LogLoaded(Result<ToolOutput, api::ApiError>),
     LogMatched(Result<ToolOutput, api::ApiError>),
 
-    Copy(Editor),
-    Paste(Editor),
-    PasteReady(Editor),
+    BrowserEdited(Editor, browser::Edit),
 }
 
 /// What the server stamped on the page it served: whether tool calls need a
@@ -903,32 +903,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::none()
         }
 
-        Message::Copy(editor) => {
-            let selection = match editor {
-                Editor::Note => state.note.selection(),
-                Editor::TaskNotes => state.task_notes.selection(),
-                Editor::Log => state.log.selection(),
+        Message::BrowserEdited(editor, edit) => {
+            let content = match editor {
+                Editor::Note => &mut state.note,
+                Editor::TaskNotes => &mut state.task_notes,
+                Editor::Log => &mut state.log,
             };
-            if let Some(selection) = selection {
-                state.host.clipboard_write(selection);
+            edit.apply(content);
+            if editor == Editor::Note {
+                state.preview = markdown::Content::parse(&state.note.text());
             }
             Task::none()
         }
-        // The browser dispatches `paste` after the key press that triggered
-        // it, so the host is still empty this turn.
-        Message::Paste(editor) => Task::done(Message::PasteReady(editor)),
-        Message::PasteReady(editor) => match state.host.clipboard_read() {
-            Some(text) => {
-                let action =
-                    text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new(text)));
-                match editor {
-                    Editor::Note => update(state, Message::NoteAction(action)),
-                    Editor::TaskNotes => update(state, Message::TaskNotesAction(action)),
-                    Editor::Log => update(state, Message::LogAction(action)),
-                }
-            }
-            None => Task::none(),
-        },
     }
 }
 
@@ -1004,11 +990,7 @@ fn view(state: &State) -> Element<'_, Message> {
     }
     match &state.auth {
         Auth::Open | Auth::Authed(_) => screen.into(),
-        auth => iced::widget::stack![
-            screen,
-            iced::widget::opaque(iced::widget::center(screen::login::view(auth)))
-        ]
-        .into(),
+        auth => iced::widget::center(screen::login::view(auth)).into(),
     }
 }
 
@@ -1033,31 +1015,6 @@ fn tab_button(label: &str, tab: Tab, current: Tab) -> Element<'_, Message> {
     }
 }
 
-fn editor<'a>(
-    content: &'a text_editor::Content,
-    which: Editor,
-    on_action: fn(text_editor::Action) -> Message,
-) -> text_editor::TextEditor<'a, iced::advanced::text::parser::PlainText, Message> {
-    text_editor(content)
-        .on_action(on_action)
-        .key_binding(move |press| {
-            let binding = text_editor::Binding::from_key_press(press.clone())?;
-            match binding {
-                text_editor::Binding::Copy => {
-                    Some(text_editor::Binding::Custom(Message::Copy(which)))
-                }
-                text_editor::Binding::Cut => Some(text_editor::Binding::Sequence(vec![
-                    text_editor::Binding::Custom(Message::Copy(which)),
-                    text_editor::Binding::Backspace,
-                ])),
-                text_editor::Binding::Paste => {
-                    Some(text_editor::Binding::Custom(Message::Paste(which)))
-                }
-                other => Some(other),
-            }
-        })
-}
-
 fn labeled_input<'a>(
     label: &'a str,
     value: &'a str,
@@ -1073,6 +1030,7 @@ fn labeled_input<'a>(
 
 #[cfg(target_arch = "wasm32")]
 pub fn run() -> iced::Result {
+    browser::install();
     let host = host::web::WebHost::install();
     let mode = AuthMode::parse(host::web::served_auth().as_deref());
     iced::application(move || State::new(host.clone(), mode), update, view)
@@ -1104,7 +1062,6 @@ mod tests {
         stash: RefCell<Option<(String, String)>>,
         navigated: RefCell<Option<String>>,
         replaced: RefCell<Option<String>>,
-        clipboard: RefCell<Option<String>>,
     }
 
     impl FakeHost {
@@ -1116,7 +1073,6 @@ mod tests {
                 stash: RefCell::new(None),
                 navigated: RefCell::new(None),
                 replaced: RefCell::new(None),
-                clipboard: RefCell::new(None),
             })
         }
     }
@@ -1152,14 +1108,6 @@ mod tests {
 
         fn replace_url(&self, path: &str) {
             *self.replaced.borrow_mut() = Some(path.to_string());
-        }
-
-        fn clipboard_read(&self) -> Option<String> {
-            self.clipboard.borrow_mut().take()
-        }
-
-        fn clipboard_write(&self, text: String) {
-            *self.clipboard.borrow_mut() = Some(text);
         }
     }
 
@@ -1373,14 +1321,6 @@ mod tests {
         assert!(state.open.is_none());
         assert!(state.tasks.is_empty());
         assert!(state.entries.is_empty());
-    }
-
-    #[test]
-    fn a_paste_reaches_the_editor_through_the_host() {
-        let (host, mut state) = authed();
-        host.clipboard_write("pasted".to_string());
-        let _ = update(&mut state, Message::PasteReady(Editor::Log));
-        assert_eq!(state.log.text().trim_end(), "pasted");
     }
 
     #[test]

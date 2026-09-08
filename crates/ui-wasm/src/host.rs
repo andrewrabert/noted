@@ -1,4 +1,4 @@
-//! Everything outside the app — the page's URL, its storage, its clipboard —
+//! The page's URL, navigation, and credential storage
 //! is behind one trait.
 
 #[cfg(target_arch = "wasm32")]
@@ -36,9 +36,4 @@ pub trait Host {
 
     /// Rewrites the address bar without a navigation.
     fn replace_url(&self, path: &str);
-
-    /// The text the last paste carried, taken.
-    fn clipboard_read(&self) -> Option<String>;
-
-    fn clipboard_write(&self, text: String);
 }

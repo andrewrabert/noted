@@ -32,20 +32,174 @@ static BEARER_DOCUMENT: LazyLock<String> = LazyLock::new(|| page("bearer"));
 /// The one document, wasm inside it, `data-auth` on `<html>` naming the mode.
 fn page(auth: &str) -> String {
     format!(
-        "<!DOCTYPE html>\
-         <html lang=\"en\" data-auth=\"{auth}\">\
-         <head>\
-         <meta charset=\"utf-8\">\
-         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <title>{APP_NAME}</title>\
-         <style>html,body{{margin:0;height:100%;overflow:hidden;background:#1a1b26}}</style>\
-         </head>\
-         <body>\
-         <script type=\"module\">\
-         {MODULE}\
-         </script>\
-         </body>\
-         </html>"
+        r#"<!DOCTYPE html>
+<html lang="en" data-auth="{auth}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{APP_NAME}</title>
+<style>html,body{{margin:0;height:100%;overflow:hidden;background:#1a1b26}}</style>
+</head>
+<body>
+<script type="module">
+// Native editing surface only: the canvas remains the application's renderer.
+// The browser owns clipboard gestures, text services, selection, and undo.
+(() => {{
+  const fields = new Map();
+  let nextId = 0;
+  const style = document.createElement("style");
+  style.textContent = `
+    .noted-input {{
+      opacity: 0; position: fixed; box-sizing: border-box; margin: 0; border: 0;
+      border-radius: 0; outline: none; resize: none; appearance: none;
+      background: transparent; color: transparent; caret-color: transparent;
+      -webkit-text-fill-color: transparent; text-shadow: none; box-shadow: none;
+      font-family: 'Noted Fira Sans', sans-serif; font-weight: 400;
+      font-kerning: normal; font-variant-ligatures: normal; letter-spacing: normal;
+      overflow: hidden; scrollbar-width: none; z-index: 1;
+    }}
+    .noted-input::selection {{ color: transparent; background: transparent; }}
+    .noted-input::-webkit-scrollbar {{ display: none; }}
+    .noted-input:autofill {{ transition: background-color 999999s; }}
+    .noted-input:-webkit-autofill {{ transition: background-color 999999s; }}
+  `;
+  document.head.append(style);
+
+  function emit(field, kind) {{
+    const el = field.el;
+    field.seq += 1;
+    field.send(JSON.stringify({{
+      seq: field.seq, kind, value: el.value,
+      start: el.selectionStart ?? 0, end: el.selectionEnd ?? 0,
+      backward: el.selectionDirection === "backward",
+      focused: document.activeElement === el,
+      scroll: kind === "scroll" ? field.scrollDelta : 0,
+    }}));
+  }}
+
+  function selected(field) {{
+    return `${{field.el.selectionStart}}:${{field.el.selectionEnd}}:${{field.el.selectionDirection}}`;
+  }}
+
+  function selection(field) {{
+    const current = selected(field);
+    if (current !== field.selection) {{
+      field.selection = current;
+      emit(field, "selection");
+    }}
+  }}
+
+  const api = {{
+    async font(bytes) {{
+      const face = new FontFace("Noted Fira Sans", bytes);
+      document.fonts.add(await face.load());
+    }},
+    create(send, multiline, secure, label) {{
+      const id = ++nextId;
+      const el = document.createElement(multiline ? "textarea" : "input");
+      if (!multiline) el.type = secure ? "password" : "text";
+      el.className = "noted-input";
+      el.setAttribute("aria-label", label);
+      el.autocomplete = "off";
+      el.spellcheck = false;
+      el.style.display = "none";
+      const field = {{ el, send, seq: 0, composing: false, selection: "", scroll: 0, scrollDelta: 0 }};
+      fields.set(id, field);
+      el.addEventListener("focus", () => emit(field, "focus"));
+      el.addEventListener("blur", () => emit(field, "focus"));
+      el.addEventListener("input", () => {{
+        field.selection = selected(field);
+        emit(field, "input");
+      }});
+      el.addEventListener("select", () => selection(field));
+      el.addEventListener("compositionstart", () => {{ field.composing = true; }});
+      el.addEventListener("compositionend", () => {{
+        field.composing = false;
+        emit(field, "input");
+      }});
+      el.addEventListener("keydown", event => {{
+        // Preserve all native clipboard/undo/navigation defaults. Iced receives
+        // the resulting input/selection events, not a second keyboard edit.
+        event.stopPropagation();
+        if (!multiline && event.key === "Enter" && !event.isComposing) {{
+          event.preventDefault();
+          emit(field, "submit");
+        }}
+      }});
+      if (secure) {{
+        for (const name of ["copy", "cut"]) {{
+          el.addEventListener(name, event => event.preventDefault());
+        }}
+      }}
+      el.addEventListener("scroll", () => {{
+        const lineHeight = Number.parseFloat(el.style.lineHeight) || 20;
+        const line = Math.round(el.scrollTop / lineHeight);
+        if (line !== field.scroll) {{
+          field.scrollDelta = field.scroll - line;
+          field.scroll = line;
+          emit(field, "scroll");
+        }}
+      }});
+      // Keep wheel scrolling within the native multiline editor. Single-line
+      // inputs pass it through to the Iced canvas so their parent can scroll.
+      el.addEventListener("wheel", event => {{
+        if (multiline && el.scrollHeight > el.clientHeight) {{
+          event.preventDefault();
+          el.scrollTop += event.deltaY * (event.deltaMode === 1 ? Number.parseFloat(el.style.lineHeight) : 1);
+        }} else {{
+          document.querySelector("canvas")?.dispatchEvent(new WheelEvent("wheel", event));
+        }}
+      }}, {{ passive: false }});
+      document.body.append(el);
+      return id;
+    }},
+    sync(id, json) {{
+      const field = fields.get(id);
+      if (!field) return;
+      const s = JSON.parse(json), el = field.el;
+      field.state = s;
+      const visible = s.enabled && s.clip[2] > 0 && s.clip[3] > 0;
+      el.style.display = visible ? "block" : "none";
+      el.disabled = !s.enabled;
+      el.style.left = `${{s.x}}px`;
+      el.style.top = `${{s.y}}px`;
+      el.style.width = `${{s.width}}px`;
+      el.style.height = `${{s.height}}px`;
+      el.style.padding = s.padding.map(p => `${{p}}px`).join(" ");
+      el.style.fontSize = `${{s.size}}px`;
+      el.style.lineHeight = `${{s.lineHeight}}px`;
+      el.style.clipPath = `inset(${{Math.max(0, s.clip[1] - s.y)}}px ${{Math.max(0, s.x + s.width - s.clip[0] - s.clip[2])}}px ${{Math.max(0, s.y + s.height - s.clip[1] - s.clip[3])}}px ${{Math.max(0, s.clip[0] - s.x)}}px)`;
+      // An older Iced frame must never overwrite newer typing or composition.
+      if (s.ack !== null && s.ack >= field.seq && !field.composing) {{
+        if (el.value !== s.value) {{
+          const start = el.selectionStart, end = el.selectionEnd, direction = el.selectionDirection;
+          el.value = s.value;
+          el.setSelectionRange(Math.min(start, el.value.length), Math.min(end, el.value.length), direction);
+          field.selection = selected(field);
+        }}
+        if (visible && s.focused && document.activeElement !== el) el.focus({{ preventScroll: true }});
+      }}
+    }},
+    remove(id) {{
+      const field = fields.get(id);
+      if (!field) return;
+      // Remove listeners before dropping the Rust callback (blur can fire on removal).
+      field.send = () => {{}};
+      field.el.remove();
+      fields.delete(id);
+    }},
+  }};
+  document.addEventListener("selectionchange", () => {{
+    for (const field of fields.values()) {{
+      if (document.activeElement === field.el) selection(field);
+    }}
+  }});
+  globalThis.notedInput = api;
+}})();
+{MODULE}
+</script>
+</body>
+</html>"#
     )
 }
 

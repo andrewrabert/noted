@@ -1,4 +1,5 @@
-use iced::widget::{button, column, pick_list, row, scrollable, table, text, text_input};
+use crate::browser::input as text_input;
+use iced::widget::{button, column, pick_list, row, scrollable, table, text};
 use iced::{Element, Fill};
 
 use crate::{Editor, Message, State, TaskRow, TaskState, editor, labeled_input};
