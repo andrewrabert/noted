@@ -974,7 +974,6 @@ fn view(state: &State) -> Element<'_, Message> {
         tab_button("Tasks", Tab::Tasks, state.tab()),
         tab_button("Log", Tab::Log, state.tab()),
         space::horizontal(),
-        browser::keyboard(),
         logout_button(state),
     ]
     .spacing(5);
