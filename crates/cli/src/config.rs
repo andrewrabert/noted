@@ -20,41 +20,35 @@ const CONFIG_SUBDIR: &str = noted::APP_NAME;
 /// `<config_dir>/noted/hosts.json`, the hosts file default.
 const HOSTS_FILE_NAME: &str = "hosts.json";
 
-/// The dotenv file read as a layer of its own: the one the nearer layers name,
-/// else a `.notedenv` discovered at or above the working directory, else
-/// `<config_dir>/noted.env`. Exactly one file is ever read.
 pub struct EnvFile {
     path: PathBuf,
 }
 
 impl EnvFile {
-    /// The file `arg` names, else the discovered `.notedenv`, else
-    /// `<config_dir>/noted.env`.
-    pub(crate) fn locate(arg: Option<&Path>, config_dir: Option<&Path>) -> Option<EnvFile> {
-        EnvFile::resolve(arg, std::env::current_dir().ok().as_deref(), config_dir)
+    pub(crate) fn locate(arg: Option<&Path>, config_dir: Option<&Path>) -> Vec<EnvFile> {
+        EnvFile::stack(arg, std::env::current_dir().ok().as_deref(), config_dir)
     }
 
-    /// `arg` when given and non-empty, else the nearest `.notedenv` at or
-    /// above `cwd`, else `<config_dir>/noted.env`. Nothing resolved means no
-    /// env file.
-    pub fn resolve(
+    pub fn stack(
         arg: Option<&Path>,
         cwd: Option<&Path>,
         config_dir: Option<&Path>,
-    ) -> Option<EnvFile> {
-        match arg.filter(|p| !p.as_os_str().is_empty()) {
-            Some(path) => Some(EnvFile {
-                path: path.to_path_buf(),
-            }),
-            None => cwd
-                .and_then(EnvFile::discover)
-                .or_else(|| config_dir.map(|dir| dir.join(ENV_FILE_NAME)))
-                .map(|path| EnvFile { path }),
-        }
+    ) -> Vec<EnvFile> {
+        let global = config_dir.map(|dir| dir.join(ENV_FILE_NAME));
+        let near = match arg.filter(|p| !p.as_os_str().is_empty()) {
+            Some(path) => Some(path.to_path_buf()),
+            None => cwd.and_then(EnvFile::discover),
+        };
+        near.into_iter()
+            .chain(global)
+            .fold(Vec::new(), |mut files: Vec<EnvFile>, path| {
+                if !files.iter().any(|f| f.path == path) {
+                    files.push(EnvFile { path });
+                }
+                files
+            })
     }
 
-    /// The nearest `.notedenv` at or above `start`. An ancestor that cannot
-    /// be inspected ends the walk with nothing found.
     fn discover(start: &Path) -> Option<PathBuf> {
         for dir in start.ancestors() {
             let candidate = dir.join(DISCOVERED_ENV_FILE_NAME);

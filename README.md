@@ -109,15 +109,15 @@ enters the process environment.
 is an error naming both spellings and the layer; setting either in a layer discards the
 other from every layer below. Every other variable layers on its own.
 
-Exactly one dotenv file loads, the first of:
+Two dotenv files load, nearer first:
 
-1. The file `--env-file`/`NOTED_ENV_FILE` names.
-2. The nearest `.notedenv`, searched from the working directory up to the
-   filesystem root.
-3. `~/.config/noted.env`.
+1. The file `--env-file`/`NOTED_ENV_FILE` names, else the nearest `.notedenv`,
+   searched from the working directory up to the filesystem root.
+2. `~/.config/noted.env`.
 
-A missing file is fine; one that cannot be read or parsed stops the process at
-startup. The file cannot name itself: `NOTED_ENV_FILE` is read from the command
+A variable set in the first shadows the second. A file that is named twice
+loads once. A missing file is fine; one that cannot be read or parsed stops
+the process at startup. The file cannot name itself: `NOTED_ENV_FILE` is read from the command
 line and the process environment only. A relative `NOTED_DIR` resolves against
 the working directory, so a committed `.notedenv` should use an absolute path.
 
@@ -133,7 +133,7 @@ Four variables read differently by what the process is:
 | Variable             | Flag             | Default               | Description                                          |
 | ---                  | ---              | ---                   | ---                                                  |
 | `NOTED_DIR`          | `--dir`          | *(required locally)*  | Notes root directory; the other spelling of `NOTED_URL`. |
-| `NOTED_ENV_FILE`     | `--env-file`     | *(discovered)*        | Dotenv file to load settings from; unset, the nearest `.notedenv` above the working directory, else `~/.config/noted.env`. |
+| `NOTED_ENV_FILE`     | `--env-file`     | *(discovered)*        | Dotenv file layered over `~/.config/noted.env`; unset, the nearest `.notedenv` above the working directory. |
 | `NOTED_SOURCE`       | `-s`/`--source`  | -                     | `source` metadata recorded on log entries.           |
 | `NOTED_POLICY`       | `--policy`       | *(everything)*        | A policy fragment as JSON, or `@<path>` to a file holding one; see the four-mode table. |
 | `NOTED_SCOPE`        | `--scope`        | *(whole tree)*        | The scope the process is anchored at.                |

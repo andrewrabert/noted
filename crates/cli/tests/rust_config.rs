@@ -31,40 +31,53 @@ fn a_hosts_file_with_no_config_dir_and_no_override_is_rejected() {
     assert!(credential_store_config(None, None).is_err());
 }
 
-#[test]
-fn an_explicit_env_file_overrides_the_config_dir_default() {
-    let file = EnvFile::resolve(
-        Some(Path::new("/etc/noted.env")),
-        None,
-        Some(Path::new("/home/u/.config")),
-    )
-    .unwrap();
-    assert_eq!(file.path(), Path::new("/etc/noted.env"));
+fn paths(files: &[EnvFile]) -> Vec<&Path> {
+    files.iter().map(EnvFile::path).collect()
 }
 
 #[test]
-fn an_empty_env_file_var_falls_back_to_the_config_dir() {
-    let file = EnvFile::resolve(
+fn an_explicit_env_file_layers_over_the_global() {
+    let files = EnvFile::stack(
+        Some(Path::new("/etc/noted.env")),
+        None,
+        Some(Path::new("/home/u/.config")),
+    );
+    assert_eq!(
+        paths(&files),
+        [
+            Path::new("/etc/noted.env"),
+            Path::new("/home/u/.config/noted.env")
+        ]
+    );
+}
+
+#[test]
+fn an_empty_env_file_var_is_unset() {
+    let files = EnvFile::stack(
         Some(Path::new("")),
         None,
         Some(Path::new("/home/u/.config")),
-    )
-    .unwrap();
-    assert_eq!(file.path(), Path::new("/home/u/.config/noted.env"));
+    );
+    assert_eq!(paths(&files), [Path::new("/home/u/.config/noted.env")]);
 }
 
 #[test]
 fn no_config_dir_and_no_override_means_no_env_file() {
-    assert!(EnvFile::resolve(None, None, None).is_none());
+    assert!(EnvFile::stack(None, None, None).is_empty());
 }
 
 #[test]
-fn a_notedenv_in_the_start_dir_is_discovered() {
+fn a_notedenv_in_the_start_dir_layers_over_the_global() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join(".notedenv"), "NOTED_SOURCE=repo\n").unwrap();
-    let file =
-        EnvFile::resolve(None, Some(root.path()), Some(Path::new("/home/u/.config"))).unwrap();
-    assert_eq!(file.path(), root.path().join(".notedenv"));
+    let files = EnvFile::stack(None, Some(root.path()), Some(Path::new("/home/u/.config")));
+    assert_eq!(
+        paths(&files),
+        [
+            root.path().join(".notedenv").as_path(),
+            Path::new("/home/u/.config/noted.env")
+        ]
+    );
 }
 
 #[test]
@@ -73,8 +86,8 @@ fn a_notedenv_above_the_start_dir_is_discovered() {
     std::fs::write(root.path().join(".notedenv"), "NOTED_SOURCE=repo\n").unwrap();
     let nested = root.path().join("a/b");
     std::fs::create_dir_all(&nested).unwrap();
-    let file = EnvFile::resolve(None, Some(&nested), None).unwrap();
-    assert_eq!(file.path(), root.path().join(".notedenv"));
+    let files = EnvFile::stack(None, Some(&nested), None);
+    assert_eq!(paths(&files), [root.path().join(".notedenv").as_path()]);
 }
 
 #[test]
@@ -84,31 +97,39 @@ fn the_nearest_notedenv_wins() {
     let nested = root.path().join("inner");
     std::fs::create_dir(&nested).unwrap();
     std::fs::write(nested.join(".notedenv"), "NOTED_SOURCE=inner\n").unwrap();
-    let file = EnvFile::resolve(None, Some(&nested), None).unwrap();
-    assert_eq!(file.path(), nested.join(".notedenv"));
+    let files = EnvFile::stack(None, Some(&nested), None);
+    assert_eq!(paths(&files), [nested.join(".notedenv").as_path()]);
 }
 
 #[test]
 fn an_explicit_env_file_suppresses_discovery() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join(".notedenv"), "NOTED_SOURCE=repo\n").unwrap();
-    let file =
-        EnvFile::resolve(Some(Path::new("/etc/noted.env")), Some(root.path()), None).unwrap();
-    assert_eq!(file.path(), Path::new("/etc/noted.env"));
+    let files = EnvFile::stack(Some(Path::new("/etc/noted.env")), Some(root.path()), None);
+    assert_eq!(paths(&files), [Path::new("/etc/noted.env")]);
 }
 
 #[test]
-fn no_notedenv_falls_back_to_the_config_dir() {
+fn no_notedenv_leaves_the_global_alone() {
     let root = tempfile::tempdir().unwrap();
-    let file =
-        EnvFile::resolve(None, Some(root.path()), Some(Path::new("/home/u/.config"))).unwrap();
-    assert_eq!(file.path(), Path::new("/home/u/.config/noted.env"));
+    let files = EnvFile::stack(None, Some(root.path()), Some(Path::new("/home/u/.config")));
+    assert_eq!(paths(&files), [Path::new("/home/u/.config/noted.env")]);
+}
+
+#[test]
+fn a_near_file_that_is_the_global_appears_once() {
+    let files = EnvFile::stack(
+        Some(Path::new("/home/u/.config/noted.env")),
+        None,
+        Some(Path::new("/home/u/.config")),
+    );
+    assert_eq!(paths(&files), [Path::new("/home/u/.config/noted.env")]);
 }
 
 #[test]
 fn an_absent_env_file_yields_an_empty_layer() {
     let root = tempfile::tempdir().unwrap();
-    let file = EnvFile::resolve(Some(&root.path().join("nothing.env")), None, None).unwrap();
+    let file = EnvFile::stack(Some(&root.path().join("nothing.env")), None, None).remove(0);
     let layer = file.layer().unwrap();
     assert!(layer.get(Variable::Source).is_none());
 }
@@ -118,7 +139,7 @@ fn an_env_file_yields_its_bindings_as_a_layer() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("noted.env");
     std::fs::write(&path, "# a comment\nNOTED_SOURCE=repo\n\nALPHA=/notes\n").unwrap();
-    let file = EnvFile::resolve(Some(&path), None, None).unwrap();
+    let file = EnvFile::stack(Some(&path), None, None).remove(0);
     let layer = file.layer().unwrap();
     assert_eq!(layer.get(Variable::Source), Some("repo"));
     assert_eq!(layer.origin().to_string(), path.display().to_string());
@@ -129,7 +150,7 @@ fn a_malformed_env_file_is_rejected() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("noted.env");
     std::fs::write(&path, "NOTED_DIR=/notes\nthis is not a binding\n").unwrap();
-    let file = EnvFile::resolve(Some(&path), None, None).unwrap();
+    let file = EnvFile::stack(Some(&path), None, None).remove(0);
     let message = file.layer().unwrap_err().to_string();
     assert!(message.contains(&path.display().to_string()), "{message}");
     assert!(message.contains("this is not a binding"), "{message}");
