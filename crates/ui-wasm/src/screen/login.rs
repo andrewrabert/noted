@@ -32,7 +32,8 @@ pub(crate) fn view(auth: &Auth) -> Element<'_, Message> {
                 text(noted::APP_NAME).size(24),
                 username,
                 password,
-                crate::browser::submit(submit, !busy)
+                crate::browser::submit(submit, !busy),
+                crate::browser::keyboard()
             ];
             if let Some(error) = &form.error {
                 card = card.push(text(error.clone()));

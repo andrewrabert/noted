@@ -107,6 +107,24 @@ pub struct Editor<'a> {
     key: Option<String>,
 }
 
+pub fn keyboard<'a>() -> Element<'a, Message> {
+    Element::new(Field {
+        inner: iced::widget::button("keyboard")
+            .on_press(Message::KeyboardToggled)
+            .into(),
+        value: String::new(),
+        label: "Show or hide keyboard".into(),
+        key: "keyboard".into(),
+        on_edit: None,
+        on_submit: None,
+        multiline: false,
+        secure: false,
+        purpose: "keyboard",
+        padding: Padding::ZERO,
+        enabled: true,
+    })
+}
+
 pub fn submit<'a>(inner: impl Into<Element<'a, Message>>, enabled: bool) -> Element<'a, Message> {
     Element::new(Field {
         inner: inner.into(),

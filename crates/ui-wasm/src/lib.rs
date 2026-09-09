@@ -89,6 +89,7 @@ pub struct LogRow {
 pub enum Message {
     TabSelected(Tab),
     StatusDismissed,
+    KeyboardToggled,
 
     SignInPressed,
     LoginUsernameChanged(String),
@@ -552,6 +553,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             *state = State::fresh(state.host.clone(), Auth::LoggedOut);
             Task::none()
         }
+        Message::KeyboardToggled => Task::none(),
         Message::TabSelected(tab) => {
             state.tab = tab;
             match tab {
@@ -972,6 +974,7 @@ fn view(state: &State) -> Element<'_, Message> {
         tab_button("Tasks", Tab::Tasks, state.tab()),
         tab_button("Log", Tab::Log, state.tab()),
         space::horizontal(),
+        browser::keyboard(),
         logout_button(state),
     ]
     .spacing(5);

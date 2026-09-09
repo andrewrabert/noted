@@ -3,7 +3,7 @@ mod field;
 #[cfg(target_arch = "wasm32")]
 mod target;
 
-pub use field::{editor, input, submit};
+pub use field::{editor, input, keyboard, submit};
 use iced::advanced::text::Position;
 use iced::widget::text_editor;
 

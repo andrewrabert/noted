@@ -49,6 +49,38 @@ fn page(auth: &str) -> String {
   let nextId = 0;
   let loginForm = null;
   let autofillTimer = null;
+  let lastEditor = null;
+  const isCredential = purpose => purpose === "username" || purpose === "current-password";
+  const isLogin = purpose => isCredential(purpose) || purpose === "submit";
+  const isButton = purpose => purpose === "submit" || purpose === "keyboard";
+
+  function toggleKeyboard(hide) {{
+    if (!lastEditor || !lastEditor.el.isConnected || lastEditor.el.readOnly) {{
+      lastEditor = [...fields.values()].find(field => !isButton(field.purpose) && !field.el.readOnly && field.state?.clip[3] > 0);
+    }}
+    if (!lastEditor) return;
+    if (hide) {{
+      try {{ navigator.virtualKeyboard?.hide(); }} catch {{ /* blur is the fallback */ }}
+      lastEditor.el.blur();
+    }} else {{
+      // This runs in the click handler, while mobile user activation is live.
+      lastEditor.el.focus({{ preventScroll: true }});
+      try {{ navigator.virtualKeyboard?.show(); }} catch {{ /* focus is the fallback */ }}
+    }}
+  }}
+
+  function viewport() {{
+    const canvas = document.querySelector("canvas");
+    if (!canvas) return;
+    const visible = window.visualViewport;
+    canvas.style.position = "fixed";
+    canvas.style.left = `${{visible?.offsetLeft || 0}}px`;
+    canvas.style.top = `${{visible?.offsetTop || 0}}px`;
+    canvas.style.width = `${{visible?.width || window.innerWidth}}px`;
+    canvas.style.height = `${{visible?.height || window.innerHeight}}px`;
+    // winit observes the CSS canvas size and sends Iced a resize event.
+    for (const [id, field] of fields) if (field.state) api.sync(id, JSON.stringify(field.state));
+  }}
   function form() {{
     if (loginForm) return loginForm;
     loginForm = document.createElement("form");
@@ -128,12 +160,12 @@ fn page(auth: &str) -> String {
     }},
     create(send, multiline, secure, label, purpose) {{
       const id = ++nextId;
-      const el = document.createElement(purpose === "submit" ? "button" : multiline ? "textarea" : "input");
-      if (!multiline) el.type = purpose === "submit" ? "submit" : secure ? "password" : "text";
+      const el = document.createElement(isButton(purpose) ? "button" : multiline ? "textarea" : "input");
+      if (!multiline) el.type = isButton(purpose) ? (purpose === "submit" ? "submit" : "button") : secure ? "password" : "text";
       el.className = "noted-input";
       el.setAttribute("aria-label", label);
       el.autocomplete = purpose === "username" || purpose === "current-password" ? purpose : "off";
-      if (purpose) {{
+      if (isLogin(purpose)) {{
         el.id = `noted-login-${{purpose}}`;
         el.name = purpose === "current-password" ? "password" : purpose;
         if (purpose !== "submit") {{
@@ -142,10 +174,26 @@ fn page(auth: &str) -> String {
         }}
       }}
       el.spellcheck = false;
+      if (!isButton(purpose)) {{
+        el.inputMode = "text";
+        el.enterKeyHint = multiline ? "enter" : purpose === "username" ? "next" : purpose === "current-password" ? "go" : "done";
+      }}
       el.style.display = "none";
       const field = {{ el, send, purpose, observed: "", seq: 0, composing: false, selection: "", scroll: 0, scrollDelta: 0 }};
       fields.set(id, field);
-      el.addEventListener("focus", () => emit(field, "focus"));
+      el.addEventListener("focus", () => {{
+        if (!isButton(purpose)) lastEditor = field;
+        emit(field, "focus");
+      }});
+      if (purpose === "keyboard") {{
+        el.addEventListener("pointerdown", () => {{
+          field.hideKeyboard = !!lastEditor && document.activeElement === lastEditor.el;
+        }});
+        el.addEventListener("click", () => {{
+          toggleKeyboard(field.hideKeyboard || false);
+          field.hideKeyboard = false;
+        }});
+      }}
       el.addEventListener("blur", () => emit(field, "focus"));
       el.addEventListener("input", () => {{
         field.selection = selected(field);
@@ -162,10 +210,13 @@ fn page(auth: &str) -> String {
         // Preserve all native clipboard/undo/navigation defaults. Iced receives
         // the resulting input/selection events, not a second keyboard edit.
         event.stopPropagation();
-        if (!multiline && event.key === "Enter" && !event.isComposing) {{
+        if (!multiline && !isButton(purpose) && event.key === "Enter" && !event.isComposing) {{
           event.preventDefault();
           if (purpose === "current-password" || purpose === "submit") form().requestSubmit();
-          else emit(field, "submit");
+          else {{
+            if (purpose === "username") document.getElementById("noted-login-current-password")?.focus({{ preventScroll: true }});
+            emit(field, "submit");
+          }}
         }}
       }});
       if (secure) {{
@@ -192,7 +243,7 @@ fn page(auth: &str) -> String {
           document.querySelector("canvas")?.dispatchEvent(new WheelEvent("wheel", event));
         }}
       }}, {{ passive: false }});
-      (purpose ? form() : document.body).append(el);
+      (isLogin(purpose) ? form() : document.body).append(el);
       return id;
     }},
     sync(id, json) {{
@@ -203,12 +254,13 @@ fn page(auth: &str) -> String {
       detectAutofill(field);
       const visible = s.clip[2] > 0 && s.clip[3] > 0;
       el.style.display = visible ? "block" : "none";
-      el.disabled = field.purpose === "submit" && !s.enabled;
+      el.disabled = isButton(field.purpose) && !s.enabled;
       el.readOnly = !s.enabled;
       el.tabIndex = s.enabled ? 0 : -1;
       el.style.pointerEvents = s.enabled ? "auto" : "none";
-      el.style.left = `${{s.x}}px`;
-      el.style.top = `${{s.y}}px`;
+      const canvas = document.querySelector("canvas")?.getBoundingClientRect();
+      el.style.left = `${{s.x + (canvas?.left || 0)}}px`;
+      el.style.top = `${{s.y + (canvas?.top || 0)}}px`;
       el.style.width = `${{s.width}}px`;
       el.style.height = `${{s.height}}px`;
       el.style.padding = s.padding.map(p => `${{p}}px`).join(" ");
@@ -243,7 +295,8 @@ fn page(auth: &str) -> String {
       field.send = () => {{}};
       field.el.remove();
       fields.delete(id);
-      if (loginForm && ![...fields.values()].some(field => field.purpose)) {{
+      if (lastEditor === field) lastEditor = null;
+      if (loginForm && ![...fields.values()].some(field => isLogin(field.purpose))) {{
         loginForm.remove(); loginForm = null;
         clearInterval(autofillTimer); autofillTimer = null;
       }}
@@ -254,6 +307,14 @@ fn page(auth: &str) -> String {
       if (document.activeElement === field.el) selection(field);
     }}
   }});
+  window.visualViewport?.addEventListener("resize", viewport);
+  window.visualViewport?.addEventListener("scroll", viewport);
+  window.addEventListener("resize", viewport);
+  // Iced inserts its canvas after WASM starts, after this inline script runs.
+  const observer = new MutationObserver(() => {{
+    if (document.querySelector("canvas")) {{ observer.disconnect(); viewport(); }}
+  }});
+  observer.observe(document.body, {{ childList: true }});
   globalThis.notedInput = api;
 }})();
 {MODULE}
