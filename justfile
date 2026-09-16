@@ -73,11 +73,11 @@ outdated:
 
 # Install the git pre-commit hook
 install-hooks:
-    @uvx pre-commit install
+    @prek install
 
 # Run all pre-commit hooks against the whole repo
 precommit:
-    @uvx pre-commit run --all-files
+    @prek run --all-files
 
 # Run the noted CLI (NOTED_DIR must be set), e.g. `just run search foo`
 [positional-arguments]
