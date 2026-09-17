@@ -48,7 +48,7 @@ fn within(dir: &NotePath, name: &str) -> Result<NotePath> {
 
 fn named(dir: &NotePath) -> String {
     match dir == &NotePath::default() {
-        true => "the top of .tasks".to_string(),
+        true => "the top level".to_string(),
         false => dir.to_string(),
     }
 }

@@ -15,7 +15,9 @@ Features: regex search across the tree, timestamped log entries named by the ins
 were written, and a scoped task tracker.
 
 The tree has one open region plus two reserved ones, and each gets its own search:
-`SearchNotes` for ordinary notes, `SearchLog` for `.logs/`, `SearchTasks` for `.tasks/`.
+`SearchNotes` for ordinary notes, `SearchLog` for log entries, `SearchTasks` for tasks.
+On disk the reserved regions are the `.logs/` and `.tasks/` directories under the notes
+root; no path over the CLI, HTTP, or MCP ever names them.
 
 ## Downloads
 
@@ -79,7 +81,7 @@ Tools, as the MCP and HTTP interfaces expose them:
 
 | Tool | What it does |
 | --- | --- |
-| `SearchNotes` | Find notes by regex, outside `.logs/` and `.tasks/` |
+| `SearchNotes` | Find notes by regex; log entries and tasks excluded |
 | `SearchLog` | Find log entries by regex, within a time range |
 | `SearchTasks` | Find tasks by regex, within a group |
 | `ReadNote` | Read a note's text by relative path |
@@ -89,7 +91,7 @@ Tools, as the MCP and HTTP interfaces expose them:
 | `DeleteNote` | Move a note to `.trash/` |
 | `LogNote` | Append an immutable, timestamped entry |
 | `GetLog` | List log entries newest first |
-| `CreateTask` | Open a task under `.tasks/` |
+| `CreateTask` | Open a task |
 | `GetTasks` | Read tasks as summary records |
 | `UpdateTask` | Change a task's state, notes or title |
 | `MoveTask` | Change a task's group |
@@ -187,11 +189,11 @@ value take `read` and `write` as optional flags: an omitted flag keeps whatever 
 enclosing policy already allows, so `{"write": false}` closes writing and leaves reading
 as it was.
 
-The scope is cumulative across the three regions: a scope of `/a/b/c` puts notes at
-`a/b/c`, log entries at `.logs/a/b/c`, and tasks at `.tasks/a/b/c`. A `paths` key is read
-from the scope and applies the same way in every region: under scope `/dev`, `--in
-/x=read` covers the note `dev/x`, the log entries under `.logs/dev/x`, and the tasks
-under `.tasks/dev/x`. The region directories themselves have no spelling in a policy.
+The scope applies across all three regions: a scope of `/a/b/c` puts notes, log entries,
+and tasks each at `a/b/c` within their own region. A `paths` key is read from the scope
+and applies the same way in every region: under scope `/dev`, `--in /x=read` covers the
+note `dev/x`, the log entries under `dev/x`, and the tasks under `dev/x`. The regions
+themselves have no spelling in a policy.
 
 A user's policy is edited in place; a key's is fixed at its mint, so narrowing one means
 minting another. Both can mint narrowed child credentials (see

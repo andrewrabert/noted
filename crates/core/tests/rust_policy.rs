@@ -341,13 +341,8 @@ fn allowed_tools_follow_the_regions() {
 fn a_tool_description_tells_a_scoped_client_where_things_land() {
     let dir = common::fixture_dir();
     let scoped = || vec![held(r#"{"scope":"/projects"}"#)];
-    assert!(
-        described(&dir, "CreateTask", scoped())
-            .ends_with("Tasks are stored under .tasks/projects.")
-    );
-    assert!(
-        described(&dir, "LogNote", scoped()).ends_with("Entries are stored under .logs/projects.")
-    );
+    assert!(described(&dir, "CreateTask", scoped()).ends_with("Tasks are scoped to /projects."));
+    assert!(described(&dir, "LogNote", scoped()).ends_with("Entries are scoped to /projects."));
     assert!(described(&dir, "WriteNote", scoped()).ends_with("Paths are relative to /projects."));
     assert!(!described(&dir, "WriteNote", vec![]).contains("Paths are relative to"));
 }
