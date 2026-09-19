@@ -42,13 +42,6 @@ test package="" test_name="":
         cargo test --manifest-path {{justfile_directory()}}/Cargo.toml -p '{{package}}' --lib '{{test_name}}' -- --exact --include-ignored
     fi
 
-# Build the release binary and install it to ~/.local/bin/noted
-install:
-    #!/usr/bin/env sh
-    set -eu
-    cargo build --release --manifest-path {{justfile_directory()}}/Cargo.toml
-    install -D -m 755 {{justfile_directory()}}/target/release/noted "$HOME/.local/bin/noted"
-
 # Format the sources
 fmt:
     @cargo fmt --all --manifest-path {{justfile_directory()}}/Cargo.toml
