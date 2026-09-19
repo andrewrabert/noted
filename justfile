@@ -71,6 +71,12 @@ check: fmt-check lint test
 outdated:
     @cargo outdated --manifest-path {{justfile_directory()}}/Cargo.toml --workspace --root-deps-only
 
+# Update dependencies
+[positional-arguments]
+update *args:
+    @cargo update --manifest-path {{justfile_directory()}}/Cargo.toml "$@"
+    @cargo update --manifest-path {{justfile_directory()}}/crates/ui-wasm/Cargo.toml "$@"
+
 # Install the git pre-commit hook
 install-hooks:
     @prek install
