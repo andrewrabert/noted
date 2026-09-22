@@ -26,7 +26,7 @@ url = "2"
 
 [build-dependencies]
 base64 = "0.23"
-wasm-bindgen-cli-support = "=0.2.108"
+wasm-bindgen-cli-support = "0.2"
 
 [dev-dependencies]
 base64 = "0.23"
