@@ -6,7 +6,6 @@ edition = "2024"
 license = "MIT"
 homepage = "https://github.com/andrewrabert/noted"
 repository = "https://github.com/andrewrabert/noted"
-rust-version = "1.93"
 publish = false
 
 [lib]

@@ -1,7 +1,6 @@
 # Build stage: latest stable 1.x, Debian bookworm based so its glibc matches the
 # bookworm-slim runtime below. It also ships the C toolchain that rusqlite's
-# `bundled` feature (compiles SQLite from C) and `ring` need. (Cargo.toml's
-# rust-version 1.90 is only an MSRV floor, not a build pin.)
+# `bundled` feature (compiles SQLite from C) and `ring` need.
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY . .
