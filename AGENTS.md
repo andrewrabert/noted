@@ -37,7 +37,7 @@
 
 - Crossings:
     - NotePath -> RegionNotePath: only in the Policy mint (readable/writeable), only after the lookup says yes
-    - OS entry name -> NotePath: only in fs/ (Store listing, platform grep), outbound, via NotePath::new spelled from the walk root, Err skipped; RegionStore then re-mints each one
+    - OS entry name -> NotePath: only in RegionStore, outbound, via NotePath::new on the name fs/ spelled from the walk root, Err skipped; fs/ reports every entry as a spelled String
     - RegionBase + RegionNotePath -> PathBuf: only in Store
     - NotePath never sees RegionBase, Trash, or PathBuf
 

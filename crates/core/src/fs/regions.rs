@@ -85,9 +85,12 @@ impl RegionStore {
         self.admitted(dir, found)
     }
 
-    fn admitted(&self, dir: &NotePath, found: Vec<NotePath>) -> Vec<NotePath> {
+    fn admitted(&self, dir: &NotePath, found: Vec<String>) -> Vec<NotePath> {
         let mut out = Vec::new();
-        for at in found {
+        for spelled in found {
+            let Ok(at) = NotePath::new(&spelled) else {
+                continue;
+            };
             let rel = dir.join(&at);
             let Ok(_) = self.policy.readable(&rel) else {
                 continue;
@@ -112,7 +115,10 @@ impl RegionStore {
             .await?;
         let mut hits = Vec::new();
         for raw in found {
-            let rel = dir.join(&raw.path);
+            let Ok(at) = NotePath::new(&raw.path) else {
+                continue;
+            };
+            let rel = dir.join(&at);
             let Ok(_) = self.policy.readable(&rel) else {
                 continue;
             };

@@ -28,7 +28,7 @@ impl NotedDir {
 /// A search hit as the disk reports it: the name is spelled from the
 /// directory the search started in.
 pub(crate) struct RawHit {
-    pub(crate) path: NotePath,
+    pub(crate) path: String,
     #[allow(dead_code)]
     pub(crate) modified: SystemTime,
     pub(crate) lines: BTreeMap<u64, String>,
@@ -188,15 +188,15 @@ impl Store {
         Err(NotedError::Conflict)
     }
 
-    pub(crate) async fn walk(&self, region: Region, start: &NotePath) -> Vec<NotePath> {
+    pub(crate) async fn walk(&self, region: Region, start: &NotePath) -> Vec<String> {
         self.listing(region, start, Listing { deep: true }).await
     }
 
-    pub(crate) async fn children(&self, region: Region, start: &NotePath) -> Vec<NotePath> {
+    pub(crate) async fn children(&self, region: Region, start: &NotePath) -> Vec<String> {
         self.listing(region, start, Listing { deep: false }).await
     }
 
-    async fn listing(&self, region: Region, start: &NotePath, listing: Listing) -> Vec<NotePath> {
+    async fn listing(&self, region: Region, start: &NotePath, listing: Listing) -> Vec<String> {
         let mut out = Vec::new();
         self.collect(
             &self.rooted(region, start.segments()),
@@ -208,25 +208,14 @@ impl Store {
         out
     }
 
-    // an entry the note grammar refuses (a dotted name, an untrimmed one) is
-    // not a note and is not entered
-    async fn collect(
-        &self,
-        dir: &StdPath,
-        prefix: &str,
-        listing: Listing,
-        out: &mut Vec<NotePath>,
-    ) {
+    async fn collect(&self, dir: &StdPath, prefix: &str, listing: Listing, out: &mut Vec<String>) {
         let found = platform::entries(self.base(), dir, false)
             .await
             .unwrap_or_default();
         for Entry { name, is_dir, .. } in found {
             let spelled = format!("{prefix}/{name}");
-            let Ok(rel) = NotePath::new(&spelled) else {
-                continue;
-            };
             if !is_dir {
-                out.push(rel);
+                out.push(spelled);
             } else if listing.deep {
                 Box::pin(self.collect(&dir.join(&name), &spelled, listing, out)).await;
             }

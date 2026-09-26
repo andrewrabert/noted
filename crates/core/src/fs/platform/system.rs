@@ -9,7 +9,6 @@ use ignore::types::TypesBuilder;
 use ignore::{IncrementalIgnore, WalkBuilder, WalkState};
 
 use crate::disk::{atomic_create, atomic_write, normalize};
-use crate::domain::NotePath;
 use crate::error::{NotedError, Result, io_error, rejected, unavailable};
 use crate::platform::Entry;
 use crate::search::{GlobPattern, SearchMode, SearchOrder, SearchQuery};
@@ -295,9 +294,7 @@ pub(crate) async fn grep(
     .await?
 }
 
-// the hit's name spelled from the directory the search started in; a file
-// the note grammar refuses is not a hit
-fn relative(from: &StdPath, abs: &StdPath) -> Result<NotePath> {
+fn relative(from: &StdPath, abs: &StdPath) -> Result<String> {
     let cleaned = normalize(abs);
     let under = cleaned
         .strip_prefix(from)
@@ -310,12 +307,12 @@ fn relative(from: &StdPath, abs: &StdPath) -> Result<NotePath> {
         spelled.push('/');
         spelled.push_str(part.to_str().ok_or_else(|| rejected("not utf-8"))?);
     }
-    NotePath::new(&spelled)
+    Ok(spelled)
 }
 
 // 'path' order is case-insensitive over the spelled name
 fn ordered(hits: &mut [RawHit], order: SearchOrder) {
-    let by_name = |a: &RawHit, b: &RawHit| case_order(&a.path.to_string(), &b.path.to_string());
+    let by_name = |a: &RawHit, b: &RawHit| case_order(&a.path, &b.path);
     match order {
         SearchOrder::Path => hits.sort_by(by_name),
         SearchOrder::Modified => {
@@ -330,10 +327,8 @@ fn confine(wb: &mut WalkBuilder, from: &StdPath) {
     let from = from.to_path_buf();
     wb.filter_entry(move |entry| {
         let path = entry.path();
-        let name = entry.file_name().to_string_lossy();
         let toward = from.starts_with(path);
-        let visible = toward || !name.starts_with('.');
-        (toward || path.starts_with(&from)) && visible && !entry.path_is_symlink()
+        (toward || path.starts_with(&from)) && !entry.path_is_symlink()
     });
 }
 
