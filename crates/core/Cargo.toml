@@ -49,3 +49,4 @@ getrandom = { version = "0.4", features = ["wasm_js"] }
 chrono = { workspace = true }
 humantime = { workspace = true }
 tempfile = { workspace = true }
+tokio = { version = "1", features = ["macros"] }
