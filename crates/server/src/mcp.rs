@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    InitializeResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo,
+    InitializeResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig,
     Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
@@ -72,7 +72,7 @@ impl McpContext {
 }
 
 impl ServerHandler for McpContext {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(noted::APP_NAME, noted::APP_VERSION))
             .with_instructions(self.root.instructions())
