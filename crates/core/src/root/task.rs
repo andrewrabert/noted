@@ -1,99 +1,88 @@
 use std::cmp::Reverse;
+use std::num::NonZeroU64;
+use std::sync::OnceLock;
 
-use crate::domain::NotePath;
+use crate::domain::{DirPath, TaskDirPath, TaskPath};
 use crate::error::{NotedError, Result, rejected};
 use crate::note::{Condition, Note as _};
-use crate::regions::RegionStore;
+use crate::policy_store::PolicyStore;
 use crate::search::Hit;
-use crate::tasks::{
-    GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskTitle, numbered,
-};
+use crate::tasks::{TaskChange, TaskNote, TaskQuery, TaskSearch, TaskTitle};
 use crate::types::TaskBody;
 
-// how a claimed task name is filled
+// how a claimed task name is filled: a fresh task is built for each
+// candidate path and, once its write lands, kept in the slot
 #[derive(Clone, Copy)]
 enum Placement<'a> {
-    Fresh(&'a [u8]),
-    Existing(&'a NotePath),
+    Fresh(&'a TaskTitle, &'a TaskBody, &'a OnceLock<TaskNote>),
+    Existing(&'a TaskPath),
 }
 
-// the note a task lives in: its reference plus the note suffix
-fn entry_of(reference: &TaskRef) -> Result<NotePath> {
-    if reference.is_empty() {
-        return Err(rejected("task path required"));
-    }
-    NotePath::new(&format!("/{}.md", reference.as_str()))
-}
-
-// the reference a task note carries; refused when the note is not a task entry
-fn reference_of(entry: &NotePath) -> Result<TaskRef> {
-    let spelled = entry.to_string();
-    match spelled
-        .strip_prefix('/')
-        .and_then(|s| s.strip_suffix(".md"))
-    {
-        Some(reference) => TaskRef::new(reference),
-        None => Err(rejected("not a task")),
-    }
-}
-
-// the directory a group or a reference prefix names; '' is the top of the region
-fn dir_of(raw: &str) -> Result<NotePath> {
-    NotePath::new(&format!("/{raw}"))
-}
-
-fn within(dir: &NotePath, name: &str) -> Result<NotePath> {
-    Ok(dir.join(&NotePath::new(&format!("/{name}"))?))
-}
-
-fn named(dir: &NotePath) -> String {
-    match dir == &NotePath::default() {
+fn named(dir: &DirPath) -> String {
+    match dir == &DirPath::default() {
         true => "the top level".to_string(),
         false => dir.to_string(),
     }
 }
 
 pub(super) struct TaskTools {
-    region: RegionStore,
+    store: PolicyStore,
 }
 
 impl TaskTools {
-    pub(super) fn new(region: RegionStore) -> TaskTools {
-        TaskTools { region }
+    pub(super) fn new(store: PolicyStore) -> TaskTools {
+        TaskTools { store }
     }
 
-    async fn read(&self, entry: &NotePath) -> Result<TaskNote> {
-        let reference = reference_of(entry)?;
-        let bytes = self.region.read(entry).await?;
-        TaskNote::from_bytes(reference, &bytes).map_err(|_| rejected("not a task"))
+    async fn read(&self, task: &TaskPath) -> Result<TaskNote> {
+        let file = self.store.policy().readable(task.as_ref())?.file()?;
+        let bytes = self.store.read(&file).await?;
+        TaskNote::from_bytes(task.clone(), &bytes).map_err(|_| rejected("not a task"))
     }
 
-    async fn next_number(&self, dir: &NotePath) -> u64 {
-        self.region
-            .children(dir)
+    // one more than the largest task sitting directly in `dir`
+    async fn next_number(&self, dir: &DirPath) -> Result<u64> {
+        let tasks = DirPath::try_from(TaskDirPath::new(dir)?.as_ref().clone())?;
+        Ok(self
+            .store
+            .walk(&tasks, Some(1))
             .await
-            .iter()
-            .filter_map(|p| {
-                let name = p.segments().last()?.as_str();
-                numbered(name.strip_suffix(".md").unwrap_or(name))
-            })
+            .into_iter()
+            .filter_map(|at| TaskPath::try_from(at).ok())
+            .map(|task| task.number())
+            .map(NonZeroU64::get)
             .max()
             .unwrap_or(0)
-            + 1
+            + 1)
     }
 
-    async fn place(&self, at: &NotePath, what: Placement<'_>) -> Result<()> {
+    async fn place(&self, at: &TaskPath, what: Placement<'_>) -> Result<()> {
         match what {
-            Placement::Fresh(data) => self.region.write(at, data, Condition::Missing).await,
-            Placement::Existing(from) => self.region.rename(from, at, Condition::Missing).await,
+            Placement::Fresh(title, body, placed) => {
+                let task = TaskNote::new(at.clone(), title.clone(), body.clone());
+                let file = self.store.policy().writeable(at.as_ref())?.file()?;
+                self.store
+                    .write(&file, &task.to_bytes(), Condition::Missing)
+                    .await?;
+                let _ = placed.set(task);
+                Ok(())
+            }
+            // the whole task directory moves, everything inside it included
+            Placement::Existing(from) => {
+                let source = self.store.policy().writeable(from.as_ref())?.dir()?;
+                let target = self.store.policy().writeable(at.as_ref())?.dir()?;
+                self.store
+                    .rename(source.as_ref(), target.as_ref(), Condition::Missing)
+                    .await
+            }
         }
     }
 
-    async fn claim(&self, dir: &NotePath, what: Placement<'_>) -> Result<NotePath> {
+    async fn claim(&self, dir: &DirPath, what: Placement<'_>) -> Result<TaskPath> {
         for _ in 0..100 {
-            let base = self.next_number(dir).await;
-            for number in base..base + 1000 {
-                let path = within(dir, &format!("task_{number:04}.md"))?;
+            let base = self.next_number(dir).await?;
+            for number in (base..base + 1000).filter_map(NonZeroU64::new) {
+                let path = TaskPath::new(dir, number)?;
                 match self.place(&path, what).await {
                     Ok(()) => return Ok(path),
                     Err(NotedError::Conflict) => continue,
@@ -110,26 +99,31 @@ impl TaskTools {
     pub(super) async fn create(
         &self,
         title: &TaskTitle,
-        group: &GroupPath,
+        dir: &DirPath,
         body: &TaskBody,
     ) -> Result<TaskNote> {
-        let draft = TaskNote::new(title.clone(), body.clone());
-        let dir = dir_of(group.as_str())?;
-        let path = self
-            .claim(&dir, Placement::Fresh(&draft.to_bytes()))
+        let placed = OnceLock::new();
+        self.claim(dir, Placement::Fresh(title, body, &placed))
             .await?;
-        Ok(draft.with_path(reference_of(&path)?))
+        placed
+            .into_inner()
+            .ok_or_else(|| rejected("could not allocate a task name"))
     }
 
     pub(super) async fn get(&self, query: &TaskQuery) -> Result<Vec<TaskNote>> {
-        let exact = match query.prefix.is_empty() {
-            true => None,
-            false => self.read(&entry_of(&query.prefix)?).await.ok(),
+        let exact = match TaskPath::try_from(query.prefix.as_ref().clone()) {
+            Ok(task) => self.read(&task).await.ok(),
+            Err(_) => None,
         };
         let (paths, hide_closed) = match exact {
             Some(task) => return Ok(vec![task]),
             None => (
-                self.region.walk(&dir_of(query.prefix.as_str())?).await,
+                self.store
+                    .walk(&query.prefix, None)
+                    .await
+                    .into_iter()
+                    .filter_map(|at| TaskPath::try_from(at).ok())
+                    .collect::<Vec<_>>(),
                 !query.include_completed,
             ),
         };
@@ -148,25 +142,23 @@ impl TaskTools {
         Ok(found)
     }
 
-    pub(super) async fn search(&self, search: &TaskSearch) -> Result<Vec<Hit<TaskRef>>> {
-        let mut hits: Vec<Hit<TaskRef>> = Vec::new();
-        let prefix = dir_of(search.prefix.as_str())?;
-        for hit in self.region.search(&prefix, &search.query).await? {
-            let Ok(reference) = reference_of(&hit.path) else {
-                continue;
-            };
-            hits.push(Hit {
-                path: reference,
-                lines: hit.lines,
-            });
-        }
+    pub(super) async fn search(&self, search: &TaskSearch) -> Result<Vec<Hit<TaskPath>>> {
+        let hits = self
+            .store
+            .search(&search.prefix, &search.query)
+            .await?
+            .into_iter()
+            .filter_map(|hit| {
+                Some(Hit {
+                    path: TaskPath::try_from(hit.path).ok()?,
+                    lines: hit.lines,
+                })
+            })
+            .collect();
 
         let mut ordered = Vec::new();
         for hit in search.query.assemble(hits)? {
-            let Ok(entry) = entry_of(&hit.path) else {
-                continue;
-            };
-            let Ok(task) = self.read(&entry).await else {
+            let Ok(task) = self.read(&hit.path).await else {
                 continue;
             };
             if !search.include_completed && task.front().state.is_closed() {
@@ -180,44 +172,34 @@ impl TaskTools {
 
     pub(super) async fn update(
         &self,
-        reference: &TaskRef,
+        reference: &TaskPath,
         change: &TaskChange,
     ) -> Result<TaskNote> {
-        let entry = entry_of(reference)?;
-        let updated = self.existing(&entry).await?.changed(change)?;
-        self.region
-            .write(&entry, &updated.to_bytes(), Condition::Always)
+        let updated = self.existing(reference).await?.changed(change)?;
+        let file = self.store.policy().writeable(reference.as_ref())?.file()?;
+        self.store
+            .write(&file, &updated.to_bytes(), Condition::Always)
             .await?;
         Ok(updated)
     }
 
-    async fn existing(&self, entry: &NotePath) -> Result<TaskNote> {
-        self.read(entry).await.map_err(|e| match e {
+    async fn existing(&self, task: &TaskPath) -> Result<TaskNote> {
+        self.read(task).await.map_err(|e| match e {
             NotedError::Io { .. } => NotedError::NotFound,
             other => other,
         })
     }
 
-    pub(super) async fn move_(&self, reference: &TaskRef, group: &GroupPath) -> Result<TaskNote> {
-        let entry = entry_of(reference)?;
-        let relocated = self.existing(&entry).await?.restamped();
-        if group.as_str() == reference.group() {
-            return Err(rejected("task already in that group"));
+    pub(super) async fn move_(&self, reference: &TaskPath, dest: &DirPath) -> Result<TaskNote> {
+        if dest == &reference.as_ref().parent()? {
+            return Err(rejected(format!("task already in '{}'", named(dest))));
         }
-        let dir = dir_of(group.as_str())?;
+        // a destination that continues every segment of the task lies inside it
+        if dest.as_ref().starts_with(reference.as_ref()) {
+            return Err(rejected("cannot move a task into itself"));
+        }
 
-        let stem = reference.stem();
-        let dest = match numbered(stem).is_some() {
-            true => self.claim(&dir, Placement::Existing(&entry)).await?,
-            false => {
-                let dest = within(&dir, &format!("{stem}.md"))?;
-                self.place(&dest, Placement::Existing(&entry)).await?;
-                dest
-            }
-        };
-        self.region
-            .write(&dest, &relocated.to_bytes(), Condition::Always)
-            .await?;
-        Ok(relocated.with_path(reference_of(&dest)?))
+        let moved = self.claim(dest, Placement::Existing(reference)).await?;
+        self.existing(&moved).await
     }
 }

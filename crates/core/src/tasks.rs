@@ -4,13 +4,13 @@ use clap::ValueEnum;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::domain::{DirPath, TaskPath};
 use crate::error::{NotedError, Result, rejected};
 use crate::front_matter::{FrontMatter, split_front};
-use crate::newtype::{str_newtype_validated, str_surface};
+use crate::newtype::str_newtype_validated;
 use crate::note::Note;
 use crate::search::SearchQuery;
 use crate::types::{TaskBody, Timestamp};
-use crate::util::case_order;
 
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ValueEnum,
@@ -89,122 +89,6 @@ fn validate_task_title(s: &str) -> Result<()> {
     Ok(())
 }
 
-fn valid_segment(part: &str) -> bool {
-    let mut chars = part.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() => {}
-        _ => return false,
-    }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-}
-
-fn segments(raw: &str) -> Result<String> {
-    let mut parts = Vec::new();
-    for part in raw.split('/').filter(|p| !p.is_empty()) {
-        if !valid_segment(part) {
-            return Err(rejected(format!(
-                "invalid name '{part}': must start with a letter and use \
-                 only letters, digits, '-' or '_'"
-            )));
-        }
-        parts.push(part);
-    }
-    Ok(parts.join("/"))
-}
-
-// Tool-schema field: a rustdoc comment here ships as the wire description.
-#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(try_from = "String", into = "String")]
-#[schemars(with = "String")]
-pub struct GroupPath(String);
-str_surface!(GroupPath);
-
-impl GroupPath {
-    pub fn new(s: impl Into<String>) -> Result<GroupPath> {
-        Ok(GroupPath(segments(&s.into())?))
-    }
-}
-
-impl FromStr for GroupPath {
-    type Err = NotedError;
-    fn from_str(s: &str) -> Result<GroupPath> {
-        GroupPath::new(s)
-    }
-}
-
-impl TryFrom<String> for GroupPath {
-    type Error = NotedError;
-    fn try_from(s: String) -> Result<GroupPath> {
-        GroupPath::new(s)
-    }
-}
-
-// Tool-schema field: a rustdoc comment here ships as the wire description.
-#[derive(Clone, Default, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(try_from = "String", into = "String")]
-#[schemars(with = "String")]
-pub struct TaskRef(String);
-str_surface!(TaskRef);
-
-impl TaskRef {
-    pub fn new(s: impl Into<String>) -> Result<TaskRef> {
-        Ok(TaskRef(segments(&s.into())?))
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    // the group the task sits in; '' at the top of the region
-    pub(crate) fn group(&self) -> &str {
-        match self.0.rsplit_once('/') {
-            Some((group, _)) => group,
-            None => "",
-        }
-    }
-
-    pub(crate) fn stem(&self) -> &str {
-        match self.0.rsplit_once('/') {
-            Some((_, name)) => name,
-            None => &self.0,
-        }
-    }
-}
-
-impl FromStr for TaskRef {
-    type Err = NotedError;
-    fn from_str(s: &str) -> Result<TaskRef> {
-        TaskRef::new(s)
-    }
-}
-
-impl TryFrom<String> for TaskRef {
-    type Error = NotedError;
-    fn try_from(s: String) -> Result<TaskRef> {
-        TaskRef::new(s)
-    }
-}
-
-impl Ord for TaskRef {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        case_order(self.as_str(), other.as_str())
-    }
-}
-
-impl PartialOrd for TaskRef {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-pub(crate) fn numbered(stem: &str) -> Option<u64> {
-    let digits = stem.strip_prefix("task_")?;
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    digits.parse().ok()
-}
-
 #[derive(Clone, Debug)]
 pub struct TaskFront {
     pub task: TaskTitle,
@@ -253,31 +137,31 @@ pub struct TaskChange {
 
 #[derive(Default)]
 pub struct TaskQuery {
-    pub prefix: TaskRef,
+    pub prefix: DirPath,
     pub include_completed: bool,
 }
 
 #[derive(Default)]
 pub struct TaskSearch {
-    pub prefix: GroupPath,
+    pub prefix: DirPath,
     pub include_completed: bool,
     pub query: SearchQuery,
 }
 
 #[derive(Debug)]
 pub struct TaskNote {
-    path: TaskRef,
+    path: TaskPath,
     front: TaskFront,
     body: TaskBody,
 }
 
 impl TaskNote {
-    pub(crate) fn new(task: TaskTitle, body: TaskBody) -> TaskNote {
+    pub(crate) fn new(path: TaskPath, title: TaskTitle, body: TaskBody) -> TaskNote {
         let now = Timestamp::now();
         TaskNote {
-            path: TaskRef::default(),
+            path,
             front: TaskFront {
-                task,
+                task: title,
                 state: TaskState::Created,
                 created_at: now,
                 updated_at: now,
@@ -286,14 +170,14 @@ impl TaskNote {
         }
     }
 
-    pub(crate) fn from_bytes(path: TaskRef, bytes: &[u8]) -> Result<TaskNote> {
+    pub(crate) fn from_bytes(path: TaskPath, bytes: &[u8]) -> Result<TaskNote> {
         let text = std::str::from_utf8(bytes).map_err(|_| rejected("not a task"))?;
         let (front, body) = parse_task_file(text);
         let front = front.ok_or_else(|| rejected("not a task"))?;
         Ok(TaskNote { path, front, body })
     }
 
-    pub fn path(&self) -> &TaskRef {
+    pub fn path(&self) -> &TaskPath {
         &self.path
     }
 
@@ -326,21 +210,6 @@ impl TaskNote {
             },
             body,
         })
-    }
-
-    pub(crate) fn restamped(&self) -> TaskNote {
-        let mut front = self.front.clone();
-        front.updated_at = Timestamp::now();
-        TaskNote {
-            path: self.path.clone(),
-            front,
-            body: self.body.clone(),
-        }
-    }
-
-    pub(crate) fn with_path(mut self, path: TaskRef) -> TaskNote {
-        self.path = path;
-        self
     }
 }
 

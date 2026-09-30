@@ -66,19 +66,22 @@ fn arg_schema_defaults_are_pinned() {
         ("SearchLog", "fixed", json!(false)),
         ("SearchTasks", "pattern", json!(".")),
         ("SearchTasks", "mode", json!("any")),
-        ("SearchTasks", "prefix", json!("")),
+        ("SearchTasks", "prefix", json!("/")),
+        ("SearchLog", "prefix", json!("/")),
+        ("GetLog", "prefix", json!("/")),
+        ("LogNote", "dir", json!("/")),
         ("SearchTasks", "include_completed", json!(false)),
         ("GetLog", "body", json!(false)),
         ("GetLog", "limit", json!(20)),
         ("SearchLog", "limit", json!(20)),
         ("EditNote", "replace_all", json!(false)),
         ("MoveNote", "overwrite", json!(false)),
-        ("CreateTask", "group", json!("")),
+        ("CreateTask", "dir", json!("/")),
         ("CreateTask", "notes", json!("")),
-        ("GetTasks", "prefix", json!("")),
+        ("GetTasks", "prefix", json!("/")),
         ("GetTasks", "body", json!(false)),
         ("GetTasks", "include_completed", json!(false)),
-        ("MoveTask", "group", json!("")),
+        ("MoveTask", "dest", json!("/")),
     ] {
         assert_eq!(
             by_name[tool]["properties"][field]["default"], want,
@@ -113,7 +116,7 @@ fn the_registry_is_the_fourteen_tools() {
 }
 
 #[test]
-fn only_the_open_region_search_takes_a_glob() {
+fn only_search_notes_takes_a_glob() {
     let dir = fixture_dir();
     for def in tool_listings(&dir) {
         let props = def.input_schema["properties"].as_object().unwrap();

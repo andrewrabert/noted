@@ -1,7 +1,6 @@
-use std::path::Path as StdPath;
+use std::path::{Path as StdPath, PathBuf};
 
 use crate::error::{Result, unavailable};
-use crate::platform::Entry;
 use crate::search::SearchQuery;
 use crate::store::RawHit;
 
@@ -47,7 +46,11 @@ pub(crate) async fn relocate(_from: &StdPath, _to: &StdPath) -> Result<()> {
     absent()
 }
 
-pub(crate) async fn entries(_base: &StdPath, _dir: &StdPath, _deep: bool) -> Result<Vec<Entry>> {
+pub(crate) async fn exists(_abs: &StdPath) -> bool {
+    false
+}
+
+pub(crate) async fn walk(_dir: &StdPath, _max_depth: Option<usize>) -> Result<Vec<PathBuf>> {
     Ok(Vec::new())
 }
 
@@ -57,14 +60,6 @@ pub(crate) async fn grep(
     _query: &SearchQuery,
 ) -> Result<Vec<RawHit>> {
     Ok(Vec::new())
-}
-
-pub(crate) async fn ignored(_base: &StdPath, _abs: &StdPath) -> Result<bool> {
-    Ok(false)
-}
-
-pub(crate) fn crosses_symlink(_base: &StdPath, _abs: &StdPath) -> bool {
-    false
 }
 
 pub(crate) fn host() -> String {

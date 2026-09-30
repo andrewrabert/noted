@@ -9,9 +9,9 @@ pub mod oauth;
 #[path = "fs/platform.rs"]
 mod platform;
 mod policy;
+#[path = "fs/policy_store.rs"]
+mod policy_store;
 mod policyargs;
-#[path = "fs/regions.rs"]
-mod regions;
 mod root;
 mod timerange;
 
@@ -29,13 +29,13 @@ pub mod types;
 pub mod util;
 
 pub use call::{ToolCall, ToolListing};
-pub use domain::NotePath;
+pub use domain::{DirPath, LogPath, NotePath, TaskPath, TextPath};
 pub use endpoint::Endpoint;
 pub use error::{NotedError, Result};
 pub use fragment::{AccessFragment, PolicyFragment};
 pub use httpurl::HttpUrl;
 pub use note::{Etag, LogNote, Note, TextNote, Trashed};
-pub use policy::{Access, RegionPolicy};
+pub use policy::Access;
 pub use policyargs::PolicyArgs;
 pub use root::NotedRoot;
 pub use store::NotedDir;

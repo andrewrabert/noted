@@ -5,11 +5,11 @@ use std::process::ExitCode;
 use clap::Args;
 use tempfile::TempDir;
 
-use noted::NotePath;
 use noted::ToolCall;
 use noted::error::{NotedError, Result, io_error, rejected, unavailable};
 use noted::note::{Condition, TextNote};
 use noted::tools::{ReadArgs, SearchNotesArgs, ToolOutput, WriteArgs};
+use noted::{NotePath, TextPath};
 use noted_client::Backend;
 
 use crate::config::Config;
@@ -19,7 +19,7 @@ use crate::text_editor::TextEditor;
 #[derive(Args)]
 pub(crate) struct OpenArgs {
     /// Note to open, by relative path; omit to pick one interactively
-    path: Option<NotePath>,
+    path: Option<TextPath>,
     /// Overwrite unconditionally, ignoring concurrent changes
     #[arg(short, long)]
     force: bool,
@@ -93,7 +93,7 @@ pub(crate) async fn run_open(config: &Config, args: OpenArgs) -> Result<ExitCode
     let path = match args.path {
         Some(path) => path,
         None => match pick_path(&backend).await? {
-            Pick::Chosen(choice) => NotePath::new(&choice)?,
+            Pick::Chosen(choice) => TextPath::try_from(NotePath::new(&choice)?)?,
             Pick::Aborted => return Ok(ExitCode::SUCCESS),
         },
     };
@@ -125,7 +125,11 @@ async fn list_paths(backend: &Backend) -> Result<Vec<String>> {
 fn parse_paths(text: &str) -> Vec<String> {
     text.lines()
         .map(str::trim)
-        .filter(|line| line.ends_with(".md"))
+        .filter(|line| {
+            NotePath::new(line)
+                .and_then(TextPath::try_from)
+                .is_ok_and(|path| path.as_ref() != &NotePath::default())
+        })
         .map(str::to_string)
         .collect()
 }
@@ -133,7 +137,7 @@ fn parse_paths(text: &str) -> Vec<String> {
 async fn edit_note(
     backend: &Backend,
     editor: &TextEditor,
-    path: NotePath,
+    path: TextPath,
     force: bool,
 ) -> Result<ExitCode> {
     let original = match read_note(backend, &path).await {
@@ -199,7 +203,7 @@ async fn edit_note(
     }
 }
 
-async fn read_note(backend: &Backend, path: &NotePath) -> Result<TextNote> {
+async fn read_note(backend: &Backend, path: &TextPath) -> Result<TextNote> {
     let call = ToolCall::new(ReadArgs::new(path.clone()))?;
     match backend.invoke(&call).await? {
         ToolOutput::Text(s) => Ok(TextNote::new(path.clone(), s)),
@@ -228,10 +232,10 @@ mod tests {
 
     #[test]
     fn parse_paths_keeps_notes_and_drops_blanks_and_non_notes() {
-        let text = "Inbox.md\n\n  projects/ideas.md  \nprojects/diagram.png\n";
+        let text = "/Inbox\n\n  /projects/ideas  \n/projects/diagram.md\n/dev/#2\n";
         assert_eq!(
             parse_paths(text),
-            vec!["Inbox.md".to_string(), "projects/ideas.md".to_string()]
+            vec!["/Inbox".to_string(), "/projects/ideas".to_string()]
         );
     }
 

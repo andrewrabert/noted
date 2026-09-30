@@ -127,6 +127,12 @@ impl From<Timestamp> for String {
     }
 }
 
+impl From<Timestamp> for chrono::DateTime<chrono::FixedOffset> {
+    fn from(at: Timestamp) -> chrono::DateTime<chrono::FixedOffset> {
+        at.0
+    }
+}
+
 impl std::fmt::Display for Timestamp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&zoned(self.0, INSTANT))

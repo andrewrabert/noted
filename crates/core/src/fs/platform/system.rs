@@ -1,16 +1,15 @@
 use std::collections::BTreeMap;
-use std::path::Path as StdPath;
+use std::path::{Path as StdPath, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
 use grep_searcher::{Searcher, SearcherBuilder, SinkContext, SinkMatch};
 use ignore::overrides::OverrideBuilder;
 use ignore::types::TypesBuilder;
-use ignore::{IncrementalIgnore, WalkBuilder, WalkState};
+use ignore::{WalkBuilder, WalkState};
 
 use crate::disk::{atomic_create, atomic_write, normalize};
 use crate::error::{NotedError, Result, io_error, rejected, unavailable};
-use crate::platform::Entry;
 use crate::search::{GlobPattern, SearchMode, SearchOrder, SearchQuery};
 use crate::store::RawHit;
 use crate::util::case_order;
@@ -103,81 +102,29 @@ fn parented(at: &StdPath, context: &'static str) -> Result<()> {
     }
 }
 
-pub(crate) async fn entries(base: &StdPath, dir: &StdPath, deep: bool) -> Result<Vec<Entry>> {
-    let base = base.to_path_buf();
+pub(crate) async fn exists(abs: &StdPath) -> bool {
+    let abs = abs.to_path_buf();
+    blocking(move || abs.exists()).await.unwrap_or(false)
+}
+
+pub(crate) async fn walk(dir: &StdPath, max_depth: Option<usize>) -> Result<Vec<PathBuf>> {
     let dir = dir.to_path_buf();
     blocking(move || {
-        let mut gate = gate(&base);
-        let mut out = Vec::new();
-        listed(&mut gate, &base, &dir, deep, "", &mut out);
-        out
+        walk_builder(&dir)
+            .max_depth(max_depth)
+            .build()
+            .flatten()
+            .filter(|entry| entry.depth() > 0)
+            .filter_map(|entry| {
+                entry
+                    .path()
+                    .strip_prefix(&dir)
+                    .ok()
+                    .map(StdPath::to_path_buf)
+            })
+            .collect()
     })
     .await
-}
-
-fn listed(
-    gate: &mut IncrementalIgnore,
-    base: &StdPath,
-    dir: &StdPath,
-    deep: bool,
-    prefix: &str,
-    out: &mut Vec<Entry>,
-) {
-    let Ok(found) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in found.flatten() {
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
-        if kind.is_symlink() {
-            continue;
-        }
-        let path = entry.path();
-        let Some(rel) = path.strip_prefix(base).ok().map(|at| at.to_string_lossy()) else {
-            continue;
-        };
-        if gate.matched(rel.as_ref(), kind.is_dir()).is_ignore() {
-            continue;
-        }
-        let name = format!("{prefix}{}", entry.file_name().to_string_lossy());
-        out.push(Entry {
-            is_dir: kind.is_dir(),
-            modified: entry.metadata().ok().and_then(|meta| meta.modified().ok()),
-            name: name.clone(),
-        });
-        if deep && kind.is_dir() {
-            listed(gate, base, &path, deep, &format!("{name}/"), out);
-        }
-    }
-}
-
-pub(crate) async fn ignored(base: &StdPath, abs: &StdPath) -> Result<bool> {
-    let base = base.to_path_buf();
-    let abs = abs.to_path_buf();
-    blocking(move || {
-        let Ok(rel) = abs.strip_prefix(&base) else {
-            return true;
-        };
-        gate(&base)
-            .matched(rel.to_string_lossy().as_ref(), abs.is_dir())
-            .is_ignore()
-    })
-    .await
-}
-
-pub(crate) fn crosses_symlink(base: &StdPath, abs: &StdPath) -> bool {
-    let Ok(rel) = normalize(abs).strip_prefix(base).map(StdPath::to_path_buf) else {
-        return true;
-    };
-    let mut walked = base.to_path_buf();
-    for part in rel.components() {
-        walked.push(part);
-        if std::fs::symlink_metadata(&walked).is_ok_and(|meta| meta.file_type().is_symlink()) {
-            return true;
-        }
-    }
-    false
 }
 
 pub(crate) fn host() -> String {
@@ -186,26 +133,18 @@ pub(crate) fn host() -> String {
         .unwrap_or_default()
 }
 
-// the tree's only ignore configuration: '.ignore' and '.gitignore' as the
-// ignore crate reads them, rooted at the notes root
+// the tree's walk configuration, rooted at the notes root; '.ignore' and
+// '.gitignore' files are not honored
 fn walk_builder(base: &StdPath) -> WalkBuilder {
     let mut wb = WalkBuilder::new(base);
     wb.hidden(false)
         .parents(false)
-        .ignore(true)
-        .git_ignore(true)
+        .ignore(false)
+        .git_ignore(false)
         .git_global(false)
         .git_exclude(false)
         .require_git(false);
     wb
-}
-
-// that same configuration as a matcher for a path reached without a walk
-fn gate(base: &StdPath) -> IncrementalIgnore {
-    match walk_builder(base).build_matchers().into_iter().next() {
-        Some(gate) => gate,
-        None => unreachable!("a walk builder always carries its root"),
-    }
 }
 
 pub(crate) async fn grep(

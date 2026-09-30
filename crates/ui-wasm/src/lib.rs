@@ -326,15 +326,15 @@ impl State {
             dest: String::new(),
             delete_armed: false,
             tasks: Vec::new(),
-            prefix: String::new(),
+            prefix: String::from("/"),
             include_completed: false,
             task_match: String::new(),
             matched_tasks: None,
             selected_task: None,
             new_task: String::new(),
-            new_group: String::new(),
+            new_group: String::from("/"),
             task_notes: text_editor::Content::new(),
-            dest_group: String::new(),
+            dest_group: String::from("/"),
             log: text_editor::Content::new(),
             log_filter: String::new(),
             since: String::new(),
@@ -1314,7 +1314,7 @@ mod tests {
         let (host, mut state) = authed();
         state.open = Some("Inbox.md".to_string());
         state.tasks = vec![TaskRow {
-            path: "dev/task_0001".to_string(),
+            path: "dev/#1".to_string(),
             state: Some(TaskState::Created),
             task: "do it".to_string(),
             updated_at: String::new(),

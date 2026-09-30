@@ -78,7 +78,7 @@ pub struct LogArgs {
 #[derive(Debug, Clone, Serialize)]
 pub struct CreateTaskArgs {
     pub task: String,
-    pub group: String,
+    pub dir: String,
     pub notes: String,
 }
 
@@ -103,7 +103,7 @@ pub struct UpdateTaskArgs {
 #[derive(Debug, Clone, Serialize)]
 pub struct MoveTaskArgs {
     pub path: String,
-    pub group: String,
+    pub dest: String,
 }
 
 fn raw(name: &str, args: impl Serialize) -> noted::Result<ToolCall> {
@@ -244,12 +244,12 @@ pub fn log_note(body: &str) -> noted::Result<ToolCall> {
     )
 }
 
-pub fn create_task(task: &str, group: &str, notes: &str) -> noted::Result<ToolCall> {
+pub fn create_task(task: &str, dir: &str, notes: &str) -> noted::Result<ToolCall> {
     raw(
         "CreateTask",
         CreateTaskArgs {
             task: task.to_string(),
-            group: group.to_string(),
+            dir: dir.to_string(),
             notes: notes.to_string(),
         },
     )
@@ -283,12 +283,12 @@ pub fn update_task(
     )
 }
 
-pub fn move_task(path: &str, group: &str) -> noted::Result<ToolCall> {
+pub fn move_task(path: &str, dest: &str) -> noted::Result<ToolCall> {
     raw(
         "MoveTask",
         MoveTaskArgs {
             path: path.to_string(),
-            group: group.to_string(),
+            dest: dest.to_string(),
         },
     )
 }

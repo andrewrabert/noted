@@ -39,7 +39,7 @@ async fn client_http_success_roundtrip() {
     )
     .await
     .unwrap();
-    assert_eq!(out.render(), "wrote /r.md");
+    assert_eq!(out.render(), "wrote /r");
     assert_eq!(
         std::fs::read_to_string(common::notes_root(&dir).join("r.md")).unwrap(),
         "hi"

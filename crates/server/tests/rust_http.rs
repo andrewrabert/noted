@@ -38,7 +38,7 @@ async fn tool_search_fixed_glob_and_hidden_flags() {
         json_body(&b)["ok"]["data"]
             .as_str()
             .unwrap()
-            .contains("projects/ideas.md")
+            .contains("projects/ideas")
     );
 
     // case/word/type are absent from the MCP schema yet must still deserialize
@@ -222,7 +222,7 @@ async fn a_tools_call_posted_under_a_public_path_is_unauthorized() {
 }
 
 #[tokio::test]
-async fn a_read_only_key_lists_its_task_group_but_never_writes_it() {
+async fn a_read_only_key_lists_its_task_directory_but_never_writes_it() {
     let dir = common::fixture_dir();
     let (app, t) = keyed_app(
         &dir,
@@ -230,11 +230,7 @@ async fn a_read_only_key_lists_its_task_group_but_never_writes_it() {
     )
     .await;
     common::root(&dir)
-        .task_create(
-            &"seed".parse().unwrap(),
-            &"dev".parse().unwrap(),
-            &"".into(),
-        )
+        .task_create(&"seed".parse().unwrap(), &common::dp("dev"), &"".into())
         .await
         .unwrap();
 
@@ -244,17 +240,11 @@ async fn a_read_only_key_lists_its_task_group_but_never_writes_it() {
         &app,
         "/tool/CreateTask",
         Some(&t),
-        &json!({"task": "x", "group": "dev"}),
+        &json!({"task": "x", "dir": "dev"}),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
-    let (s, _) = post_json(
-        &app,
-        "/tool/MoveTask",
-        Some(&t),
-        &json!({"path": "dev/task_0001"}),
-    )
-    .await;
+    let (s, _) = post_json(&app, "/tool/MoveTask", Some(&t), &json!({"path": "dev/#1"})).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
 
@@ -295,7 +285,7 @@ async fn a_write_only_key_confines_notes_while_an_open_key_admits_tasks() {
         &app,
         "/tool/CreateTask",
         Some(&t),
-        &json!({"task": "y", "group": "ops"}),
+        &json!({"task": "y", "dir": "ops"}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -380,7 +370,7 @@ async fn mcp_stateless_needs_no_session() {
         json_body(&b)["result"]["content"][0]["text"]
             .as_str()
             .unwrap()
-            .contains("projects/ideas.md")
+            .contains("projects/ideas")
     );
 }
 

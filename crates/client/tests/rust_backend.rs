@@ -85,7 +85,7 @@ async fn http_detail_is_surfaced() {
 #[tokio::test]
 async fn local_backend_invokes_core_tools_and_enforces_policy() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("a.md"), "hello\n").unwrap();
+    std::fs::write(dir.path().join("a"), "hello\n").unwrap();
     let local = |policy| {
         Backend::new(BackendArgs::Local {
             dir: noted::NotedDir::new(dir.path().to_path_buf()),

@@ -1,11 +1,11 @@
 mod common;
 
-use common::{backend, confined_backend, fixture_dir, invoke, root};
+use common::{backend, confined_backend, dp, fixture_dir, invoke, note, root, write};
 use noted::{Note as _, NotedRoot};
 use serde_json::{Value, json};
 
-const JUNE: &str = "/2026-06-15T08-30-00.000000-0700.md";
-const JULY: &str = "/2026-07-01T09-00-00.000000-0700.md";
+const JUNE: &str = "/@2026-06-15T08:30:00.000000-07:00";
+const JULY: &str = "/@2026-07-01T09:00:00.000000-07:00";
 
 async fn records(backend: &NotedRoot, args: Value) -> Vec<Value> {
     let out = invoke(backend, "GetLog", args).await.unwrap();
@@ -38,9 +38,11 @@ async fn get_lists_the_log_newest_first() {
 async fn an_entry_stamped_with_garbage_is_skipped() {
     let dir = fixture_dir();
     let root = backend(&dir);
-    let garbage = "2026-07-02T09-00-00.000000-0700.md";
+    let garbage = "2026-07-02T09:00:00.000000-07:00";
+    let entry = common::notes_root(&dir).join(".logs").join(garbage);
+    std::fs::create_dir_all(&entry).unwrap();
     std::fs::write(
-        common::notes_root(&dir).join(".logs").join(garbage),
+        entry.join(".log.md"),
         "---\ncreated: X\ncwd: /tmp\nhost: testhost\nsource: seed\n---\nnotes-mcp garbage\n",
     )
     .unwrap();
@@ -171,15 +173,56 @@ async fn search_matches_log_text_newest_first() {
 async fn search_is_scoped_to_the_log() {
     let dir = fixture_dir();
     let root = backend(&dir);
-    // "contacts" appears only in the open region
+    // "contacts" appears only in an ordinary note
     assert!(
         search(&root, json!({"pattern": "contacts"}))
             .await
             .is_empty()
     );
     let listed = search(&root, json!({"mode": "path"})).await;
-    assert!(listed.lines().all(|p| p.starts_with("/20")), "{listed}");
+    assert!(listed.lines().all(|p| p.starts_with("/@20")), "{listed}");
     assert_eq!(listed.lines().count(), 2, "{listed}");
+}
+
+#[tokio::test]
+async fn entries_float_and_the_prefix_narrows_to_them() {
+    let dir = fixture_dir();
+    let bknd = backend(&dir);
+    let root = root(&dir);
+    let nested = root
+        .log_note(&dp("/dev"), &"NESTEDLOG\n".into())
+        .await
+        .unwrap();
+    let spelled = nested.path().to_string();
+    assert!(spelled.starts_with("/dev/@20"), "{spelled}");
+    let stamp = spelled.trim_start_matches("/dev/@");
+    assert!(
+        common::notes_root(&dir)
+            .join("dev/.logs")
+            .join(stamp)
+            .join(".log.md")
+            .is_file()
+    );
+
+    // a note inside an entry is not an entry
+    write(
+        &root,
+        &note(&format!("{spelled}/inside.md"), "NESTEDLOG in a note\n"),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        paths(&bknd, json!({"prefix": "dev"})).await,
+        vec![spelled.clone()]
+    );
+    assert_eq!(
+        paths(&bknd, json!({})).await.len(),
+        3,
+        "every depth by default"
+    );
+    let found = search(&bknd, json!({"pattern": "NESTEDLOG", "mode": "file"})).await;
+    assert_eq!(found.lines().collect::<Vec<_>>(), vec![spelled.as_str()]);
 }
 
 #[tokio::test]
@@ -225,7 +268,10 @@ async fn search_refuses_an_unusable_pattern() {
 #[tokio::test]
 async fn a_minted_entry_writes_the_fields_in_order() {
     let dir = fixture_dir();
-    let entry = root(&dir).log_note(&"minted\n".into()).await.unwrap();
+    let entry = root(&dir)
+        .log_note(&dp("/"), &"minted\n".into())
+        .await
+        .unwrap();
     let text = String::from_utf8(entry.to_bytes()).unwrap();
     let block = text
         .strip_prefix("---\n")

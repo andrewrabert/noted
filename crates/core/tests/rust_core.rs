@@ -1,8 +1,9 @@
 mod common;
 
 use common::{
-    backend, fixture_dir, found, grep, invoke, note, notes_root, query, read, root, rp, write,
+    backend, dp, fixture_dir, found, grep, invoke, note, notes_root, query, read, root, rp, write,
 };
+use noted::TextPath;
 use noted::note::{Condition, Etag, Note};
 use noted::search::{CaseMode, SearchMode};
 use noted::util::{atomic_write, slice_lines};
@@ -46,16 +47,20 @@ async fn write_creates_parents_and_leaves_no_temp() {
 }
 
 #[tokio::test]
-async fn the_log_region_is_unreachable_through_the_note_tools() {
+async fn a_log_entry_record_is_unreachable_through_the_note_tools() {
     let dir = fixture_dir();
     let root = root(&dir);
-    let entry = "/.logs/2026-07-01T09-00-00.000000-0700.md";
+    for record in [
+        "/.logs/2026-07-01T09:00:00.000000-07:00/.log.md",
+        "/@2026-07-01T09:00:00.000000-07:00/.log.md",
+    ] {
+        assert!(
+            noted::NotePath::new(record).is_err(),
+            "a log entry record is not a note path: {record}"
+        );
+    }
     assert!(
-        noted::NotePath::new(entry).is_err(),
-        "a log entry is not a note path"
-    );
-    assert!(
-        read(&root, "/2026-07-01T09-00-00.000000-0700.md")
+        read(&root, "/@2026-07-01T09:00:00.000000-07:00")
             .await
             .is_err()
     );
@@ -66,16 +71,17 @@ async fn log_note_writes_one_file_with_front_matter() {
     let dir = fixture_dir();
     let root = root(&dir);
     let logged = root
-        .log_note(&"did a thing\n-- t · s".into())
+        .log_note(&dp("/"), &"did a thing\n-- t · s".into())
         .await
         .unwrap();
     let rel = logged.path().to_string();
-    assert!(rel.starts_with("/20"), "{rel}");
-    let file = rel.trim_start_matches('/').to_string();
-    let on_disk = std::fs::read_to_string(notes_root(&dir).join(".logs").join(&file)).unwrap();
+    assert!(rel.starts_with("/@20"), "{rel}");
+    let file = rel.trim_start_matches("/@").to_string();
+    let record = notes_root(&dir).join(".logs").join(&file).join(".log.md");
+    let on_disk = std::fs::read_to_string(&record).unwrap();
     let text = String::from_utf8(logged.to_bytes()).unwrap();
     assert_eq!(text, on_disk);
-    assert_eq!(logged.etag(), note(&rel, &on_disk).etag());
+    assert_eq!(logged.etag(), note("/written.md", &on_disk).etag());
 
     assert!(text.starts_with("---\n"));
     assert!(text.ends_with('\n'));
@@ -85,8 +91,7 @@ async fn log_note_writes_one_file_with_front_matter() {
     assert!(text.contains("source: test"));
     assert!(text.contains("did a thing"));
 
-    let entry = notes_root(&dir).join(".logs").join(&file);
-    let mut written: Vec<String> = std::fs::read_dir(entry.parent().unwrap())
+    let mut written: Vec<String> = std::fs::read_dir(notes_root(&dir).join(".logs"))
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
@@ -94,11 +99,11 @@ async fn log_note_writes_one_file_with_front_matter() {
     assert_eq!(
         written,
         vec![
-            "2026-06-15T08-30-00.000000-0700.md".to_string(),
-            "2026-07-01T09-00-00.000000-0700.md".to_string(),
+            "2026-06-15T08:30:00.000000-07:00".to_string(),
+            "2026-07-01T09:00:00.000000-07:00".to_string(),
             file.clone(),
         ],
-        "the entry lands flat beside the others, leaving no temp file"
+        "the entry lands beside the others, leaving no temp file"
     );
 }
 
@@ -106,7 +111,10 @@ async fn log_note_writes_one_file_with_front_matter() {
 async fn log_note_records_no_source_when_the_caller_has_none() {
     let dir = fixture_dir();
     let root = noted::NotedRoot::open(noted::store::NotedDir::new(notes_root(&dir)), None).unwrap();
-    let logged = root.log_note(&"anonymous\n".into()).await.unwrap();
+    let logged = root
+        .log_note(&dp("/"), &"anonymous\n".into())
+        .await
+        .unwrap();
     let text = String::from_utf8(logged.to_bytes()).unwrap();
     assert!(!text.contains("source:"), "{text}");
 }
@@ -117,7 +125,10 @@ async fn delete_moves_to_trash_and_uniquifies() {
     let root = root(&dir);
 
     let original = read(&root, "/Inbox.md").await.unwrap();
-    let trashed = root.note_delete(&rp("/Inbox.md")).await.unwrap();
+    let trashed = root
+        .note_delete(&TextPath::try_from(rp("/Inbox.md")).unwrap())
+        .await
+        .unwrap();
     assert_eq!(trashed.path().to_string(), "/Inbox.md");
     assert!(read(&root, "/Inbox.md").await.is_err());
     assert_eq!(
@@ -130,7 +141,10 @@ async fn delete_moves_to_trash_and_uniquifies() {
     write(&root, &note("/old-idea.md", "different\n"))
         .await
         .unwrap();
-    let uniq = root.note_delete(&rp("/old-idea.md")).await.unwrap();
+    let uniq = root
+        .note_delete(&TextPath::try_from(rp("/old-idea.md")).unwrap())
+        .await
+        .unwrap();
     assert_eq!(uniq.path().to_string(), "/old-idea.md");
     assert_eq!(
         std::fs::read_to_string(notes_root(&dir).join(".trash").join("old-idea 1.md")).unwrap(),
@@ -138,7 +152,9 @@ async fn delete_moves_to_trash_and_uniquifies() {
     );
 
     assert!(matches!(
-        root.note_delete(&rp("/ghost.md")).await.unwrap_err(),
+        root.note_delete(&TextPath::try_from(rp("/ghost.md")).unwrap())
+            .await
+            .unwrap_err(),
         noted::NotedError::NotFound
     ));
 }
@@ -149,61 +165,59 @@ async fn move_semantics() {
     let root = root(&dir);
 
     let body = read(&root, "/Inbox.md").await.unwrap();
-    root.note_move(&rp("/Inbox.md"), &rp("/Inbox2.md"), false)
-        .await
-        .unwrap();
+    root.note_move(
+        &TextPath::try_from(rp("/Inbox.md")).unwrap(),
+        &TextPath::try_from(rp("/Inbox2.md")).unwrap(),
+        false,
+    )
+    .await
+    .unwrap();
     assert_eq!(read(&root, "/Inbox2.md").await.unwrap(), body);
 
     assert!(matches!(
-        root.note_move(&rp("/Inbox2.md"), &rp("/projects/ideas.md"), false)
-            .await
-            .unwrap_err(),
+        root.note_move(
+            &TextPath::try_from(rp("/Inbox2.md")).unwrap(),
+            &TextPath::try_from(rp("/projects/ideas.md")).unwrap(),
+            false
+        )
+        .await
+        .unwrap_err(),
         noted::NotedError::Conflict
     ));
-    root.note_move(&rp("/Inbox2.md"), &rp("/projects/ideas.md"), true)
-        .await
-        .unwrap();
+    root.note_move(
+        &TextPath::try_from(rp("/Inbox2.md")).unwrap(),
+        &TextPath::try_from(rp("/projects/ideas.md")).unwrap(),
+        true,
+    )
+    .await
+    .unwrap();
     assert_eq!(read(&root, "/projects/ideas.md").await.unwrap(), body);
 
     assert!(matches!(
-        root.note_move(&rp("/ghost.md"), &rp("/d.md"), false)
-            .await
-            .unwrap_err(),
+        root.note_move(
+            &TextPath::try_from(rp("/ghost.md")).unwrap(),
+            &TextPath::try_from(rp("/d.md")).unwrap(),
+            false
+        )
+        .await
+        .unwrap_err(),
         noted::NotedError::NotFound
     ));
     assert!(
-        root.note_move(&rp("/daily"), &rp("/daily"), false)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("same")
-    );
-    assert!(
-        root.note_move(&rp("/projects"), &rp("/projects/sub"), false)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("into itself")
+        root.note_move(
+            &TextPath::try_from(rp("/daily.md")).unwrap(),
+            &TextPath::try_from(rp("/daily.md")).unwrap(),
+            false
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("same")
     );
 }
 
 #[tokio::test]
-async fn move_onto_nonempty_folder_is_rejected() {
-    let dir = fixture_dir();
-    let root = root(&dir);
-    write(&root, &note("/srcd/a.md", "a")).await.unwrap();
-    write(&root, &note("/dstd/b.md", "b")).await.unwrap();
-    assert!(
-        root.note_move(&rp("/srcd"), &rp("/dstd"), true)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("non-empty folder")
-    );
-}
-
-#[tokio::test]
-async fn note_search_walks_the_open_region_only() {
+async fn note_search_skips_task_and_entry_records() {
     let dir = fixture_dir();
     let root = root(&dir);
 
@@ -223,6 +237,18 @@ async fn note_search_walks_the_open_region_only() {
     .unwrap();
     assert!(grep(&root, "UNIQUETASKBODY").await.unwrap().is_empty());
     assert!(found(&root, ".tasks").await.unwrap().is_empty());
+
+    // a note kept inside a task is an ordinary note
+    write(&root, &note("/#1/inside.md", "UNIQUEINSIDE\n"))
+        .await
+        .unwrap();
+    let inside: Vec<String> = grep(&root, "UNIQUEINSIDE")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|hit| hit.path.to_string())
+        .collect();
+    assert_eq!(inside, vec!["/#1/inside.md".to_string()]);
 
     let contacts = found(&root, "contacts").await.unwrap();
     assert!(contacts.iter().any(|p| p == "/people/contacts.md"));
@@ -292,7 +318,10 @@ async fn search_pattern_and_glob_edges() {
         .note_search(&scoped("Inbox.md", "Inbox"))
         .await
         .unwrap();
-    assert!(hits.iter().any(|h| h.path == rp("/Inbox.md")));
+    assert!(
+        hits.iter()
+            .any(|h| h.path == TextPath::try_from(rp("/Inbox.md")).unwrap())
+    );
 }
 
 #[tokio::test]
@@ -301,9 +330,9 @@ async fn search_feature_flags() {
     let root = root(&dir);
 
     std::fs::write(notes_root(&dir).join("lit.md"), "a.b\naxb\n").unwrap();
-    let lines = |hits: &[noted::search::Hit]| -> usize {
+    let lines = |hits: &[noted::search::Hit<noted::TextPath>]| -> usize {
         hits.iter()
-            .filter(|h| h.path == rp("/lit.md"))
+            .filter(|h| h.path == TextPath::try_from(rp("/lit.md")).unwrap())
             .map(|h| h.lines.len())
             .sum()
     };
@@ -327,11 +356,19 @@ async fn search_feature_flags() {
             .iter()
             .any(|h| h.path.to_string().starts_with("/people/"))
     );
-    assert!(paths.iter().any(|h| h.path == rp("/Inbox.md")));
+    assert!(
+        paths
+            .iter()
+            .any(|h| h.path == TextPath::try_from(rp("/Inbox.md")).unwrap())
+    );
 
     let markdown = query(".", SearchMode::Path).types(vec!["md".parse().unwrap()]);
     let md_paths = root.note_search(&markdown).await.unwrap();
-    assert!(md_paths.iter().any(|h| h.path == rp("/Inbox.md")));
+    assert!(
+        md_paths
+            .iter()
+            .any(|h| h.path == TextPath::try_from(rp("/Inbox.md")).unwrap())
+    );
 }
 
 #[test]
@@ -430,22 +467,31 @@ async fn edit_replaces_and_refuses_ambiguity() {
     write(&root, &note("/e.md", "one two one\n")).await.unwrap();
 
     assert!(
-        root.note_edit(&rp("/e.md"), &noted::note::Edit::new("one", "1", false))
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("not unique")
+        root.note_edit(
+            &TextPath::try_from(rp("/e.md")).unwrap(),
+            &noted::note::Edit::new("one", "1", false)
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("not unique")
     );
     assert!(
-        root.note_edit(&rp("/e.md"), &noted::note::Edit::new("zzz", "1", false))
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("not found")
-    );
-    root.note_edit(&rp("/e.md"), &noted::note::Edit::new("one", "1", true))
+        root.note_edit(
+            &TextPath::try_from(rp("/e.md")).unwrap(),
+            &noted::note::Edit::new("zzz", "1", false)
+        )
         .await
-        .unwrap();
+        .unwrap_err()
+        .to_string()
+        .contains("not found")
+    );
+    root.note_edit(
+        &TextPath::try_from(rp("/e.md")).unwrap(),
+        &noted::note::Edit::new("one", "1", true),
+    )
+    .await
+    .unwrap();
     assert_eq!(read(&root, "/e.md").await.unwrap(), "1 two 1\n");
 }
 

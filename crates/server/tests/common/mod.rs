@@ -9,11 +9,11 @@ use std::sync::Arc;
 use axum::Router;
 use axum::http::{HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
-use noted::NotePath;
 use noted::note::{Condition, TextNote};
 use noted::search::{Hit, SearchMode, SearchQuery};
 use noted::store::NotedDir;
 use noted::types::Source;
+use noted::{DirPath, NotePath, TextPath};
 use noted::{NotedRoot, PolicyFragment};
 use noted_auth::AuthService;
 use noted_auth::authority::{Mint, Minter, OriginAuthority, Verified};
@@ -38,12 +38,16 @@ pub fn rp(s: &str) -> NotePath {
     NotePath::new(s).unwrap()
 }
 
+pub fn dp(s: &str) -> DirPath {
+    DirPath::try_from(rp(s)).unwrap()
+}
+
 pub fn note(rel: &str, content: &str) -> TextNote {
-    TextNote::new(rp(rel), content)
+    TextNote::new(TextPath::try_from(rp(rel)).unwrap(), content)
 }
 
 pub async fn read(root: &NotedRoot, rel: &str) -> noted::Result<String> {
-    root.note_read(&rp(rel))
+    root.note_read(&TextPath::try_from(rp(rel)).unwrap())
         .await
         .map(|n| n.body().as_str().to_string())
 }
@@ -60,7 +64,7 @@ pub fn query(pattern: &str, mode: SearchMode) -> SearchQuery {
     SearchQuery::new(pattern.parse().unwrap(), mode)
 }
 
-pub async fn grep(root: &NotedRoot, pattern: &str) -> noted::Result<Vec<Hit>> {
+pub async fn grep(root: &NotedRoot, pattern: &str) -> noted::Result<Vec<Hit<TextPath>>> {
     root.note_search(&query(pattern, SearchMode::Line)).await
 }
 

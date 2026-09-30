@@ -33,7 +33,7 @@ impl fmt::Display for AccessFragment {
 }
 
 /// One holder's narrowing. `scope` deepens the holder's subtree; `paths` are
-/// read from that scope and apply the same way in every region.
+/// read from that scope and apply the same way to notes, log entries and tasks.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyFragment {

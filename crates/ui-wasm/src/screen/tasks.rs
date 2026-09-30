@@ -5,10 +5,15 @@ use iced::{Element, Fill};
 use crate::{Editor, Message, State, TaskRow, TaskState, editor, labeled_input};
 
 pub fn view(state: &State) -> Element<'_, Message> {
-    column![controls(state), grid(state), create(state), regroup(state),]
-        .spacing(10)
-        .height(Fill)
-        .into()
+    column![
+        controls(state),
+        grid(state),
+        create(state),
+        move_task(state),
+    ]
+    .spacing(10)
+    .height(Fill)
+    .into()
 }
 
 fn controls(state: &State) -> Element<'_, Message> {
@@ -72,7 +77,7 @@ fn create(state: &State) -> Element<'_, Message> {
     .into()
 }
 
-fn regroup(state: &State) -> Element<'_, Message> {
+fn move_task(state: &State) -> Element<'_, Message> {
     let selected = state.selected_task.as_deref().unwrap_or("no task selected");
     row![
         text(selected.to_string()).width(240),

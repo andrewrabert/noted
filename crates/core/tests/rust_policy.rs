@@ -1,21 +1,17 @@
 mod common;
 
-use common::{confined, found, grep, held, note, notes_root, read, rp, write};
+use common::{confined, dp, found, grep, held, note, notes_root, read, rp, write};
 use noted::note::LogQuery;
 use noted::store::NotedDir;
-use noted::tasks::{GroupPath, TaskNote, TaskQuery, TaskRef, TaskTitle};
-use noted::{NotedRoot, PolicyFragment};
-
-fn gp(s: &str) -> GroupPath {
-    s.parse().unwrap()
-}
+use noted::tasks::{TaskNote, TaskQuery, TaskTitle};
+use noted::{NotePath, NotedRoot, PolicyFragment, TaskPath, TextPath};
 
 fn tt(s: &str) -> TaskTitle {
     s.parse().unwrap()
 }
 
-async fn create(root: &NotedRoot, task: &str, group: &str) -> noted::Result<TaskNote> {
-    root.task_create(&tt(task), &gp(group), &"".into()).await
+async fn create(root: &NotedRoot, task: &str, dir: &str) -> noted::Result<TaskNote> {
+    root.task_create(&tt(task), &dp(dir), &"".into()).await
 }
 
 async fn all_tasks(root: &NotedRoot) -> Vec<String> {
@@ -29,6 +25,7 @@ async fn all_tasks(root: &NotedRoot) -> Vec<String> {
 
 async fn log_paths(root: &NotedRoot) -> Vec<String> {
     root.log_get(&LogQuery {
+        prefix: Default::default(),
         range: Default::default(),
         query: Default::default(),
         limit: 100,
@@ -92,14 +89,22 @@ async fn a_denied_path_refuses_both_ends_of_a_move() {
     assert!(read(&root, "/people/contacts.md").await.is_err());
     assert!(write(&root, &note("/people/x.md", "y")).await.is_err());
     assert!(
-        root.note_move(&rp("/projects/ideas.md"), &rp("/people/moved.md"), false)
-            .await
-            .is_err()
+        root.note_move(
+            &TextPath::try_from(rp("/projects/ideas.md")).unwrap(),
+            &TextPath::try_from(rp("/people/moved.md")).unwrap(),
+            false
+        )
+        .await
+        .is_err()
     );
     assert!(
-        root.note_move(&rp("/projects/ideas.md"), &rp("/projects/moved.md"), false)
-            .await
-            .is_ok()
+        root.note_move(
+            &TextPath::try_from(rp("/projects/ideas.md")).unwrap(),
+            &TextPath::try_from(rp("/projects/moved.md")).unwrap(),
+            false
+        )
+        .await
+        .is_ok()
     );
 }
 
@@ -112,7 +117,7 @@ async fn write_does_not_imply_read() {
 }
 
 #[tokio::test]
-async fn a_scope_addresses_the_notes_region_relatively() {
+async fn a_scope_addresses_notes_relatively() {
     let dir = common::fixture_dir();
     let root = confined(&dir, r#"{"scope":"/projects"}"#);
 
@@ -149,26 +154,26 @@ async fn a_search_lists_only_what_the_policy_admits() {
 }
 
 #[tokio::test]
-async fn the_task_region_mirrors_the_scope() {
+async fn tasks_mirror_the_scope() {
     let dir = common::fixture_dir();
     create(&common::root(&dir), "seed", "dev").await.unwrap();
 
     let root = confined(&dir, r#"{"scope":"/dev"}"#);
-    let made = create(&root, "scoped work", "").await.unwrap();
-    assert_eq!(made.path().to_string(), "task_0002");
+    let made = create(&root, "scoped work", "/").await.unwrap();
+    assert_eq!(made.path().to_string(), "/#2");
     assert!(
         common::notes_root(&dir)
-            .join(".tasks/dev/task_0002.md")
+            .join("dev/.tasks/2/.task.md")
             .is_file()
     );
 
     let mut paths = all_tasks(&root).await;
     paths.sort();
-    assert_eq!(paths, vec!["task_0001", "task_0002"]);
+    assert_eq!(paths, vec!["/#1", "/#2"]);
     assert!(
         all_tasks(&common::root(&dir))
             .await
-            .contains(&"dev/task_0002".to_string())
+            .contains(&"/dev/#2".to_string())
     );
 }
 
@@ -176,22 +181,28 @@ async fn the_task_region_mirrors_the_scope() {
 async fn a_single_task_can_be_granted_inside_a_read_only_scope() {
     let dir = common::fixture_dir();
     let seed = common::root(&dir);
-    create(&seed, "one", "").await.unwrap();
-    create(&seed, "two", "").await.unwrap();
+    create(&seed, "one", "/").await.unwrap();
+    create(&seed, "two", "/").await.unwrap();
 
     let root = confined(
         &dir,
-        r#"{"access":{"read":true,"write":false},"paths":{"/task_0001.md":{"read":true,"write":true}}}"#,
+        r#"{"access":{"read":true,"write":false},"paths":{"/#1":{"read":true,"write":true}}}"#,
     );
     assert!(
-        root.task_update(&TaskRef::new("task_0001").unwrap(), &Default::default())
-            .await
-            .is_ok()
+        root.task_update(
+            &TaskPath::try_from(NotePath::new("/#1").unwrap()).unwrap(),
+            &Default::default()
+        )
+        .await
+        .is_ok()
     );
     assert!(
-        root.task_update(&TaskRef::new("task_0002").unwrap(), &Default::default())
-            .await
-            .is_err()
+        root.task_update(
+            &TaskPath::try_from(NotePath::new("/#2").unwrap()).unwrap(),
+            &Default::default()
+        )
+        .await
+        .is_err()
     );
     assert_eq!(all_tasks(&root).await.len(), 2);
 }
@@ -202,20 +213,21 @@ async fn a_scoped_holder_sees_only_its_own_log() {
     let projects = confined(&dir, r#"{"scope":"/projects"}"#);
     let people = confined(&dir, r#"{"scope":"/people"}"#);
     let entry = projects
-        .log_note(&"from projects\n-- t · s".into())
+        .log_note(&dp("/"), &"from projects\n-- t · s".into())
         .await
         .unwrap();
     people
-        .log_note(&"from people\n-- t · s".into())
+        .log_note(&dp("/"), &"from people\n-- t · s".into())
         .await
         .unwrap();
 
     assert!(
         common::notes_root(&dir)
-            .join(".logs/projects")
-            .join(entry.path().to_string().trim_start_matches('/'))
+            .join("projects/.logs")
+            .join(entry.path().to_string().trim_start_matches("/@"))
+            .join(".log.md")
             .is_file(),
-        "a scoped entry lands in its own log directory"
+        "a scoped entry lands in its scope's own .logs directory"
     );
     assert_eq!(log_paths(&projects).await, vec![entry.path().to_string()]);
     assert_eq!(log_paths(&people).await.len(), 1);
@@ -223,27 +235,31 @@ async fn a_scoped_holder_sees_only_its_own_log() {
 }
 
 #[tokio::test]
-async fn a_scope_is_cumulative_across_the_three_regions() {
+async fn a_scope_is_cumulative_across_notes_logs_and_tasks() {
     let dir = common::fixture_dir();
     let root = confined(&dir, r#"{"scope":"/a/b"}"#);
     write(&root, &note("/kept.md", "x")).await.unwrap();
-    let entry = root.log_note(&"scoped\n-- t · s".into()).await.unwrap();
-    create(&root, "scoped work", "").await.unwrap();
+    let entry = root
+        .log_note(&dp("/"), &"scoped\n-- t · s".into())
+        .await
+        .unwrap();
+    create(&root, "scoped work", "/").await.unwrap();
 
     let notes = common::notes_root(&dir);
     assert!(notes.join("a/b/kept.md").is_file());
     assert!(
         notes
-            .join(".logs/a/b")
-            .join(entry.path().to_string().trim_start_matches('/'))
+            .join("a/b/.logs")
+            .join(entry.path().to_string().trim_start_matches("/@"))
+            .join(".log.md")
             .is_file()
     );
-    assert!(notes.join(".tasks/a/b/task_0001.md").is_file());
+    assert!(notes.join("a/b/.tasks/1/.task.md").is_file());
 }
 
-// a key is read from the scope and applies the same way in every region
+// a key is read from the scope and applies the same way to notes and tasks
 #[tokio::test]
-async fn a_key_applies_uniformly_across_the_three_regions() {
+async fn a_key_applies_uniformly_to_notes_and_tasks() {
     let dir = common::fixture_dir();
     let root = confined(
         &dir,
@@ -263,9 +279,13 @@ async fn a_scope_cannot_widen_a_denial() {
         r#"{"scope":"/dev"}"#,
     ];
     let root = chained(&dir, chain).unwrap();
-    assert!(root.log_note(&"nope\n-- t · s".into()).await.is_err());
+    assert!(
+        root.log_note(&dp("/"), &"nope\n-- t · s".into())
+            .await
+            .is_err()
+    );
     assert!(log_paths(&root).await.is_empty());
-    assert!(create(&root, "nope", "").await.is_err());
+    assert!(create(&root, "nope", "/").await.is_err());
 
     let names = tool_names(&dir, chain.iter().map(|text| held(text)).collect());
     assert!(names.is_empty(), "{names:?}");
@@ -286,10 +306,10 @@ async fn a_scope_cannot_widen_a_denied_task_group() {
     assert!(create(&root, "kept", "y").await.is_ok());
 }
 
-// the region directories have no wire spelling: no scope, key, or note path
-// can name them
+// the dot directories and records have no wire spelling: no scope, key, or
+// note path can name them
 #[test]
-fn the_reserved_regions_are_unspellable() {
+fn reserved_names_are_unspellable() {
     for text in [
         r#"{"scope":"/.logs"}"#,
         r#"{"scope":"/.tasks/dev"}"#,
@@ -298,10 +318,12 @@ fn the_reserved_regions_are_unspellable() {
         assert!(text.parse::<PolicyFragment>().is_err(), "accepted {text}");
     }
     for spelled in [
-        "/.logs/x.md",
-        "/.tasks/x.md",
-        "/.trash/x.md",
-        "/a/.hidden.md",
+        "/.logs/x",
+        "/.tasks/x",
+        "/#1/.task.md",
+        "/dev/.log.md",
+        "/.trash/x",
+        "/a/.hidden",
     ] {
         assert!(noted::NotePath::new(spelled).is_err(), "accepted {spelled}");
     }
@@ -324,7 +346,7 @@ fn described(dir: &tempfile::TempDir, name: &str, grants: Vec<PolicyFragment>) -
 }
 
 #[test]
-fn allowed_tools_follow_the_regions() {
+fn allowed_tools_follow_access() {
     let dir = common::fixture_dir();
     let all = tool_names(&dir, vec![]);
     assert!(all.contains(&"LogNote") && all.contains(&"DeleteNote"));
@@ -341,8 +363,8 @@ fn allowed_tools_follow_the_regions() {
 fn a_tool_description_tells_a_scoped_client_where_things_land() {
     let dir = common::fixture_dir();
     let scoped = || vec![held(r#"{"scope":"/projects"}"#)];
-    assert!(described(&dir, "CreateTask", scoped()).ends_with("Tasks are scoped to /projects."));
-    assert!(described(&dir, "LogNote", scoped()).ends_with("Entries are scoped to /projects."));
+    assert!(described(&dir, "CreateTask", scoped()).ends_with("Paths are relative to /projects."));
+    assert!(described(&dir, "LogNote", scoped()).ends_with("Paths are relative to /projects."));
     assert!(described(&dir, "WriteNote", scoped()).ends_with("Paths are relative to /projects."));
     assert!(!described(&dir, "WriteNote", vec![]).contains("Paths are relative to"));
 }

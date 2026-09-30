@@ -1,19 +1,17 @@
 //! Domain: the segment grammar, the base path, and the types composed on it.
 //!
-//!   Segment   - one part; opaque; built only here, read via `as_str`
-//!   Path      - the base: a Segment list with the one spelling (`/`, `/a/b`)
-//!   NotePath  - Path + no dotted segment; measured from Scope; the public door
-//!   Region    - Notes, Log, Tasks; owns each base directory as a Path
+//!   Segment   - one part: a task, an entry or a name; built only here
+//!   Segments  - a Segment list; the one translation to and from the store
+//!   Path      - the base: Segments with the one spelling (`/`, `/a/b`)
+//!   NotePath  - Path + no dotted name; measured from Scope; the public door
 
 pub(crate) mod notepath;
 pub(crate) mod path;
-pub(crate) mod region;
 pub(crate) mod segment;
 
-pub use notepath::NotePath;
+pub(crate) use notepath::TaskDirPath;
+pub use notepath::{DirPath, LogPath, NotePath, TaskPath, TextPath};
 pub(crate) use path::Path;
-pub(crate) use region::Region;
-pub(crate) use segment::Segment;
 
 /// Source guards: each rule names a token that may appear only where stated.
 /// The failure line reads `<file>: <n> x <token> <rule>`.
@@ -52,9 +50,9 @@ mod guards {
             whole_token: true,
         },
         Rule {
-            name: "appears only in the two server-minting files, root/log.rs and root/task.rs",
+            name: "appears only in domain/segment.rs",
             needle: concat!("\".", "md\""),
-            allowed: &["/src/root/log.rs", "/src/root/task.rs"],
+            allowed: &["/src/domain/segment.rs"],
             whole_token: false,
         },
     ];

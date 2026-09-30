@@ -1,44 +1,29 @@
 use std::cmp::Reverse;
 use std::ops::RangeBounds as _;
 
-use chrono::{DateTime, FixedOffset, Local};
+use chrono::{DateTime, FixedOffset, Local, TimeDelta};
 
-use crate::domain::NotePath;
+use crate::domain::{DirPath, LogPath};
 use crate::error::{NotedError, Result, rejected};
 use crate::note::{LogFront, LogNote, LogQuery, Note as _};
-use crate::regions::RegionStore;
+use crate::policy_store::PolicyStore;
 use crate::search::Hit;
 use crate::types::{LogBody, Source, Timestamp};
 
-/// 2026-08-03T09-15-30.123456-0700
-const STAMP: &str = "%Y-%m-%dT%H-%M-%S.%6f%z";
-
-fn stamp_of(name: &str) -> Option<DateTime<FixedOffset>> {
-    DateTime::parse_from_str(name.get(..31)?, STAMP).ok()
-}
-
-// the instant an entry's name carries, read from its last segment
-fn stamped(path: &NotePath) -> Result<DateTime<FixedOffset>> {
-    path.segments()
-        .last()
-        .and_then(|name| stamp_of(name.as_str()))
-        .ok_or_else(|| rejected(format!("{path}: not a log entry name")))
-}
-
 pub(super) struct LogTools {
-    region: RegionStore,
+    store: PolicyStore,
     source: Option<Source>,
 }
 
 impl LogTools {
-    pub(super) fn new(region: RegionStore, source: Option<Source>) -> LogTools {
-        LogTools { region, source }
+    pub(super) fn new(store: PolicyStore, source: Option<Source>) -> LogTools {
+        LogTools { store, source }
     }
 
-    pub(super) async fn note(&self, body: &LogBody) -> Result<LogNote> {
-        let now = Local::now();
+    pub(super) async fn note(&self, dir: &DirPath, body: &LogBody) -> Result<LogNote> {
+        let created = Timestamp::at(Local::now().fixed_offset());
         let front = LogFront {
-            created: Timestamp::at(now.fixed_offset()),
+            created,
             cwd: std::env::current_dir()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default(),
@@ -46,16 +31,20 @@ impl LogTools {
             source: self.source.clone(),
         };
 
-        let stamp = now.format(STAMP).to_string();
-        for name in LogTools::spare_stamps(&stamp) {
-            let entry = LogNote::new(NotePath::new(&name)?, front.clone(), body.as_str());
+        // the instant itself, then each following microsecond, for a directory
+        // that already holds an entry at it
+        let start = DateTime::<FixedOffset>::from(created);
+        for n in 0i64..1000 {
+            let at = Timestamp::at(start + TimeDelta::microseconds(n));
+            let entry = LogNote::new(LogPath::new(dir, at)?, front.clone(), body.as_str());
+            let file = self
+                .store
+                .policy()
+                .writeable(entry.path().as_ref())?
+                .file()?;
             match self
-                .region
-                .write(
-                    entry.path(),
-                    &entry.to_bytes(),
-                    crate::note::Condition::Missing,
-                )
+                .store
+                .write(&file, &entry.to_bytes(), crate::note::Condition::Missing)
                 .await
             {
                 Ok(()) => return Ok(entry),
@@ -66,18 +55,15 @@ impl LogTools {
         Err(rejected("could not allocate a log entry name"))
     }
 
-    fn spare_stamps(stamp: &str) -> impl Iterator<Item = String> {
-        let stamp = stamp.to_string();
-        (0u64..1000).map(move |n| match n {
-            0 => format!("/{stamp}.md"),
-            n => format!("/{stamp}-{n}.md"),
-        })
+    async fn read(&self, path: &LogPath) -> Result<Vec<u8>> {
+        let file = self.store.policy().readable(path.as_ref())?.file()?;
+        self.store.read(&file).await
     }
 
     pub(super) async fn get(&self, query: &LogQuery) -> Result<Vec<LogNote>> {
         let mut found = Vec::new();
         for path in self.within(query).await {
-            let Ok(bytes) = self.region.read(&path).await else {
+            let Ok(bytes) = self.read(&path).await else {
                 continue;
             };
             let Ok(entry) = LogNote::from_bytes(path, &bytes) else {
@@ -89,18 +75,29 @@ impl LogTools {
         Ok(found.into_iter().take(query.limit as usize).collect())
     }
 
-    pub(super) async fn search(&self, query: &LogQuery) -> Result<Vec<Hit>> {
+    pub(super) async fn search(&self, query: &LogQuery) -> Result<Vec<Hit<LogPath>>> {
         let hits = self
-            .region
-            .search(&NotePath::default(), &query.query)
-            .await?;
+            .store
+            .search(&query.prefix, &query.query)
+            .await?
+            .into_iter()
+            .filter_map(|hit| {
+                Some(Hit {
+                    path: LogPath::try_from(hit.path).ok()?,
+                    lines: hit.lines,
+                })
+            })
+            .collect();
 
         let mut dated = Vec::new();
         for hit in query.query.assemble(hits)? {
-            if !stamped(&hit.path).is_ok_and(|at| query.range.contains(&at)) {
+            if !query
+                .range
+                .contains(&DateTime::<FixedOffset>::from(hit.path.created()))
+            {
                 continue;
             }
-            let Ok(bytes) = self.region.read(&hit.path).await else {
+            let Ok(bytes) = self.read(&hit.path).await else {
                 continue;
             };
             let Ok(entry) = LogNote::from_bytes(hit.path.clone(), &bytes) else {
@@ -116,15 +113,21 @@ impl LogTools {
             .collect())
     }
 
-    async fn within(&self, query: &LogQuery) -> Vec<NotePath> {
-        let names = self.region.walk(&NotePath::default()).await;
-        names
+    async fn within(&self, query: &LogQuery) -> Vec<LogPath> {
+        self.store
+            .walk(&query.prefix, None)
+            .await
             .into_iter()
-            .filter(|path| stamped(path).is_ok_and(|at| query.range.contains(&at)))
+            .filter_map(|at| LogPath::try_from(at).ok())
+            .filter(|path| {
+                query
+                    .range
+                    .contains(&DateTime::<FixedOffset>::from(path.created()))
+            })
             .collect()
     }
 
-    fn newest_first(entry: &LogNote) -> (Reverse<Timestamp>, NotePath) {
+    fn newest_first(entry: &LogNote) -> (Reverse<Timestamp>, LogPath) {
         (Reverse(entry.front().created), entry.path().clone())
     }
 }

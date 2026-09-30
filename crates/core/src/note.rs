@@ -4,7 +4,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::domain::NotePath;
+use crate::domain::{DirPath, LogPath, NotePath, TextPath};
 use crate::error::{NotedError, Result, rejected};
 use crate::front_matter::{FrontMatter, split_front};
 use crate::search::SearchQuery;
@@ -145,19 +145,19 @@ pub trait Note {
 /// a log's immutability.
 #[derive(Clone, Debug)]
 pub struct TextNote {
-    path: NotePath,
+    path: TextPath,
     body: NoteBody,
 }
 
 impl TextNote {
-    pub fn new(path: NotePath, body: impl Into<NoteBody>) -> TextNote {
+    pub fn new(path: TextPath, body: impl Into<NoteBody>) -> TextNote {
         TextNote {
             path,
             body: body.into(),
         }
     }
 
-    pub fn path(&self) -> &NotePath {
+    pub fn path(&self) -> &TextPath {
         &self.path
     }
 
@@ -174,7 +174,7 @@ impl TextNote {
         self
     }
 
-    pub fn with_path(mut self, path: NotePath) -> TextNote {
+    pub fn with_path(mut self, path: TextPath) -> TextNote {
         self.path = path;
         self
     }
@@ -215,6 +215,7 @@ impl LogFront {
 }
 
 pub struct LogQuery {
+    pub prefix: DirPath,
     pub range: TimeRange,
     pub query: SearchQuery,
     pub limit: u32,
@@ -222,13 +223,13 @@ pub struct LogQuery {
 
 #[derive(Debug)]
 pub struct LogNote {
-    path: NotePath,
+    path: LogPath,
     front: LogFront,
     body: String,
 }
 
 impl LogNote {
-    pub(crate) fn new(path: NotePath, front: LogFront, body: impl Into<String>) -> LogNote {
+    pub(crate) fn new(path: LogPath, front: LogFront, body: impl Into<String>) -> LogNote {
         LogNote {
             path,
             front,
@@ -236,7 +237,7 @@ impl LogNote {
         }
     }
 
-    pub(crate) fn from_bytes(path: NotePath, bytes: &[u8]) -> Result<LogNote> {
+    pub(crate) fn from_bytes(path: LogPath, bytes: &[u8]) -> Result<LogNote> {
         let text = std::str::from_utf8(bytes).map_err(|_| rejected("not a log entry"))?;
         let (block, body) = split_front(text).ok_or_else(|| rejected("not a log entry"))?;
         let front = FrontMatter::parse(block).map_err(|_| rejected("not a log entry"))?;
@@ -244,7 +245,7 @@ impl LogNote {
         Ok(LogNote::new(path, front, body))
     }
 
-    pub fn path(&self) -> &NotePath {
+    pub fn path(&self) -> &LogPath {
         &self.path
     }
 

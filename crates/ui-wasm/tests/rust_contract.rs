@@ -71,8 +71,8 @@ fn every_call() -> Vec<ToolCall> {
         api::log_note("something happened"),
         api::create_task("do it", "dev/noted", "notes"),
         api::get_tasks("dev", true, false),
-        api::update_task("dev/noted/task_0001", Some("started"), None, None),
-        api::move_task("dev/noted/task_0001", "ops"),
+        api::update_task("dev/noted/#1", Some("started"), None, None),
+        api::move_task("dev/noted/#1", "ops"),
     ]
     .into_iter()
     .map(|call| call.expect("a registered tool"))
@@ -167,7 +167,7 @@ fn every_payload() -> Vec<(&'static str, Value)> {
             "CreateTask",
             args_of(api::CreateTaskArgs {
                 task: "do it".into(),
-                group: "dev/noted".into(),
+                dir: "dev/noted".into(),
                 notes: "notes".into(),
             }),
         ),
@@ -182,7 +182,7 @@ fn every_payload() -> Vec<(&'static str, Value)> {
         (
             "UpdateTask",
             args_of(api::UpdateTaskArgs {
-                path: "dev/noted/task_0001".into(),
+                path: "dev/noted/#1".into(),
                 state: Some("started".into()),
                 notes: None,
                 task: None,
@@ -191,8 +191,8 @@ fn every_payload() -> Vec<(&'static str, Value)> {
         (
             "MoveTask",
             args_of(api::MoveTaskArgs {
-                path: "dev/noted/task_0001".into(),
-                group: "ops".into(),
+                path: "dev/noted/#1".into(),
+                dest: "ops".into(),
             }),
         ),
     ]
@@ -285,9 +285,9 @@ fn the_response_envelope_is_the_one_the_ui_decodes() {
         },
         ToolOutput::Deleted { path: path("a.md") },
         ToolOutput::Logged {
-            path: path("2026/07/x.md"),
+            path: path("2026/07/x"),
         },
-        ToolOutput::Record(serde_json::json!([{"path": "dev/task_0001"}])),
+        ToolOutput::Record(serde_json::json!([{"path": "dev/#1"}])),
     ];
 
     for output in outputs {

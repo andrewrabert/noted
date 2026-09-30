@@ -2,12 +2,12 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{found, grep, note, read, rp, write};
+use common::{dp, found, grep, note, read, rp, write};
 
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use noted::NotedRoot;
-use noted::tasks::{GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskState, TaskTitle};
+use noted::tasks::{TaskChange, TaskNote, TaskQuery, TaskState, TaskTitle};
+use noted::{NotedRoot, TaskPath, TextPath};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -37,26 +37,23 @@ fn cores(dir: &tempfile::TempDir) -> NotedRoot {
     common::root(dir)
 }
 
-fn gp(s: &str) -> GroupPath {
-    s.parse().unwrap()
-}
 fn tt(s: &str) -> TaskTitle {
     s.parse().unwrap()
 }
-fn tr(s: &str) -> TaskRef {
-    s.parse().unwrap()
+fn tr(s: &str) -> TaskPath {
+    TaskPath::try_from(rp(s)).unwrap()
 }
 fn ts(s: &str) -> TaskState {
     s.parse().unwrap()
 }
 
-async fn create(root: &NotedRoot, task: &str, group: &str) -> noted::Result<TaskNote> {
-    root.task_create(&tt(task), &gp(group), &"".into()).await
+async fn create(root: &NotedRoot, task: &str, dir: &str) -> noted::Result<TaskNote> {
+    root.task_create(&tt(task), &dp(dir), &"".into()).await
 }
 
 async fn get(root: &NotedRoot, prefix: &str, include_completed: bool) -> Vec<TaskNote> {
     root.task_get(&TaskQuery {
-        prefix: tr(prefix),
+        prefix: dp(prefix),
         include_completed,
     })
     .await
@@ -103,19 +100,28 @@ async fn log_is_immutable_and_recoverable_delete() {
     let dir = fixture_dir();
     let root = cores(&dir);
     let rel = root
-        .log_note(&"entry\n-- t · s".into())
+        .log_note(&dp("/"), &"entry\n-- t · s".into())
         .await
         .unwrap()
         .path()
         .to_string();
-    assert!(rel.starts_with("/20"), "{rel}");
-    let spelled = format!("/.logs{rel}");
+    assert!(rel.starts_with("/@20"), "{rel}");
+    let record = format!("{rel}/.log.md");
     assert!(
-        noted::NotePath::new(&spelled).is_err(),
-        "a log entry is not a note path"
+        noted::NotePath::new(&record).is_err(),
+        "a log entry record is not a note path"
+    );
+    assert!(
+        root.note_delete(&TextPath::try_from(rp(&rel)).unwrap())
+            .await
+            .is_err(),
+        "entries are write-once"
     );
 
-    let trashed = root.note_delete(&rp("/Inbox.md")).await.unwrap();
+    let trashed = root
+        .note_delete(&TextPath::try_from(rp("/Inbox.md")).unwrap())
+        .await
+        .unwrap();
     assert_eq!(trashed.path(), &rp("/Inbox.md"));
     assert!(read(&root, "/Inbox.md").await.is_err());
 }
@@ -126,7 +132,10 @@ async fn search_content_and_path_exclude_trash() {
     let root = cores(&dir);
 
     let hits = grep(&root, "XYZZY").await.unwrap();
-    assert!(hits.iter().any(|h| h.path == rp("/projects/ideas.md")));
+    assert!(
+        hits.iter()
+            .any(|h| h.path == TextPath::try_from(rp("/projects/ideas.md")).unwrap())
+    );
 
     let normal = found(&root, "idea").await.unwrap();
     assert!(!normal.iter().any(|p| p.starts_with("/.trash/")));
@@ -141,48 +150,41 @@ async fn task_lifecycle_numbering_and_states() {
 
     let a = create(&root, "first", "dev/noted").await.unwrap();
     let b = create(&root, "second", "dev/noted").await.unwrap();
-    assert_eq!(a.path(), "dev/noted/task_0001");
-    assert_eq!(b.path(), "dev/noted/task_0002");
+    assert_eq!(a.path().to_string(), "/dev/noted/#1");
+    assert_eq!(b.path().to_string(), "/dev/noted/#2");
     assert_eq!(a.front().state, TaskState::Created);
 
     assert!(
-        advance(&root, "dev/noted/task_0001", "completed", None)
+        advance(&root, "dev/noted/#1", "completed", None)
             .await
             .is_err()
     );
-    let done = advance(
-        &root,
-        "dev/noted/task_0001",
-        "completed",
-        Some("shipped it"),
-    )
-    .await
-    .unwrap();
+    let done = advance(&root, "dev/noted/#1", "completed", Some("shipped it"))
+        .await
+        .unwrap();
     assert_eq!(done.front().state, TaskState::Completed);
 
     assert_eq!(get(&root, "dev/noted", false).await.len(), 1);
     assert_eq!(get(&root, "dev/noted", true).await.len(), 2);
 
-    let exact = get(&root, "dev/noted/task_0001", false).await;
+    let exact = get(&root, "dev/noted/#1", false).await;
     assert_eq!(exact.len(), 1);
     assert!(exact[0].body().as_str().contains("shipped it"));
 
     let moved = root
-        .task_move(&tr("dev/noted/task_0002"), &gp("dev/other"))
+        .task_move(&tr("dev/noted/#2"), &dp("dev/other"))
         .await
         .unwrap();
-    assert_eq!(moved.path(), "dev/other/task_0001");
-    assert!(get(&root, "dev/noted/task_0002", false).await.is_empty());
+    assert_eq!(moved.path().to_string(), "/dev/other/#1");
+    assert!(get(&root, "dev/noted/#2", false).await.is_empty());
 }
 
 #[tokio::test]
-async fn task_name_validation_and_escape() {
+async fn task_path_validation_and_escape() {
     let dir = fixture_dir();
     let root = cores(&dir);
-    assert!("bad name".parse::<GroupPath>().is_err());
-    assert!("1leading".parse::<GroupPath>().is_err());
-    assert!("../escape".parse::<GroupPath>().is_err());
-    assert!(create(&root, "x", "ok-group_2").await.is_ok());
+    assert!(noted::NotePath::new("../escape").is_err());
+    assert!(create(&root, "x", "any name").await.is_ok());
 }
 
 #[tokio::test]
@@ -191,10 +193,11 @@ async fn write_and_edit_refused_under_tasks() {
     let root = cores(&dir);
     create(&root, "t", "grp").await.unwrap();
     assert!(
-        noted::NotePath::new("/.tasks/grp/task_0001.md").is_err(),
-        "a task entry is not a note path"
+        noted::NotePath::new("/grp/.tasks/1/.task.md").is_err(),
+        "a task record is not a note path"
     );
-    assert!(read(&root, "/grp/task_0001.md").await.is_err());
+    assert!(read(&root, "/grp/#1").await.is_err());
+    assert!(write(&root, &note("/grp/#1", "x")).await.is_err());
 }
 
 async fn mcp_raw(app: &axum::Router, body: &Value) -> axum::response::Response {
@@ -436,5 +439,5 @@ async fn http_mcp_endpoint_roundtrip() {
         "params": {"name": "SearchNotes", "arguments": {"pattern": "XYZZY", "mode": "line"}}});
     let value = mcp_post(&app, &req).await;
     let text = value["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("projects/ideas.md"));
+    assert!(text.contains("projects/ideas"));
 }

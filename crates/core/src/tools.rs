@@ -3,17 +3,15 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::domain::{NotePath, Region};
+use crate::domain::{DirPath, LogPath, NotePath, TaskPath, TextPath};
 use crate::error::{Result, rejected};
 use crate::note::{Condition, Edit, LogNote, LogQuery, TextNote};
-use crate::policy::RegionPolicy;
+use crate::policy::Policy;
 use crate::root::NotedRoot;
 use crate::search::{
     CaseMode, FileType, GlobPattern, Hit, SearchMode, SearchOrder, SearchPattern, SearchQuery,
 };
-use crate::tasks::{
-    GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskState, TaskTitle,
-};
+use crate::tasks::{TaskChange, TaskNote, TaskQuery, TaskSearch, TaskState, TaskTitle};
 use crate::timerange::{TimeRange, TimeRangeBound};
 use crate::types::{LogBody, NoteBody, TaskBody};
 use crate::util::slice_lines;
@@ -27,27 +25,48 @@ impl clap::builder::ValueParserFactory for NotePath {
     }
 }
 
+impl clap::builder::ValueParserFactory for DirPath {
+    type Parser = clap::builder::ValueParser;
+    fn value_parser() -> Self::Parser {
+        clap::builder::ValueParser::new(|s: &str| NotePath::new(s).and_then(DirPath::try_from))
+    }
+}
+
+impl clap::builder::ValueParserFactory for TextPath {
+    type Parser = clap::builder::ValueParser;
+    fn value_parser() -> Self::Parser {
+        clap::builder::ValueParser::new(|s: &str| NotePath::new(s).and_then(TextPath::try_from))
+    }
+}
+
+impl clap::builder::ValueParserFactory for TaskPath {
+    type Parser = clap::builder::ValueParser;
+    fn value_parser() -> Self::Parser {
+        clap::builder::ValueParser::new(|s: &str| NotePath::new(s).and_then(TaskPath::try_from))
+    }
+}
+
+impl clap::builder::ValueParserFactory for LogPath {
+    type Parser = clap::builder::ValueParser;
+    fn value_parser() -> Self::Parser {
+        clap::builder::ValueParser::new(|s: &str| NotePath::new(s).and_then(LogPath::try_from))
+    }
+}
+
 pub struct ToolDef {
     pub name: &'static str,
     pub title: &'static str,
     pub description: &'static str,
-    pub(crate) dir: Region,
     pub input_schema: Value,
 }
 
 impl ToolDef {
-    // the description, followed by where this tool's region lands for a
-    // scoped holder
+    // the description, followed by the scope for a scoped holder
     pub(crate) fn described(&self, scope: &NotePath) -> String {
         let text = self.description;
-        let scoped = scope != &NotePath::default();
-        match (self.dir, scoped) {
-            (Region::Notes, false) => text.to_string(),
-            (Region::Notes, true) => format!("{text} Paths are relative to {scope}."),
-            (Region::Log, false) => text.to_string(),
-            (Region::Log, true) => format!("{text} Entries are scoped to {scope}."),
-            (Region::Tasks, false) => text.to_string(),
-            (Region::Tasks, true) => format!("{text} Tasks are scoped to {scope}."),
+        match scope == &NotePath::default() {
+            true => text.to_string(),
+            false => format!("{text} Paths are relative to {scope}."),
         }
     }
 }
@@ -95,7 +114,6 @@ struct ToolSpec {
     name: &'static str,
     title: &'static str,
     description: &'static str,
-    dir: Region,
     mode: Mode,
     schema: fn() -> Value,
 }
@@ -105,7 +123,6 @@ const TOOLS: &[ToolSpec] = &[
         name: "SearchNotes",
         title: "Search notes",
         description: D_SEARCH_NOTES,
-        dir: Region::Notes,
         mode: Mode::Read,
         schema: schema_of::<SearchNotesArgs>,
     },
@@ -113,7 +130,6 @@ const TOOLS: &[ToolSpec] = &[
         name: "SearchLog",
         title: "Search log",
         description: D_SEARCH_LOG,
-        dir: Region::Log,
         mode: Mode::Read,
         schema: schema_of::<SearchLogArgs>,
     },
@@ -121,7 +137,6 @@ const TOOLS: &[ToolSpec] = &[
         name: "SearchTasks",
         title: "Search tasks",
         description: D_SEARCH_TASKS,
-        dir: Region::Tasks,
         mode: Mode::Read,
         schema: schema_of::<SearchTasksArgs>,
     },
@@ -129,7 +144,6 @@ const TOOLS: &[ToolSpec] = &[
         name: "ReadNote",
         title: "Read note",
         description: D_READ,
-        dir: Region::Notes,
         mode: Mode::Read,
         schema: schema_of::<ReadArgs>,
     },
@@ -137,7 +151,6 @@ const TOOLS: &[ToolSpec] = &[
         name: "WriteNote",
         title: "Write note",
         description: D_WRITE,
-        dir: Region::Notes,
         mode: Mode::Write,
         schema: schema_of::<WriteArgs>,
     },
@@ -145,7 +158,6 @@ const TOOLS: &[ToolSpec] = &[
         name: "EditNote",
         title: "Edit note",
         description: D_EDIT,
-        dir: Region::Notes,
         mode: Mode::Write,
         schema: schema_of::<EditArgs>,
     },
@@ -153,7 +165,6 @@ const TOOLS: &[ToolSpec] = &[
         name: "MoveNote",
         title: "Move note",
         description: D_MOVE,
-        dir: Region::Notes,
         mode: Mode::Write,
         schema: schema_of::<MoveArgs>,
     },
@@ -161,7 +172,6 @@ const TOOLS: &[ToolSpec] = &[
         name: "DeleteNote",
         title: "Delete note",
         description: D_DELETE,
-        dir: Region::Notes,
         mode: Mode::Write,
         schema: schema_of::<DeleteArgs>,
     },
@@ -169,7 +179,6 @@ const TOOLS: &[ToolSpec] = &[
         name: "LogNote",
         title: "Log entry",
         description: D_LOG,
-        dir: Region::Log,
         mode: Mode::Write,
         schema: schema_of::<LogArgs>,
     },
@@ -177,7 +186,6 @@ const TOOLS: &[ToolSpec] = &[
         name: "GetLog",
         title: "Get log entries",
         description: D_GET_LOG,
-        dir: Region::Log,
         mode: Mode::Read,
         schema: schema_of::<GetLogArgs>,
     },
@@ -185,7 +193,6 @@ const TOOLS: &[ToolSpec] = &[
         name: "CreateTask",
         title: "Create task",
         description: D_CREATE_TASK,
-        dir: Region::Tasks,
         mode: Mode::Write,
         schema: schema_of::<CreateTaskArgs>,
     },
@@ -193,7 +200,6 @@ const TOOLS: &[ToolSpec] = &[
         name: "GetTasks",
         title: "Get tasks",
         description: D_GET_TASKS,
-        dir: Region::Tasks,
         mode: Mode::Read,
         schema: schema_of::<GetTasksArgs>,
     },
@@ -201,7 +207,6 @@ const TOOLS: &[ToolSpec] = &[
         name: "UpdateTask",
         title: "Update task",
         description: D_UPDATE_TASK,
-        dir: Region::Tasks,
         mode: Mode::Write,
         schema: schema_of::<UpdateTaskArgs>,
     },
@@ -209,7 +214,6 @@ const TOOLS: &[ToolSpec] = &[
         name: "MoveTask",
         title: "Move task",
         description: D_MOVE_TASK,
-        dir: Region::Tasks,
         mode: Mode::Write,
         schema: schema_of::<MoveTaskArgs>,
     },
@@ -250,42 +254,32 @@ pub(crate) fn is_tool(name: &str) -> bool {
     TOOLS.iter().any(|t| t.name == name)
 }
 
-pub(crate) fn permitted(
-    notes: &RegionPolicy,
-    log: &RegionPolicy,
-    tasks: &RegionPolicy,
-) -> Vec<&'static str> {
+pub(crate) fn permitted(policy: &Policy) -> Vec<&'static str> {
+    let access = policy.access();
     TOOLS
         .iter()
-        .filter(|t| {
-            let access = match t.dir {
-                Region::Notes => notes.access(),
-                Region::Log => log.access(),
-                Region::Tasks => tasks.access(),
-            };
-            match t.mode {
-                Mode::Read => access.read,
-                Mode::Write => access.write,
-            }
+        .filter(|t| match t.mode {
+            Mode::Read => access.read,
+            Mode::Write => access.write,
         })
         .map(|t| t.name)
         .collect()
 }
 
-const D_SEARCH_NOTES: &str = "Find notes by regular expression. 'pattern' is smart-case by default (case-insensitive unless it contains an uppercase letter; use '(?i)'/'(?-i)' to force) and defaults to '.' (matches everything, i.e. lists). 'mode' picks the result: 'any' (default) returns files matching by contents or path; 'line' returns 'path:lineno:text' matches ('--' between files) with 'context' surrounding lines; 'file' returns files whose contents match; 'path' returns files whose path matches. 'fixed' matches the pattern literally instead of as a regex. 'glob' restricts which paths are searched: a bare name scopes to that subtree/file, a '!'-prefixed entry excludes (repeatable). 'sort' orders the result: 'path' (default) is case-insensitive path order; 'modified' puts the most recently modified note first. Log entries and tasks are never searched here — use SearchLog and SearchTasks for those.";
-const D_SEARCH_LOG: &str = "Find log entries by regular expression. Searches the log region and nothing else; results come back newest entry first. 'pattern', 'mode', 'context' and 'fixed' work as in SearchNotes, except 'mode' defaults to 'line'. 'since', 'until' and 'limit' bound which entries are considered, exactly as in GetLog. There is no 'glob'.";
-const D_SEARCH_TASKS: &str = "Find tasks by regular expression. Searches tasks and nothing else; results come back newest-updated first, one task path per line (e.g. 'dev/noted/task_0001'). 'pattern', 'mode', 'context' and 'fixed' work as in SearchNotes. 'prefix' narrows to a group (e.g. 'dev') and defaults to the whole tree. Closed tasks (completed/rejected/invalid) are hidden unless include_completed is set. There is no 'glob' — the prefix is the only narrowing. Read a matched task in full with GetTasks.";
-const D_GET_LOG: &str = "Read log entries as summary records, newest first, without a pattern. 'since' and 'until' are inclusive bounds, each an iso8601 datetime ('2026-07-01T09:15'), a date ('2026-07-01'), a year or month ('2026', '2026-07'), or a duration back from now ('P7D', 'PT36H'); a coarse bound widens to its span. 'body' attaches each entry's text to the record. 'limit' caps the result (default 20, max 1000). Page by passing the oldest returned entry's 'created' back as 'until'. Always returns a JSON array. Use SearchLog to match text instead.";
+const D_SEARCH_NOTES: &str = "Find notes by regular expression. 'pattern' is smart-case by default (case-insensitive unless it contains an uppercase letter; use '(?i)'/'(?-i)' to force) and defaults to '.' (matches everything, i.e. lists). 'mode' picks the result: 'any' (default) returns files matching by contents or path; 'line' returns 'path:lineno:text' matches ('--' between files) with 'context' surrounding lines; 'file' returns files whose contents match; 'path' returns files whose path matches. 'fixed' matches the pattern literally instead of as a regex. 'glob' restricts which paths are searched: a bare name scopes to that subtree/file, a '!'-prefixed entry excludes (repeatable). 'sort' orders the result: 'path' (default) is path order — at each level tasks by number, then log entries by instant, then names case-insensitively; 'modified' puts the most recently modified note first. Notes kept inside a task or log entry (e.g. 'dev/#2/plan.md') are searched like any other; the tasks and entries themselves are not — use SearchTasks and SearchLog for those.";
+const D_SEARCH_LOG: &str = "Find log entries by regular expression. Searches entry records and nothing else — notes kept inside an entry are not searched here; results come back newest entry first, one entry path per line (e.g. '/dev/@2026-08-03T09:15:30.123456-07:00'). 'pattern', 'mode', 'context' and 'fixed' work as in SearchNotes, except 'mode' defaults to 'line'. 'prefix' narrows to a subtree — a directory such as 'dev', or a task or entry path to search the entries scoped inside it — and defaults to the whole tree. 'since', 'until' and 'limit' bound which entries are considered, exactly as in GetLog. There is no 'glob' — the prefix is the only narrowing.";
+const D_SEARCH_TASKS: &str = "Find tasks by regular expression. Searches task records and nothing else — notes kept inside a task are not searched here; results come back newest-updated first, one task path per line (e.g. '/dev/#2'). 'pattern', 'mode', 'context' and 'fixed' work as in SearchNotes. 'prefix' narrows to a subtree — a directory such as 'dev', or a task or entry path to search the tasks scoped inside it — and defaults to the whole tree. Closed tasks (completed/rejected/invalid) are hidden unless include_completed is set. There is no 'glob' — the prefix is the only narrowing. Read a matched task in full with GetTasks.";
+const D_GET_LOG: &str = "Read log entries as summary records, newest first, without a pattern. 'prefix' narrows the tree: '/' (the default) = every entry at any depth; a directory (e.g. 'dev') or a task or entry path = every entry under it, entries scoped inside tasks and other entries included. 'since' and 'until' are inclusive bounds, each an iso8601 datetime ('2026-07-01T09:15'), a date ('2026-07-01'), a year or month ('2026', '2026-07'), or a duration back from now ('P7D', 'PT36H'); a coarse bound widens to its span. 'body' attaches each entry's text to the record. 'limit' caps the result (default 20, max 1000). Page by passing the oldest returned entry's 'created' back as 'until'. Always returns a JSON array. Use SearchLog to match text instead.";
 const D_READ: &str = "Read a note's text by relative path. Use offset/limit to page.";
-const D_WRITE: &str = "Write a note, overwriting it. Creates parent directories. Never use for logging or timestamped entries — those must go through LogNote. Log entries and tasks are refused: log entries are write-once, and a task is created with CreateTask and changed with UpdateTask/MoveTask.";
+const D_WRITE: &str = "Write a note, overwriting it. Creates parent directories. Never use for logging or timestamped entries — those must go through LogNote. A task or log entry path is refused: a task is created with CreateTask and changed with UpdateTask/MoveTask, and an entry is write-once; but notes inside either (e.g. 'dev/#2/plan.md') are ordinary notes and may be written here.";
 const D_EDIT: &str = "Revise a note in place via string-replace.";
-const D_MOVE: &str = "Move or rename a note or folder within the tree. A folder moves its whole subtree. Creates missing parent dirs. 'overwrite' replaces an existing file; a non-empty destination folder is refused.";
-const D_DELETE: &str = "Delete a note by relative path. Removal is recoverable by an operator but not undoable through these tools.";
-const D_LOG: &str = "Append an immutable, timestamped log entry. 'body' is free-form; all metadata (created time with offset, cwd, host) is captured automatically into the entry's front matter — nothing to fill in. The entry's file name is the instant it was written and CANNOT be edited, moved, or deleted through these tools; entries are write-once. Read them back with GetLog or SearchLog.";
-const D_CREATE_TASK: &str = "START HERE for any non-trivial unit of work. Opens a task as a searchable note, returning its summary record (path, state). 'task' is a one-line statement of the work; optional 'notes' seeds the markdown body; optional 'group' places it in a (nested, auto-created) subdirectory — e.g. group='dev/noted'. noted assigns the filename automatically (the next 'task_NNNN' in that group); the task is thereafter identified by its group path plus name (e.g. 'dev/noted/task_0001'). Group and task names must start with a letter and use only letters/digits/'-'/'_'. State starts 'created'. Afterward, change a task with UpdateTask (state/notes) or MoveTask (group); do NOT use WriteNote/EditNote — they are refused for tasks. States: created (not started), started (in progress), blocked (stuck), completed (work finished), rejected (declined/refused), invalid (task was ill-posed or moot). 'completed' means the work is genuinely finished; if you are giving up, use rejected/invalid — never mark 'completed'. blocked/completed/rejected/invalid require a non-empty body explaining why.";
-const D_GET_TASKS: &str = "Check this BEFORE starting new work to recover existing tasks. Reads tasks as summary records, newest-updated first. 'prefix' narrows the tree: empty = the whole tree; a group (e.g. 'dev') = that subtree; an exact task path (e.g. 'dev/noted/task_0001') = just that one task. 'body' attaches each task's markdown notes (the working body) to the record — use it to read a specific task in full. Closed tasks (completed/rejected/invalid) are hidden unless include_completed is set (an exact task path is always returned). Always returns a JSON array. Change a task with UpdateTask/MoveTask.";
-const D_UPDATE_TASK: &str = "Change an existing task, identified by its path (e.g. 'dev/noted/task_0001'). Set 'state' to advance it, 'notes' to replace the working body, and/or 'task' to reword the one-liner; omitted fields are left as-is. Returns the updated summary. States: created (not started), started (in progress), blocked (stuck), completed (work finished), rejected (declined/refused), invalid (ill-posed/moot); blocked/completed/rejected/invalid require a non-empty body explaining why. created_at is immutable; updated_at is stamped for you.";
-const D_MOVE_TASK: &str = "Change a task's group. Re-homes the task (identified by its current path) into another group; a numbered task is given a fresh 'task_NNNN' in the destination (so its path changes), a custom-named task keeps its name. 'group' is the destination subdirectory (nested, auto-created); '' moves it to the top level. updated_at is re-stamped. Returns the summary at its new path.";
+const D_MOVE: &str = "Move or rename a note.";
+const D_DELETE: &str = "Delete a note file by relative path (e.g. 'proj/ideas.md'). A task or log entry path is refused: a task changes only through the task tools, and entries are write-once. Removal is recoverable by an operator but not undoable through these tools.";
+const D_LOG: &str = "Append an immutable, timestamped log entry. 'body' is free-form; all metadata (created time with offset, cwd, host) is captured automatically into the entry's front matter — nothing to fill in. Optional 'dir' is the directory to write it in: a folder (auto-created, e.g. 'dev') or a task or entry path (e.g. 'dev/#2') to scope it inside that task or entry; it defaults to the top of the tree. The entry's path is 'dir' plus '@' and the instant it was written (e.g. 'dev/@2026-08-03T09:15:30.123456-07:00'); it CANNOT be edited, moved, or deleted through these tools — entries are write-once. An entry is a directory: notes may be written inside it with the note tools. Read entries back with GetLog or SearchLog.";
+const D_CREATE_TASK: &str = "START HERE for any non-trivial unit of work. Opens a task, returning its summary record (path, state). 'task' is a one-line statement of the work; optional 'notes' seeds the markdown body; optional 'dir' is the directory to create it in: a folder (auto-created, e.g. 'dev/noted'), another task's path (e.g. 'dev/#2') or a log entry's path, to scope the new task inside it; it defaults to the top of the tree. noted numbers the task for you: its path is 'dir' plus '#N', where N is one more than the largest task number already in that directory (e.g. 'dev/noted/#3'). State starts 'created'. A task is a directory: write notes inside it with the note tools (e.g. 'dev/noted/#3/plan.md'), but change the task itself only with UpdateTask (state/notes/title) or MoveTask (directory) — WriteNote/EditNote/MoveNote are refused on a task path. States: created (not started), started (in progress), blocked (stuck), completed (work finished), rejected (declined/refused), invalid (task was ill-posed or moot). 'completed' means the work is genuinely finished; if you are giving up, use rejected/invalid — never mark 'completed'. blocked/completed/rejected/invalid require a non-empty body explaining why.";
+const D_GET_TASKS: &str = "Check this BEFORE starting new work to recover existing tasks. Reads tasks as summary records, newest-updated first. 'prefix' narrows the tree: '/' (the default) = every task at any depth; a directory (e.g. 'dev') or an entry path = every task under it, tasks scoped inside other tasks included; an exact task path (e.g. 'dev/#2') = just that one task. 'body' attaches each task's markdown notes (the working body) to the record — use it to read a specific task in full. Closed tasks (completed/rejected/invalid) are hidden unless include_completed is set (an exact task path is always returned). Always returns a JSON array. Change a task with UpdateTask/MoveTask.";
+const D_UPDATE_TASK: &str = "Change an existing task, identified by its path (e.g. 'dev/#2'). Set 'state' to advance it, 'notes' to replace the working body, and/or 'task' to reword the one-liner; omitted fields are left as-is. Returns the updated summary. States: created (not started), started (in progress), blocked (stuck), completed (work finished), rejected (declined/refused), invalid (ill-posed/moot); blocked/completed/rejected/invalid require a non-empty body explaining why. created_at is immutable; updated_at is set to now.";
+const D_MOVE_TASK: &str = "Move a task into another directory. 'path' is the task's current path; 'dest' is the directory to move it into: a folder (auto-created), another task's path or a log entry's path; '/' (the default) moves it to the top of the tree. The task is given the next free number in 'dest', so its path changes; everything inside it — its notes, and the tasks and entries scoped under it — moves with it, and each inner task keeps its own number. Moving a task into the directory it is already in, into itself, or beneath itself is refused. Returns the summary at its new path.";
 
 fn default_pattern() -> SearchPattern {
     SearchPattern::everything()
@@ -381,6 +375,9 @@ pub struct SearchLogArgs {
     #[arg(long)]
     #[serde(default)]
     fixed: bool,
+    #[arg(default_value = "/")]
+    #[serde(default)]
+    prefix: DirPath,
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     since: Option<TimeRangeBound>,
@@ -407,6 +404,7 @@ pub struct SearchLogArgs {
 impl SearchLogArgs {
     fn query(self) -> Result<LogQuery> {
         Ok(LogQuery {
+            prefix: self.prefix,
             range: TimeRange::new(self.since, self.until)?,
             query: SearchQuery::new(self.pattern, self.mode)
                 .context(self.context.max(0) as u32)
@@ -433,9 +431,9 @@ pub struct SearchTasksArgs {
     #[arg(long)]
     #[serde(default)]
     fixed: bool,
-    #[arg(default_value = "")]
+    #[arg(default_value = "/")]
     #[serde(default)]
-    prefix: GroupPath,
+    prefix: DirPath,
     #[arg(long = "include-completed")]
     #[serde(default)]
     include_completed: bool,
@@ -470,6 +468,9 @@ impl SearchTasksArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct GetLogArgs {
+    #[arg(default_value = "/")]
+    #[serde(default)]
+    prefix: DirPath,
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     since: Option<TimeRangeBound>,
@@ -487,6 +488,7 @@ pub struct GetLogArgs {
 impl GetLogArgs {
     fn query(self) -> Result<LogQuery> {
         Ok(LogQuery {
+            prefix: self.prefix,
             range: TimeRange::new(self.since, self.until)?,
             query: SearchQuery::default(),
             limit: self.limit.clamp(1, 1000) as u32,
@@ -496,7 +498,7 @@ impl GetLogArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct ReadArgs {
-    path: NotePath,
+    path: TextPath,
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     offset: Option<i64>,
@@ -506,7 +508,7 @@ pub struct ReadArgs {
 }
 
 impl ReadArgs {
-    pub fn new(path: NotePath) -> ReadArgs {
+    pub fn new(path: TextPath) -> ReadArgs {
         ReadArgs {
             path,
             offset: None,
@@ -517,7 +519,7 @@ impl ReadArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct WriteArgs {
-    path: NotePath,
+    path: TextPath,
     content: NoteBody,
     #[arg(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -526,7 +528,7 @@ pub struct WriteArgs {
 }
 
 impl WriteArgs {
-    pub fn new(path: NotePath, content: impl Into<NoteBody>) -> WriteArgs {
+    pub fn new(path: TextPath, content: impl Into<NoteBody>) -> WriteArgs {
         WriteArgs {
             path,
             content: content.into(),
@@ -542,7 +544,7 @@ impl WriteArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct EditArgs {
-    path: NotePath,
+    path: TextPath,
     old_string: String,
     new_string: String,
     #[arg(long = "replace-all")]
@@ -552,8 +554,8 @@ pub struct EditArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct MoveArgs {
-    path: NotePath,
-    dest: NotePath,
+    path: TextPath,
+    dest: TextPath,
     #[arg(long)]
     #[serde(default)]
     overwrite: bool,
@@ -561,20 +563,23 @@ pub struct MoveArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct DeleteArgs {
-    path: NotePath,
+    path: TextPath,
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct LogArgs {
+    #[arg(id = "path", value_name = "PATH")]
+    #[serde(default)]
+    dir: DirPath,
     body: LogBody,
 }
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct CreateTaskArgs {
-    task: TaskTitle,
-    #[arg(long, default_value = "")]
+    #[arg(id = "path", value_name = "PATH")]
     #[serde(default)]
-    group: GroupPath,
+    dir: DirPath,
+    task: TaskTitle,
     #[arg(long, default_value = "")]
     #[serde(default)]
     notes: TaskBody,
@@ -582,9 +587,9 @@ pub struct CreateTaskArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct GetTasksArgs {
-    #[arg(default_value = "")]
+    #[arg(default_value = "/")]
     #[serde(default)]
-    prefix: TaskRef,
+    prefix: DirPath,
     #[arg(long)]
     #[serde(default)]
     body: bool,
@@ -595,7 +600,7 @@ pub struct GetTasksArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct UpdateTaskArgs {
-    path: TaskRef,
+    path: TaskPath,
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     state: Option<TaskState>,
@@ -609,10 +614,10 @@ pub struct UpdateTaskArgs {
 
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 pub struct MoveTaskArgs {
-    path: TaskRef,
-    #[arg(default_value = "")]
+    path: TaskPath,
+    #[arg(default_value = "/")]
     #[serde(default)]
-    group: GroupPath,
+    dest: DirPath,
 }
 
 fn schema_of<T: JsonSchema>() -> Value {
@@ -636,7 +641,6 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             name: t.name,
             title: t.title,
             description: t.description,
-            dir: t.dir,
             input_schema: (t.schema)(),
         })
         .collect()
@@ -686,33 +690,37 @@ async fn run_local(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOut
             let note = TextNote::new(a.path, a.content);
             root.note_write(&note, a.when.unwrap_or_default()).await?;
             Ok(ToolOutput::Written {
-                path: note.path().clone(),
+                path: note.path().as_ref().clone(),
             })
         }
         "EditNote" => {
             let a: EditArgs = parse(args)?;
             let edit = Edit::new(a.old_string, a.new_string, a.replace_all);
             root.note_edit(&a.path, &edit).await?;
-            Ok(ToolOutput::Edited { path: a.path })
+            Ok(ToolOutput::Edited {
+                path: a.path.as_ref().clone(),
+            })
         }
         "MoveNote" => {
             let a: MoveArgs = parse(args)?;
             root.note_move(&a.path, &a.dest, a.overwrite).await?;
             Ok(ToolOutput::Moved {
-                from: a.path,
-                to: a.dest,
+                from: a.path.as_ref().clone(),
+                to: a.dest.as_ref().clone(),
             })
         }
         "DeleteNote" => {
             let a: DeleteArgs = parse(args)?;
             root.note_delete(&a.path).await?;
-            Ok(ToolOutput::Deleted { path: a.path })
+            Ok(ToolOutput::Deleted {
+                path: a.path.as_ref().clone(),
+            })
         }
         "LogNote" => {
             let a: LogArgs = parse(args)?;
-            let note = root.log_note(&a.body).await?;
+            let note = root.log_note(&a.dir, &a.body).await?;
             Ok(ToolOutput::Logged {
-                path: note.path().clone(),
+                path: note.path().as_ref().clone(),
             })
         }
         "GetLog" => {
@@ -728,7 +736,7 @@ async fn run_local(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOut
         }
         "CreateTask" => {
             let a: CreateTaskArgs = parse(args)?;
-            let task = root.task_create(&a.task, &a.group, &a.notes).await?;
+            let task = root.task_create(&a.task, &a.dir, &a.notes).await?;
             Ok(ToolOutput::Record(summary(&task, false)))
         }
         "GetTasks" => {
@@ -757,7 +765,7 @@ async fn run_local(name: &str, args: &Value, root: &NotedRoot) -> Result<ToolOut
         }
         "MoveTask" => {
             let a: MoveTaskArgs = parse(args)?;
-            let task = root.task_move(&a.path, &a.group).await?;
+            let task = root.task_move(&a.path, &a.dest).await?;
             Ok(ToolOutput::Record(summary(&task, false)))
         }
         _ => Err(rejected(format!("Unknown tool: {name}"))),

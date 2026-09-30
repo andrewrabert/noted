@@ -5,26 +5,26 @@ mod note;
 mod task;
 
 use crate::call::{ToolCall, ToolListing};
-use crate::domain::{NotePath, Region};
+use crate::domain::{DirPath, LogPath, NotePath, TaskPath, TextPath};
 use crate::error::Result;
 use crate::fragment::PolicyFragment;
 use crate::note::{Condition, Edit, LogNote, LogQuery, TextNote, Trashed};
-use crate::policy::RegionPolicy;
-use crate::regions::Regions;
+use crate::policy::Policy;
+use crate::policy_store::PolicyStore;
 use crate::search::{Hit, SearchQuery};
 use crate::store::NotedDir;
-use crate::tasks::{GroupPath, TaskChange, TaskNote, TaskQuery, TaskRef, TaskSearch, TaskTitle};
+use crate::tasks::{TaskChange, TaskNote, TaskQuery, TaskSearch, TaskTitle};
 use crate::tools::{ToolOutput, permitted, run_tool, tool_defs};
 use crate::types::{LogBody, Source, TaskBody};
 
-const INSTRUCTIONS: &str = "This is the user's personal notes \u{2014} the canonical place where they keep and organize their own notes, ideas, todos, and log entries as a nested tree of Markdown (.md) files. Whenever the user refers to 'my notes', asks to look something up, record or jot something down, or check what they've written before, use these tools instead of guessing or answering from memory. Search, read, write, edit, move, and delete notes by relative path (e.g. 'proj/ideas.md'). The tree has three regions and each has its own search tool: SearchNotes covers ordinary notes, SearchLog covers log entries, and SearchTasks covers tasks \u{2014} none of them reaches into another's region. Use LogNote to quickly capture an immutable, timestamped log entry (its metadata is auto-generated and it cannot be edited or deleted), then GetLog to list entries newest first or SearchLog to match their text. Track units of work with the task tools: CreateTask opens a task (optionally in a nested 'group', e.g. group='dev/noted'); GetTasks reads them (by group prefix, or an exact task path with body=true); UpdateTask advances one (state=created/started/blocked/completed/rejected/invalid); MoveTask changes a task's group. A task is identified by its group path plus name (e.g. 'dev/noted/task_0001'); tasks are managed only through these tools \u{2014} WriteNote/EditNote cannot touch tasks.";
+const INSTRUCTIONS: &str = "This is the user's personal notes \u{2014} the canonical place where they keep and organize their own notes, ideas, todos, and log entries as a nested tree of Markdown (.md) files. Whenever the user refers to 'my notes', asks to look something up, record or jot something down, or check what they've written before, use these tools instead of guessing or answering from memory. Search, read, write, edit, move, and delete notes by relative path (e.g. 'proj/ideas'). Tasks and log entries live in the same tree as notes: '#N' names task N inside the directory before it (e.g. 'dev/#2') and '@S' names the log entry written at instant S (e.g. 'dev/@2026-08-03T09:15:30.123456-07:00'). Both are directories, so notes, further tasks and further entries can live inside them (e.g. 'dev/#2/plan', 'dev/#2/#1'). Each kind has its own search tool: SearchNotes covers notes (including notes inside tasks and entries), SearchLog covers log entries, and SearchTasks covers tasks. Use LogNote to capture an immutable, timestamped log entry in any directory (its metadata is auto-generated and it cannot be edited or deleted), then GetLog to list entries newest first or SearchLog to match their text. Track units of work with the task tools: CreateTask opens a task in a directory (e.g. dir='dev/noted' creates 'dev/noted/#3'); GetTasks reads them (by directory prefix, or an exact task path with body=true); UpdateTask advances one (state=created/started/blocked/completed/rejected/invalid); MoveTask moves a task into another directory. A task itself is changed only through these tools \u{2014} WriteNote/EditNote/MoveNote are refused on a task or entry path.";
 
 use self::log::LogTools;
 use self::note::NoteTools;
 use self::task::TaskTools;
 
 struct Root {
-    regions: Regions,
+    store: PolicyStore,
     source: Option<Source>,
     note: NoteTools,
     log: LogTools,
@@ -36,29 +36,29 @@ pub struct NotedRoot(Arc<Root>);
 
 impl NotedRoot {
     pub fn open(dir: NotedDir, source: Option<Source>) -> Result<NotedRoot> {
-        let regions = Regions::open(dir)?;
+        let store = PolicyStore::open(dir)?;
         Ok(NotedRoot(Arc::new(Root {
-            note: NoteTools::new(regions.notes.clone()),
-            log: LogTools::new(regions.log.clone(), source.clone()),
-            task: TaskTools::new(regions.tasks.clone()),
-            regions,
+            note: NoteTools::new(store.clone()),
+            log: LogTools::new(store.clone(), source.clone()),
+            task: TaskTools::new(store.clone()),
+            store,
             source,
         })))
     }
 
     pub fn with_authority(&self, fragments: &[PolicyFragment]) -> Result<NotedRoot> {
         let source = self.0.source.clone();
-        let regions = fragments.iter().try_fold(
-            self.0.regions.clone(),
-            |regions: Regions, fragment| -> Result<Regions> {
-                regions.with_policy_fragment(fragment)
+        let store = fragments.iter().try_fold(
+            self.0.store.clone(),
+            |store: PolicyStore, fragment| -> Result<PolicyStore> {
+                store.with_policy_fragment(fragment)
             },
         )?;
         Ok(NotedRoot(Arc::new(Root {
-            note: NoteTools::new(regions.notes.clone()),
-            log: LogTools::new(regions.log.clone(), source.clone()),
-            task: TaskTools::new(regions.tasks.clone()),
-            regions,
+            note: NoteTools::new(store.clone()),
+            log: LogTools::new(store.clone(), source.clone()),
+            task: TaskTools::new(store.clone()),
+            store,
             source,
         })))
     }
@@ -68,12 +68,8 @@ impl NotedRoot {
     }
 
     pub fn tools(&self) -> Vec<ToolListing> {
-        let allowed = permitted(
-            self.policy(Region::Notes),
-            self.policy(Region::Log),
-            self.policy(Region::Tasks),
-        );
-        let scope = self.policy(Region::Notes).scope();
+        let allowed = permitted(self.policy());
+        let scope = self.policy().scope();
         tool_defs()
             .into_iter()
             .filter(|def| allowed.contains(&def.name))
@@ -88,40 +84,34 @@ impl NotedRoot {
 
     pub fn instructions(&self) -> String {
         let mut out = String::from(INSTRUCTIONS);
-        let scope = self.policy(Region::Notes).scope();
+        let scope = self.policy().scope();
         match scope == &NotePath::default() {
-            true => out.push_str(
-                " Notes live at the top of the tree. Tasks and log entries live in their own regions, reachable only through their tools.",
-            ),
+            true => out.push_str(" Notes, tasks and log entries all start at the top of the tree."),
             false => out.push_str(&format!(
                 " You are working in {scope}. Every path you write is relative to it. \
-Tasks you create land in its task region; log entries you write are stamped with it."
+Tasks and log entries you create land inside it."
             )),
         }
         out
     }
 
-    pub(crate) fn policy(&self, dir: Region) -> &RegionPolicy {
-        match dir {
-            Region::Notes => self.0.regions.notes.policy(),
-            Region::Log => self.0.regions.log.policy(),
-            Region::Tasks => self.0.regions.tasks.policy(),
-        }
+    pub(crate) fn policy(&self) -> &Policy {
+        self.0.store.policy()
     }
 
-    pub async fn note_search(&self, query: &SearchQuery) -> Result<Vec<Hit>> {
+    pub async fn note_search(&self, query: &SearchQuery) -> Result<Vec<Hit<TextPath>>> {
         self.0.note.search(query).await
     }
 
-    pub async fn log_search(&self, query: &LogQuery) -> Result<Vec<Hit>> {
+    pub async fn log_search(&self, query: &LogQuery) -> Result<Vec<Hit<LogPath>>> {
         self.0.log.search(query).await
     }
 
-    pub async fn task_search(&self, search: &TaskSearch) -> Result<Vec<Hit<TaskRef>>> {
+    pub async fn task_search(&self, search: &TaskSearch) -> Result<Vec<Hit<TaskPath>>> {
         self.0.task.search(search).await
     }
 
-    pub async fn note_read(&self, path: &NotePath) -> Result<TextNote> {
+    pub async fn note_read(&self, path: &TextPath) -> Result<TextNote> {
         self.0.note.read(path).await
     }
 
@@ -129,20 +119,20 @@ Tasks you create land in its task region; log entries you write are stamped with
         self.0.note.write(note, condition).await
     }
 
-    pub async fn note_edit(&self, path: &NotePath, edit: &Edit) -> Result<TextNote> {
+    pub async fn note_edit(&self, path: &TextPath, edit: &Edit) -> Result<TextNote> {
         self.0.note.edit(path, edit).await
     }
 
-    pub async fn note_move(&self, path: &NotePath, dest: &NotePath, overwrite: bool) -> Result<()> {
+    pub async fn note_move(&self, path: &TextPath, dest: &TextPath, overwrite: bool) -> Result<()> {
         self.0.note.move_(path, dest, overwrite).await
     }
 
-    pub async fn note_delete(&self, path: &NotePath) -> Result<Trashed> {
+    pub async fn note_delete(&self, path: &TextPath) -> Result<Trashed> {
         self.0.note.delete(path).await
     }
 
-    pub async fn log_note(&self, body: &LogBody) -> Result<LogNote> {
-        self.0.log.note(body).await
+    pub async fn log_note(&self, dir: &DirPath, body: &LogBody) -> Result<LogNote> {
+        self.0.log.note(dir, body).await
     }
 
     pub async fn log_get(&self, query: &LogQuery) -> Result<Vec<LogNote>> {
@@ -152,21 +142,21 @@ Tasks you create land in its task region; log entries you write are stamped with
     pub async fn task_create(
         &self,
         title: &TaskTitle,
-        group: &GroupPath,
+        dir: &DirPath,
         body: &TaskBody,
     ) -> Result<TaskNote> {
-        self.0.task.create(title, group, body).await
+        self.0.task.create(title, dir, body).await
     }
 
     pub async fn task_get(&self, query: &TaskQuery) -> Result<Vec<TaskNote>> {
         self.0.task.get(query).await
     }
 
-    pub async fn task_update(&self, task: &TaskRef, change: &TaskChange) -> Result<TaskNote> {
+    pub async fn task_update(&self, task: &TaskPath, change: &TaskChange) -> Result<TaskNote> {
         self.0.task.update(task, change).await
     }
 
-    pub async fn task_move(&self, task: &TaskRef, group: &GroupPath) -> Result<TaskNote> {
-        self.0.task.move_(task, group).await
+    pub async fn task_move(&self, task: &TaskPath, dest: &DirPath) -> Result<TaskNote> {
+        self.0.task.move_(task, dest).await
     }
 }
