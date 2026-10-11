@@ -103,13 +103,16 @@ async fn client_http_log_records_the_servers_provenance() {
     let ToolOutput::Logged { path } = &out else {
         panic!("expected a log receipt, got {}", out.render());
     };
-    let text = std::fs::read_to_string(
-        common::notes_root(&dir)
-            .join(".logs")
-            .join(path.to_string().trim_start_matches("/@"))
-            .join(".log.md"),
-    )
-    .unwrap();
+    let logs = common::notes_root(&dir).join(".logs");
+    let fresh: Vec<_> = std::fs::read_dir(&logs)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| !p.to_string_lossy().contains(".000000-0700"))
+        .collect();
+    let [entry] = fresh.as_slice() else {
+        panic!("one new entry expected for {path}, found {fresh:?}");
+    };
+    let text = std::fs::read_to_string(entry.join(".log.md")).unwrap();
     assert!(text.contains("source: test"), "{text}");
 }
 

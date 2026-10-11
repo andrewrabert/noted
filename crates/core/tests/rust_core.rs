@@ -49,7 +49,7 @@ async fn write_creates_parents_and_leaves_no_temp() {
 #[tokio::test]
 async fn a_log_entry_record_is_unreachable_through_the_note_tools() {
     for record in [
-        "/.logs/2026-07-01T09:00:00.000000-07:00/.log.md",
+        "/.logs/20260701T090000.000000-0700/.log.md",
         "/@2026-07-01T09:00:00.000000-07:00/.log.md",
     ] {
         assert!(
@@ -76,7 +76,14 @@ async fn log_note_writes_one_file_with_front_matter() {
         .unwrap();
     let rel = logged.path().to_string();
     assert!(rel.starts_with("/@20"), "{rel}");
-    let file = rel.trim_start_matches("/@").to_string();
+    let file: String = rel
+        .trim_start_matches("/@")
+        .chars()
+        .enumerate()
+        .filter(|&(i, c)| !(c == ':' || (c == '-' && i < 10)))
+        .map(|(_, c)| c)
+        .collect();
+    assert!(!file.contains(':'), "{file}");
     let record = notes_root(&dir).join(".logs").join(&file).join(".log.md");
     let on_disk = std::fs::read_to_string(&record).unwrap();
     let text = String::from_utf8(logged.to_bytes()).unwrap();
@@ -99,8 +106,8 @@ async fn log_note_writes_one_file_with_front_matter() {
     assert_eq!(
         written,
         vec![
-            "2026-06-15T08:30:00.000000-07:00".to_string(),
-            "2026-07-01T09:00:00.000000-07:00".to_string(),
+            "20260615T083000.000000-0700".to_string(),
+            "20260701T090000.000000-0700".to_string(),
             file.clone(),
         ],
         "the entry lands beside the others, leaving no temp file"

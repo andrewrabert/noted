@@ -207,6 +207,20 @@ async fn a_single_task_can_be_granted_inside_a_read_only_scope() {
     assert_eq!(all_tasks(&root).await.len(), 2);
 }
 
+fn only_record(logs: &std::path::Path) -> std::path::PathBuf {
+    let mut dirs: Vec<_> = std::fs::read_dir(logs)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    let [dir] = dirs.as_mut_slice() else {
+        panic!(
+            "one entry expected under {}, found {dirs:?}",
+            logs.display()
+        );
+    };
+    dir.join(".log.md")
+}
+
 #[tokio::test]
 async fn a_scoped_holder_sees_only_its_own_log() {
     let dir = common::fixture_dir();
@@ -222,11 +236,7 @@ async fn a_scoped_holder_sees_only_its_own_log() {
         .unwrap();
 
     assert!(
-        common::notes_root(&dir)
-            .join("projects/.logs")
-            .join(entry.path().to_string().trim_start_matches("/@"))
-            .join(".log.md")
-            .is_file(),
+        only_record(&common::notes_root(&dir).join("projects/.logs")).is_file(),
         "a scoped entry lands in its scope's own .logs directory"
     );
     assert_eq!(log_paths(&projects).await, vec![entry.path().to_string()]);
@@ -239,21 +249,14 @@ async fn a_scope_is_cumulative_across_notes_logs_and_tasks() {
     let dir = common::fixture_dir();
     let root = confined(&dir, r#"{"scope":"/a/b"}"#);
     write(&root, &note("/kept.md", "x")).await.unwrap();
-    let entry = root
-        .log_note(&dp("/"), &"scoped\n-- t · s".into())
+    root.log_note(&dp("/"), &"scoped\n-- t · s".into())
         .await
         .unwrap();
     create(&root, "scoped work", "/").await.unwrap();
 
     let notes = common::notes_root(&dir);
     assert!(notes.join("a/b/kept.md").is_file());
-    assert!(
-        notes
-            .join("a/b/.logs")
-            .join(entry.path().to_string().trim_start_matches("/@"))
-            .join(".log.md")
-            .is_file()
-    );
+    assert!(only_record(&notes.join("a/b/.logs")).is_file());
     assert!(notes.join("a/b/.tasks/1/.task.md").is_file());
 }
 
