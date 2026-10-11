@@ -6,6 +6,8 @@ use std::fmt;
 use std::num::NonZeroU64;
 use std::str::FromStr;
 
+use chrono::{DateTime, FixedOffset};
+
 use super::path::Path;
 use crate::error::{NotedError, Result, rejected};
 use crate::types::Timestamp;
@@ -162,6 +164,7 @@ impl fmt::Display for LogDir {
 
 impl Log {
     const FILE: &str = ".log.md";
+    const STORE: &str = "%Y%m%dT%H%M%S%.6f%z";
 
     pub(super) fn new(created: Timestamp) -> Log {
         Log(created)
@@ -171,18 +174,29 @@ impl Log {
         self.0
     }
 
+    fn store_name(&self) -> String {
+        DateTime::<FixedOffset>::from(self.0)
+            .format(Log::STORE)
+            .to_string()
+    }
+
+    fn from_store_name(name: &str) -> Result<Log> {
+        let log = DateTime::parse_from_str(name, Log::STORE)
+            .map(|at| Log(Timestamp::at(at)))
+            .map_err(|e| rejected(format!("{name}: not a log instant: {e}")))?;
+        if log.store_name() != name {
+            return Err(rejected(format!("{name}: not a canonical log instant")));
+        }
+        Ok(log)
+    }
+
     // the instant, then either the entry's file as the very last part or
     // whatever lives inside the entry
     fn from_store<'a, 'b>(parts: &'a [&'b str]) -> Result<(Segment, &'a [&'b str])> {
         let [stamp, rest @ ..] = parts else {
             return Err(rejected("a log directory holds an instant"));
         };
-        let log = stamp
-            .parse::<Timestamp>()
-            .ok()
-            .filter(|at| at.to_string() == *stamp)
-            .map(Log)
-            .ok_or_else(|| rejected(format!("{stamp}: not a log instant")))?;
+        let log = Log::from_store_name(stamp)?;
         match rest {
             [Log::FILE] => Ok((Segment::Log(log), &[])),
             [Log::FILE, ..] => Err(rejected("a log file is the last part")),
@@ -192,7 +206,7 @@ impl Log {
 
     fn write_dir(&self, out: &mut Vec<String>) {
         out.push(LogDir::DIR.to_string());
-        out.push(self.0.to_string());
+        out.push(self.store_name());
     }
 
     fn write_file(&self, out: &mut Vec<String>) {
@@ -451,6 +465,30 @@ mod tests {
             "@2026-08-03T09:15:30.123456-07:00"
         );
         assert!("@2026".parse::<Segment>().is_err());
+    }
+
+    #[test]
+    fn an_entry_is_stored_without_date_dashes_or_colons() {
+        let log = Log::new("2026-08-03T09:15:30.123456-07:00".parse().unwrap());
+        let mut out = Vec::new();
+        log.write_dir(&mut out);
+        assert_eq!(out, [".logs", "20260803T091530.123456-0700"]);
+        assert_eq!(
+            stored("/.logs/20260803T091530.123456-0700/.log.md").unwrap(),
+            ["@2026-08-03T09:15:30.123456-07:00"]
+        );
+        assert_eq!(
+            stored("/.logs/20260803T161530.123456+0000/.log.md").unwrap(),
+            ["@2026-08-03T16:15:30.123456+00:00"]
+        );
+        for bad in [
+            "/.logs/2026-08-03T09:15:30.123456-07:00/.log.md",
+            "/.logs/20260803T091530.123456-07:00/.log.md",
+            "/.logs/20260803T091530-0700/.log.md",
+            "/.logs/20260803T091530.123456Z/.log.md",
+        ] {
+            assert!(stored(bad).is_err(), "accepted {bad:?}");
+        }
     }
 
     #[test]

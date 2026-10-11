@@ -38,7 +38,7 @@ async fn get_lists_the_log_newest_first() {
 async fn an_entry_stamped_with_garbage_is_skipped() {
     let dir = fixture_dir();
     let root = backend(&dir);
-    let garbage = "2026-07-02T09:00:00.000000-07:00";
+    let garbage = "20260702T090000.000000-0700";
     let entry = common::notes_root(&dir).join(".logs").join(garbage);
     std::fs::create_dir_all(&entry).unwrap();
     std::fs::write(
@@ -47,11 +47,9 @@ async fn an_entry_stamped_with_garbage_is_skipped() {
     )
     .unwrap();
     assert_eq!(paths(&root, json!({})).await, vec![JULY, JUNE]);
-    assert!(
-        !search(&root, json!({"query": "garbage"}))
-            .await
-            .contains(garbage)
-    );
+    let found = search(&root, json!({"query": "garbage"})).await;
+    assert!(!found.contains(garbage), "{found}");
+    assert!(!found.contains("2026-07-02"), "{found}");
 }
 
 #[tokio::test]
@@ -195,7 +193,14 @@ async fn entries_float_and_the_prefix_narrows_to_them() {
         .unwrap();
     let spelled = nested.path().to_string();
     assert!(spelled.starts_with("/dev/@20"), "{spelled}");
-    let stamp = spelled.trim_start_matches("/dev/@");
+    let stored: Vec<String> = std::fs::read_dir(common::notes_root(&dir).join("dev/.logs"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    let [stamp] = stored.as_slice() else {
+        panic!("one entry expected, found {stored:?}");
+    };
+    assert!(!stamp.contains(':'), "{stamp}");
     assert!(
         common::notes_root(&dir)
             .join("dev/.logs")
