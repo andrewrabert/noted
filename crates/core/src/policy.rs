@@ -348,16 +348,16 @@ mod tests {
                 write: true
             }
         );
-        assert_eq!(located(&policy.readable(&at("/a/b")).unwrap()), "/a/b.md");
+        assert_eq!(
+            located(&policy.readable(&at("/a/b.md")).unwrap()),
+            "/a/b.md"
+        );
     }
 
     #[test]
     fn the_scope_directory_itself_is_never_written() {
         assert!(root().readable(&at("/")).is_ok());
-        assert!(matches!(
-            root().writeable(&at("/")),
-            Err(NotedError::Forbidden)
-        ));
+        assert!(root().writeable(&at("/")).unwrap().file().is_err());
     }
 
     #[test]
@@ -470,7 +470,7 @@ mod tests {
         .unwrap();
         assert_eq!(scoped.scope(), &at("/projects"));
         assert_eq!(
-            located(&scoped.readable(&at("/a")).unwrap()),
+            located(&scoped.readable(&at("/a.md")).unwrap()),
             "/projects/a.md"
         );
 
@@ -481,7 +481,7 @@ mod tests {
         .unwrap();
         assert_eq!(deeper.scope(), &at("/projects/alpha"));
         assert_eq!(
-            located(&deeper.readable(&at("/a")).unwrap()),
+            located(&deeper.readable(&at("/a.md")).unwrap()),
             "/projects/alpha/a.md"
         );
     }

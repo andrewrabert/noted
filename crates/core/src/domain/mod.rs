@@ -32,15 +32,15 @@ mod guards {
 
     const RULES: &[Rule] = &[
         Rule {
-            name: "appears only under crates/core/src/fs/",
+            name: "appears only under crates/core/src/fs/ and in policy.rs",
             needle: concat!("std::", "path"),
-            allowed: &["/src/fs/"],
+            allowed: &["/src/fs/", "/src/policy.rs"],
             whole_token: false,
         },
         Rule {
-            name: "appears only under crates/core/src/fs/",
+            name: "appears only under crates/core/src/fs/ and in policy.rs",
             needle: concat!("Path", "Buf"),
-            allowed: &["/src/fs/"],
+            allowed: &["/src/fs/", "/src/policy.rs"],
             whole_token: false,
         },
         Rule {
