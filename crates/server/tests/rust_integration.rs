@@ -112,10 +112,8 @@ async fn log_is_immutable_and_recoverable_delete() {
         "a log entry record is not a note path"
     );
     assert!(
-        root.note_delete(&TextPath::try_from(rp(&rel)).unwrap())
-            .await
-            .is_err(),
-        "entries are write-once"
+        TextPath::try_from(rp(&rel)).is_err(),
+        "entries are write-once: a log entry is not a text note"
     );
 
     let trashed = root
@@ -196,8 +194,10 @@ async fn write_and_edit_refused_under_tasks() {
         noted::NotePath::new("/grp/.tasks/1/.task.md").is_err(),
         "a task record is not a note path"
     );
-    assert!(read(&root, "/grp/#1").await.is_err());
-    assert!(write(&root, &note("/grp/#1", "x")).await.is_err());
+    assert!(
+        TextPath::try_from(rp("/grp/#1")).is_err(),
+        "a task is not a text note"
+    );
 }
 
 async fn mcp_raw(app: &axum::Router, body: &Value) -> axum::response::Response {

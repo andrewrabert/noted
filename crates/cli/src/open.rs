@@ -232,10 +232,10 @@ mod tests {
 
     #[test]
     fn parse_paths_keeps_notes_and_drops_blanks_and_non_notes() {
-        let text = "/Inbox\n\n  /projects/ideas  \n/projects/diagram.md\n/dev/#2\n";
+        let text = "/Inbox.md\n\n  /projects/ideas.md  \n/\n/Inbox\n/projects/ideas\n/dev/#2\n";
         assert_eq!(
             parse_paths(text),
-            vec!["/Inbox".to_string(), "/projects/ideas".to_string()]
+            vec!["/Inbox.md".to_string(), "/projects/ideas.md".to_string()]
         );
     }
 

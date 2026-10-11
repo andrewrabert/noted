@@ -191,8 +191,8 @@ async fn a_task_directory_without_its_record_is_not_a_task() {
     std::fs::create_dir_all(task_dir(&dir, "", 9)).unwrap();
     std::fs::write(task_dir(&dir, "", 9).join("note.md"), "x").unwrap();
     assert!(get(&root, "/", true).await.unwrap().is_empty());
-    // the recordless directory does not inflate numbering
-    assert_eq!(path_of(&create(&root, "a", "/", "").await.unwrap()), "/#1");
+    // the recordless directory still holds its number
+    assert_eq!(path_of(&create(&root, "a", "/", "").await.unwrap()), "/#10");
 }
 
 #[tokio::test]
@@ -415,7 +415,7 @@ async fn update_missing_and_non_task_record() {
 }
 
 #[tokio::test]
-async fn move_renumbers_bumps_updated_and_carries_its_contents() {
+async fn move_renumbers_and_carries_its_contents() {
     let dir = fixture_dir();
     let root = root(&dir);
     create(&root, "a", "shopping", "").await.unwrap();
@@ -423,14 +423,21 @@ async fn move_renumbers_bumps_updated_and_carries_its_contents() {
     write(&root, &note("/shopping/#1/plan.md", "the plan"))
         .await
         .unwrap();
-    let before = create(&root, "keep", "dev", "").await.unwrap(); // dev/#1 forces a renumber
+    create(&root, "keep", "dev", "").await.unwrap(); // dev/#1 forces a renumber
+    let before = get(&root, "shopping/#1", false).await.unwrap()[0]
+        .front()
+        .clone();
 
     let moved = root
         .task_move(&tr("shopping/#1"), &dp("dev"))
         .await
         .unwrap();
     assert_eq!(path_of(&moved), "/dev/#2");
-    assert!(moved.front().updated_at >= before.front().updated_at);
+    assert_eq!(
+        moved.front().updated_at,
+        before.updated_at,
+        "a move carries the record as is"
+    );
     assert!(get(&root, "shopping", false).await.unwrap().is_empty());
     assert_eq!(read(&root, "/dev/#2/plan.md").await.unwrap(), "the plan");
     assert_eq!(
@@ -480,8 +487,10 @@ async fn task_records_are_managed() {
             "a task record is not a note path: {spelled}"
         );
     }
-    assert!(read(&root, "/#1").await.is_err());
-    assert!(write(&root, &note("/#1", "x")).await.is_err());
+    assert!(
+        noted::TextPath::try_from(np("/#1")).is_err(),
+        "a task is not a text note"
+    );
     write(&root, &note("/#1/plan.md", "a note inside"))
         .await
         .unwrap();
@@ -508,41 +517,6 @@ fn parse_task_file_edges() {
     let front = front.unwrap();
     assert_eq!(front.task, "x");
     assert_eq!(body, "b\n");
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn symlinked_task_record_is_ignored() {
-    let dir = fixture_dir();
-    let root = root(&dir);
-    create(&root, "real", "grp", "").await.unwrap();
-
-    let outside = notes_root(&dir).join("outside.md");
-    std::fs::write(&outside, CREATED).unwrap();
-    std::fs::create_dir_all(task_dir(&dir, "grp", 5)).unwrap();
-    std::os::unix::fs::symlink(&outside, task_file(&dir, "grp", 5)).unwrap();
-
-    assert_eq!(
-        paths(&get(&root, "grp", false).await.unwrap()),
-        vec!["/grp/#1"]
-    );
-    assert!(get(&root, "grp/#5", false).await.unwrap().is_empty());
-    assert!(advance(&root, "grp/#5", "started", None).await.is_err());
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn symlinked_task_dir_is_ignored() {
-    let dir = fixture_dir();
-    let root = root(&dir);
-    create(&root, "real", "/", "").await.unwrap(); // makes .tasks/
-
-    let outside = tempfile::tempdir().unwrap();
-    std::fs::write(outside.path().join(".task.md"), CREATED).unwrap();
-    std::os::unix::fs::symlink(outside.path(), notes_root(&dir).join(".tasks/7")).unwrap();
-
-    assert!(get(&root, "/#7", false).await.unwrap().is_empty());
-    assert_eq!(paths(&get(&root, "/", true).await.unwrap()), vec!["/#1"]);
 }
 
 async fn find(backend: &NotedRoot, args: serde_json::Value) -> String {

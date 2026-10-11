@@ -347,10 +347,10 @@ mod tests {
 
     #[test]
     fn hash_prefixes_are_tasks_at_every_depth() {
-        for good in ["/#42", "/a/#42/note.md", "/a/#2/#1"] {
+        for good in ["/#", "/#42", "/a/#", "/a/#42/note.md", "/a/#2/#1"] {
             assert_eq!(at(good).to_string(), good);
         }
-        for bad in ["#", "#042", "/#ideas", "/a/#note"] {
+        for bad in ["#042", "/#ideas", "/a/#note", "/#/a"] {
             assert!(NotePath::new(bad).is_err(), "accepted '{bad}'");
             let json = serde_json::to_string(bad).unwrap();
             assert!(serde_json::from_str::<NotePath>(&json).is_err());

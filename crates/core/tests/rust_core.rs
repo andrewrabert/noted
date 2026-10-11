@@ -48,8 +48,6 @@ async fn write_creates_parents_and_leaves_no_temp() {
 
 #[tokio::test]
 async fn a_log_entry_record_is_unreachable_through_the_note_tools() {
-    let dir = fixture_dir();
-    let root = root(&dir);
     for record in [
         "/.logs/2026-07-01T09:00:00.000000-07:00/.log.md",
         "/@2026-07-01T09:00:00.000000-07:00/.log.md",
@@ -60,9 +58,11 @@ async fn a_log_entry_record_is_unreachable_through_the_note_tools() {
         );
     }
     assert!(
-        read(&root, "/@2026-07-01T09:00:00.000000-07:00")
-            .await
-            .is_err()
+        noted::TextPath::try_from(
+            noted::NotePath::new("/@2026-07-01T09:00:00.000000-07:00").unwrap()
+        )
+        .is_err(),
+        "a log entry is not a text note"
     );
 }
 

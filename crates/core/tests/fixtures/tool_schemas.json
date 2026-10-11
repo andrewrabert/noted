@@ -352,6 +352,7 @@
           ]
         },
         "path": {
+          "default": "/",
           "type": "string"
         },
         "state": {
@@ -391,6 +392,7 @@
           "type": "string"
         },
         "path": {
+          "default": "/",
           "type": "string"
         }
       },
