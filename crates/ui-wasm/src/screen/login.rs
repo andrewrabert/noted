@@ -1,6 +1,6 @@
 use crate::browser::input as text_input;
 use iced::widget::{button, column, container, text};
-use iced::{Element, Fill};
+use iced::{Element, Fill, Widget};
 
 use crate::{Auth, Message};
 
@@ -19,13 +19,15 @@ pub(crate) fn view(auth: &Auth) -> Element<'_, Message> {
                 .id(USERNAME)
                 .autocomplete("username")
                 .on_input_maybe((!busy).then_some(Message::LoginUsernameChanged))
-                .on_submit(Message::LoginUsernameSubmitted);
+                .on_submit(Message::LoginUsernameSubmitted)
+                .boxed();
             let password = text_input("password", &form.password)
                 .id(PASSWORD)
                 .autocomplete("current-password")
                 .secure(true)
                 .on_input_maybe((!busy).then_some(Message::LoginPasswordChanged))
-                .on_submit(Message::LoginSubmitted);
+                .on_submit(Message::LoginSubmitted)
+                .boxed();
             let submit =
                 button(text("Sign in")).on_press_maybe((!busy).then_some(Message::LoginSubmitted));
             let mut card = column![
@@ -35,7 +37,7 @@ pub(crate) fn view(auth: &Auth) -> Element<'_, Message> {
                 crate::browser::submit(submit, !busy)
             ];
             if let Some(error) = &form.error {
-                card = card.push(text(error.clone()));
+                card = card.push(text(error.clone()).boxed());
             }
             card
         }
@@ -47,5 +49,5 @@ pub(crate) fn view(auth: &Auth) -> Element<'_, Message> {
     container(card.spacing(10).width(320))
         .padding(20)
         .width(Fill)
-        .into()
+        .boxed()
 }

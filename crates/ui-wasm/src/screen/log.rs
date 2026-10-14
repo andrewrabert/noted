@@ -1,6 +1,6 @@
 use crate::browser::input as text_input;
 use iced::widget::{button, column, container, row, scrollable, text};
-use iced::{Element, Fill};
+use iced::{Element, Fill, Widget};
 
 use crate::{Editor, LogRow, Message, State, editor};
 
@@ -10,25 +10,32 @@ pub fn view(state: &State) -> Element<'_, Message> {
         editor(&state.log, Editor::Log, Message::LogAction)
             .placeholder("what happened")
             .height(120)
-            .padding(10),
+            .padding(10)
+            .boxed(),
         row![button("log it").on_press(Message::SubmitLog)],
         controls(state),
         entries(state),
     ]
     .spacing(10)
     .height(Fill)
-    .into()
+    .boxed()
 }
 
 fn controls(state: &State) -> Element<'_, Message> {
     row![
-        text_input("match entries", &state.log_filter).on_input(Message::LogFilterChanged),
-        text_input("since, e.g. 2026-08-01", &state.since).on_input(Message::SinceChanged),
-        text_input("until", &state.until).on_input(Message::UntilChanged),
+        text_input("match entries", &state.log_filter)
+            .on_input(Message::LogFilterChanged)
+            .boxed(),
+        text_input("since, e.g. 2026-08-01", &state.since)
+            .on_input(Message::SinceChanged)
+            .boxed(),
+        text_input("until", &state.until)
+            .on_input(Message::UntilChanged)
+            .boxed(),
         button("refresh").on_press(Message::RefreshLog),
     ]
     .spacing(5)
-    .into()
+    .boxed()
 }
 
 fn entries(state: &State) -> Element<'_, Message> {
@@ -37,11 +44,11 @@ fn entries(state: &State) -> Element<'_, Message> {
         for entry in &state.entries {
             items = items.push(entry_view(entry));
         }
-        items.into()
+        items.boxed()
     } else {
-        text(state.hits.clone()).into()
+        text(state.hits.clone()).boxed()
     };
-    scrollable(body).height(Fill).into()
+    scrollable(body).height(Fill).boxed()
 }
 
 fn entry_view(entry: &LogRow) -> Element<'_, Message> {
@@ -57,5 +64,5 @@ fn entry_view(entry: &LogRow) -> Element<'_, Message> {
         .spacing(5),
     )
     .padding(5)
-    .into()
+    .boxed()
 }
