@@ -16,7 +16,7 @@ name = "noted-ui-wasm"
 path = "src/main.rs"
 
 [dependencies]
-iced = { git = "https://github.com/iced-rs/iced", rev = "cfeef0bb3a4a3dbf6615fd193539e454ccd06a6a", features = [
+iced = { git = "https://github.com/iced-rs/iced", rev = "ab336f6d6403d7206d82c7c2caa46143efde8284", features = [
     "markdown",
     "highlighter",
     "advanced",
@@ -29,7 +29,7 @@ serde_json = "1"
 unicode-segmentation = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-iced = { git = "https://github.com/iced-rs/iced", rev = "cfeef0bb3a4a3dbf6615fd193539e454ccd06a6a", features = [
+iced = { git = "https://github.com/iced-rs/iced", rev = "ab336f6d6403d7206d82c7c2caa46143efde8284", features = [
     "webgl",
     "fira-sans",
 ] }

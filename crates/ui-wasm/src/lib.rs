@@ -7,7 +7,7 @@ use browser::{editor, input as text_input};
 use iced::widget::{
     button, column, container, markdown, row, scrollable, space, text, text_editor,
 };
-use iced::{Element, Fill, Task, Theme};
+use iced::{Element, Fill, Task, Theme, Widget};
 
 use noted::ToolCall;
 use noted::tools::ToolOutput;
@@ -994,12 +994,13 @@ fn view(state: &State) -> Element<'_, Message> {
                 ]
                 .spacing(10),
             )
-            .padding(5),
+            .padding(5)
+            .boxed(),
         );
     }
     match &state.auth {
-        Auth::Open | Auth::Authed(_) => screen.into(),
-        auth => iced::widget::center(screen::login::view(auth)).into(),
+        Auth::Open | Auth::Authed(_) => screen.boxed(),
+        auth => iced::widget::center(screen::login::view(auth)).boxed(),
     }
 }
 
@@ -1007,20 +1008,20 @@ fn logout_button(state: &State) -> Element<'_, Message> {
     match (&state.auth, state.logout_armed) {
         (Auth::Authed(_), false) => button(text("log out"))
             .on_press(Message::LogoutRequested)
-            .into(),
+            .boxed(),
         (Auth::Authed(_), true) => button(text("discard edits and log out"))
             .on_press(Message::LogoutConfirmed)
-            .into(),
-        _ => space::horizontal().into(),
+            .boxed(),
+        _ => space::horizontal().boxed(),
     }
 }
 
 fn tab_button(label: &str, tab: Tab, current: Tab) -> Element<'_, Message> {
     let button = button(text(label.to_string()));
     if tab == current {
-        button.into()
+        button.boxed()
     } else {
-        button.on_press(Message::TabSelected(tab)).into()
+        button.on_press(Message::TabSelected(tab)).boxed()
     }
 }
 
@@ -1031,10 +1032,10 @@ fn labeled_input<'a>(
 ) -> Element<'a, Message> {
     row![
         text(label).width(90),
-        text_input(label, value).on_input(on_input),
+        text_input(label, value).on_input(on_input).boxed(),
     ]
     .spacing(5)
-    .into()
+    .boxed()
 }
 
 #[cfg(target_arch = "wasm32")]

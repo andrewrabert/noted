@@ -1,5 +1,6 @@
 use super::Edit;
 use crate::Message;
+use iced::Widget as _;
 use iced::advanced::{Layout, Shell, Widget, layout, mouse, renderer, widget};
 use iced::widget::{text_editor, text_input};
 use iced::{Element, Event, Length, Padding, Rectangle, Renderer, Size, Theme};
@@ -57,42 +58,41 @@ impl<'a> Input<'a> {
         self.secure = secure;
         self
     }
-}
 
-impl<'a> From<Input<'a>> for Element<'a, Message> {
-    fn from(input: Input<'a>) -> Self {
-        let enabled = input.on_input.is_some();
+    pub fn boxed(self) -> Element<'a, Message> {
+        let enabled = self.on_input.is_some();
         // Iced's secure Input currently moves only its unmasked buffer when
         // operated on. Render the mask through a normal Iced input so DOM
         // selections also move the visible caret; secrets stay in app/DOM state.
         #[cfg(target_arch = "wasm32")]
-        let inner: Element<'a, Message> = if input.secure {
+        let inner: Element<'a, Message> = if self.secure {
             let mut masked =
-                text_input(input.label, super::mask(input.value)).on_input_maybe(input.on_input);
-            if let Some(id) = input.id {
+                text_input(self.label, super::mask(self.value)).on_input_maybe(self.on_input);
+            if let Some(id) = self.id {
                 masked = masked.id(id);
             }
-            masked.into()
+            masked.boxed()
         } else {
-            input.inner.into()
+            self.inner.boxed()
         };
         #[cfg(not(target_arch = "wasm32"))]
-        let inner = input.inner.into();
-        Self::new(Field {
+        let inner = self.inner.boxed();
+        Field {
             inner,
-            value: input.value.to_owned(),
-            label: input.label.to_owned(),
-            key: input.label.to_owned(),
-            on_edit: input
+            value: self.value.to_owned(),
+            label: self.label.to_owned(),
+            key: self.label.to_owned(),
+            on_edit: self
                 .on_input
                 .map(|f| Box::new(move |edit: Edit| f(edit.value)) as _),
-            on_submit: input.on_submit,
+            on_submit: self.on_submit,
             multiline: false,
-            secure: input.secure,
-            purpose: input.purpose,
+            secure: self.secure,
+            purpose: self.purpose,
             padding: Padding::new(5.0),
             enabled,
-        })
+        }
+        .boxed()
     }
 }
 
@@ -107,9 +107,9 @@ pub struct Editor<'a> {
     key: Option<String>,
 }
 
-pub fn submit<'a>(inner: impl Into<Element<'a, Message>>, enabled: bool) -> Element<'a, Message> {
-    Element::new(Field {
-        inner: inner.into(),
+pub fn submit<'a>(inner: impl iced::Widget<Message> + 'a, enabled: bool) -> Element<'a, Message> {
+    Field {
+        inner: inner.boxed(),
         value: String::new(),
         label: "Sign in".into(),
         key: "login-submit".into(),
@@ -120,7 +120,8 @@ pub fn submit<'a>(inner: impl Into<Element<'a, Message>>, enabled: bool) -> Elem
         purpose: "submit",
         padding: Padding::ZERO,
         enabled,
-    })
+    }
+    .boxed()
 }
 
 pub fn editor(
@@ -162,35 +163,34 @@ impl<'a> Editor<'a> {
         self.highlight = true;
         self
     }
-}
 
-impl<'a> From<Editor<'a>> for Element<'a, Message> {
-    fn from(editor: Editor<'a>) -> Self {
-        let inner = text_editor(editor.content)
-            .on_action(editor.on_action)
-            .placeholder(editor.placeholder)
-            .height(editor.height)
-            .padding(editor.padding);
-        let inner: Element<'a, Message> = if editor.highlight {
-            inner.highlight("markdown").into()
+    pub fn boxed(self) -> Element<'a, Message> {
+        let inner = text_editor(self.content)
+            .on_action(self.on_action)
+            .placeholder(self.placeholder)
+            .height(self.height)
+            .padding(self.padding);
+        let inner: Element<'a, Message> = if self.highlight {
+            inner.highlight("markdown").boxed()
         } else {
-            inner.into()
+            inner.boxed()
         };
-        Self::new(Field {
+        Field {
             inner,
-            value: editor.content.text(),
-            label: editor.placeholder.to_owned(),
-            key: editor.key.unwrap_or_else(|| format!("{:?}", editor.which)),
+            value: self.content.text(),
+            label: self.placeholder.to_owned(),
+            key: self.key.unwrap_or_else(|| format!("{:?}", self.which)),
             on_edit: Some(Box::new(move |edit| {
-                Message::BrowserEdited(editor.which, edit)
+                Message::BrowserEdited(self.which, edit)
             })),
             on_submit: None,
             multiline: true,
             secure: false,
             purpose: "",
-            padding: editor.padding,
+            padding: self.padding,
             enabled: true,
-        })
+        }
+        .boxed()
     }
 }
 
@@ -207,6 +207,8 @@ struct Field<'a> {
     enabled: bool,
     purpose: &'static str,
 }
+
+impl widget::Meta for Field<'_> {}
 
 #[derive(Default)]
 struct State {
@@ -243,31 +245,28 @@ impl Widget<Message, Theme, Renderer> for Field<'_> {
         tree.diff_children(std::slice::from_mut(&mut self.inner));
     }
     fn size(&self) -> Size<Length> {
-        self.inner.as_widget().size()
+        self.inner.size()
     }
-    fn layout(
-        &mut self,
-        tree: &mut widget::Tree,
-        renderer: &Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
+    fn layout(&mut self, tree: &mut widget::Tree, renderer: &Renderer, limits: &layout::Limits) {
         if tree.children.is_empty() {
             tree.children.push(widget::Tree::new(&self.inner));
         }
-        self.inner
-            .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, limits)
+        let child = &mut tree.children[0];
+        self.inner.layout(child, renderer, limits);
+        child.translation = iced::Vector::ZERO;
+        tree.size = child.size;
     }
     fn operate(
         &mut self,
         tree: &mut widget::Tree,
-        layout: Layout<'_>,
+        layout: Layout,
+        viewport: &Rectangle,
         renderer: &Renderer,
         operation: &mut dyn widget::Operation,
     ) {
+        let (layout, child) = layout.iter_mut(&mut tree.children).next().unwrap();
         self.inner
-            .as_widget_mut()
-            .operate(&mut tree.children[0], layout, renderer, operation);
+            .operate(child, layout, viewport, renderer, operation);
         #[cfg(target_arch = "wasm32")]
         {
             let mut focus = Focus {
@@ -276,8 +275,7 @@ impl Widget<Message, Theme, Renderer> for Field<'_> {
                 cursor: None,
             };
             self.inner
-                .as_widget_mut()
-                .operate(&mut tree.children[0], layout, renderer, &mut focus);
+                .operate(child, layout, viewport, renderer, &mut focus);
             tree.state.downcast_mut::<State>().focused = focus.focused;
         }
     }
@@ -285,12 +283,13 @@ impl Widget<Message, Theme, Renderer> for Field<'_> {
         &mut self,
         tree: &mut widget::Tree,
         event: &Event,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        let (layout, child) = layout.iter_mut(&mut tree.children).next().unwrap();
         #[cfg(target_arch = "wasm32")]
         {
             let state = tree.state.downcast_mut::<State>();
@@ -317,8 +316,8 @@ impl Widget<Message, Theme, Renderer> for Field<'_> {
                             shell.publish(message.clone());
                         }
                     } else if event.kind == "scroll" && self.multiline {
-                        self.inner.as_widget_mut().update(
-                            &mut tree.children[0],
+                        self.inner.update(
+                            child,
                             &Event::Mouse(iced::mouse::Event::WheelScrolled {
                                 delta: iced::mouse::ScrollDelta::Lines {
                                     x: 0.0,
@@ -350,12 +349,8 @@ impl Widget<Message, Theme, Renderer> for Field<'_> {
                     focused: false,
                     cursor: selection,
                 };
-                self.inner.as_widget_mut().operate(
-                    &mut tree.children[0],
-                    layout,
-                    renderer,
-                    &mut focus,
-                );
+                self.inner
+                    .operate(child, layout, viewport, renderer, &mut focus);
             } else {
                 shell.request_redraw();
             }
@@ -372,15 +367,8 @@ impl Widget<Message, Theme, Renderer> for Field<'_> {
                 return;
             }
         }
-        self.inner.as_widget_mut().update(
-            &mut tree.children[0],
-            event,
-            layout,
-            cursor,
-            renderer,
-            shell,
-            viewport,
-        );
+        self.inner
+            .update(child, event, layout, cursor, renderer, shell, viewport);
     }
     fn draw(
         &self,
@@ -388,16 +376,17 @@ impl Widget<Message, Theme, Renderer> for Field<'_> {
         renderer: &mut Renderer,
         theme: &Theme,
         style: &renderer::Style,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        self.inner.as_widget().draw(
-            &tree.children[0],
+        let (child_layout, child) = layout.iter(&tree.children).next().unwrap();
+        self.inner.draw(
+            child,
             renderer,
             theme,
             style,
-            layout,
+            child_layout,
             cursor,
             viewport,
         );
@@ -425,18 +414,14 @@ impl Widget<Message, Theme, Renderer> for Field<'_> {
     fn mouse_interaction(
         &self,
         tree: &widget::Tree,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
-        self.inner.as_widget().mouse_interaction(
-            &tree.children[0],
-            layout,
-            cursor,
-            viewport,
-            renderer,
-        )
+        let (layout, child) = layout.iter(&tree.children).next().unwrap();
+        self.inner
+            .mouse_interaction(child, layout, cursor, viewport, renderer)
     }
 }
 

@@ -1,6 +1,6 @@
 use crate::browser::input as text_input;
 use iced::widget::{button, column, pick_list, row, scrollable, table, text};
-use iced::{Element, Fill};
+use iced::{Element, Fill, Widget};
 
 use crate::{Editor, Message, State, TaskRow, TaskState, editor, labeled_input};
 
@@ -13,13 +13,17 @@ pub fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(10)
     .height(Fill)
-    .into()
+    .boxed()
 }
 
 fn controls(state: &State) -> Element<'_, Message> {
     row![
-        text_input("group prefix, e.g. dev/noted", &state.prefix).on_input(Message::PrefixChanged),
-        text_input("match tasks", &state.task_match).on_input(Message::TaskMatchChanged),
+        text_input("group prefix, e.g. dev/noted", &state.prefix)
+            .on_input(Message::PrefixChanged)
+            .boxed(),
+        text_input("match tasks", &state.task_match)
+            .on_input(Message::TaskMatchChanged)
+            .boxed(),
         button(if state.include_completed {
             "[x] closed"
         } else {
@@ -29,7 +33,7 @@ fn controls(state: &State) -> Element<'_, Message> {
         button("refresh").on_press(Message::RefreshTasks),
     ]
     .spacing(5)
-    .into()
+    .boxed()
 }
 
 fn grid(state: &State) -> Element<'_, Message> {
@@ -54,7 +58,7 @@ fn grid(state: &State) -> Element<'_, Message> {
         state.task_rows(),
     ))
     .height(Fill)
-    .into()
+    .boxed()
 }
 
 fn create(state: &State) -> Element<'_, Message> {
@@ -68,22 +72,25 @@ fn create(state: &State) -> Element<'_, Message> {
                 Message::TaskNotesAction
             )
             .placeholder("notes seeding the task body")
-            .height(90),
+            .height(90)
+            .boxed(),
             button("create").on_press(Message::CreateTask),
         ]
         .spacing(5),
     ]
     .spacing(5)
-    .into()
+    .boxed()
 }
 
 fn move_task(state: &State) -> Element<'_, Message> {
     let selected = state.selected_task.as_deref().unwrap_or("no task selected");
     row![
         text(selected.to_string()).width(240),
-        text_input("destination group", &state.dest_group).on_input(Message::DestGroupChanged),
+        text_input("destination group", &state.dest_group)
+            .on_input(Message::DestGroupChanged)
+            .boxed(),
         button("move").on_press(Message::MoveTask),
     ]
     .spacing(5)
-    .into()
+    .boxed()
 }
