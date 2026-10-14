@@ -113,7 +113,7 @@ fn page(auth: &str) -> String {
   const style = document.createElement("style");
   style.textContent = `
     .noted-input {{
-      opacity: 0; position: fixed; box-sizing: border-box; margin: 0; border: 0;
+      position: fixed; box-sizing: border-box; margin: 0; border: 0;
       border-radius: 0; outline: none; resize: none; appearance: none;
       background: transparent; color: transparent; caret-color: transparent;
       -webkit-text-fill-color: transparent; text-shadow: none; box-shadow: none;
