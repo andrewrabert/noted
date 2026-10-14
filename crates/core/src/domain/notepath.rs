@@ -337,7 +337,6 @@ mod tests {
             "/.tasks",
             "/a/.hidden",
             "",
-            "/a/",
             "/a/b.md/c",
             "/a.md/b.md",
         ] {

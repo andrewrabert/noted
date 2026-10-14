@@ -92,7 +92,7 @@ mod tests {
     #[test]
     fn a_key_is_a_note_path() {
         assert!(r#"{"paths":{"a":{"read":true}}}"#.parse::<PolicyFragment>().is_ok());
-        assert!(r#"{"paths":{"a/":{"read":true}}}"#.parse::<PolicyFragment>().is_err());
+        assert!(r#"{"paths":{"a/":{"read":true}}}"#.parse::<PolicyFragment>().is_ok());
         assert!(r#"{"scope":".logs"}"#.parse::<PolicyFragment>().is_err());
         assert!(r#"{"paths":{"/.tasks":{"read":true}}}"#.parse::<PolicyFragment>().is_err());
     }

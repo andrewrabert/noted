@@ -1,10 +1,11 @@
 //! The base path: a list of Segments with one spelling. Every frame composes
 //! it and adds its own rule; none restates the spelling.
 //!
-//! Spelling: `/` alone is the root (zero segments); otherwise exactly one
-//! separator between segments and none after the last. The leading separator
-//! is optional on input (`a/b` reads as `/a/b`) and always present on output.
-//! Never empty: the empty string is malformed, not the root. No OS meaning.
+//! Spelling: `/` alone is the root (zero segments); otherwise a leading
+//! separator, exactly one separator between segments, and none after the
+//! last. Input only delimits: leading, trailing and repeated separators are
+//! ignored (`a//b/` reads as `/a/b`, `//` as `/`). Never empty: the empty
+//! string is malformed, not the root. No OS meaning.
 
 use std::fmt;
 
@@ -31,12 +32,9 @@ impl Path {
         if raw.is_empty() {
             return Err(rejected("must not be empty"));
         }
-        let rest = raw.strip_prefix(Path::SEPARATOR).unwrap_or(raw);
-        if rest.is_empty() {
-            return Ok(Vec::new());
-        }
-        let segments: Vec<Segment> = rest
+        let segments: Vec<Segment> = raw
             .split(Path::SEPARATOR)
+            .filter(|part| !part.is_empty())
             .map(str::parse)
             .collect::<Result<_>>()?;
         if let Some((_, dirs)) = segments.split_last() {
@@ -106,17 +104,22 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["a", "b"]
         );
-        for (loose, strict) in [("a", "/a"), ("a/b c", "/a/b c")] {
-            assert_eq!(at(loose), at(strict));
-            assert_eq!(at(loose).to_string(), strict);
+        for (input, normalized) in [
+            ("a", "/a"),
+            ("a/b c", "/a/b c"),
+            ("/a/", "/a"),
+            ("a/", "/a"),
+            ("///a//", "/a"),
+            ("/a//b", "/a/b"),
+            ("a//b", "/a/b"),
+            ("//", "/"),
+            ("///", "/"),
+        ] {
+            assert_eq!(at(input), at(normalized));
+            assert_eq!(at(input).to_string(), normalized);
         }
         for bad in [
             "",
-            "//",
-            "/a/",
-            "a/",
-            "/a//b",
-            "a//b",
             "/ a",
             "/a ",
             "/.",
