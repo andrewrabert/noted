@@ -1,7 +1,9 @@
 mod common;
 
 use common::{backend, confined_backend, fixture_dir, invoke, note, notes_root, read, root, write};
-use noted::tasks::{TaskChange, TaskNote, TaskQuery, TaskState, TaskTitle, parse_task_file};
+use noted::tasks::{
+    TaskChange, TaskDue, TaskNote, TaskQuery, TaskState, TaskTitle, parse_task_file,
+};
 use noted::{DirPath, NotePath, NotedRoot, TaskPath};
 
 // the on-disk directory of task `n` under the directory `under` ('' = top)
@@ -42,7 +44,8 @@ fn ts(s: &str) -> TaskState {
 }
 
 async fn create(root: &NotedRoot, task: &str, dir: &str, notes: &str) -> noted::Result<TaskNote> {
-    root.task_create(&tt(task), &dp(dir), &notes.into()).await
+    root.task_create(&tt(task), &dp(dir), TaskDue::none(), &notes.into())
+        .await
 }
 
 async fn get(
@@ -81,6 +84,7 @@ async fn advance(
             state: Some(ts(state)),
             notes: notes.map(Into::into),
             task: None,
+            due: None,
         },
     )
     .await
@@ -352,6 +356,7 @@ async fn update_preserves_created_bumps_updated_and_rewords() {
             state: None,
             notes: Some("new notes".into()),
             task: Some(tt("new wording")),
+            due: None,
         },
     )
     .await
@@ -677,4 +682,71 @@ fn task_refs_order_by_number_within_a_directory() {
     refs.sort();
     assert_eq!(refs, vec![tr("/#2"), tr("/#9"), tr("/#10")]);
     assert!(tr("/a/#1") < tr("/b/#1"));
+}
+
+#[tokio::test]
+async fn due_set_at_create_kept_unless_passed() {
+    let dir = fixture_dir();
+    let root = root(&dir);
+    let due: TaskDue = "2026-11-01".parse().unwrap();
+    let made = root
+        .task_create(&tt("t"), &dp("/"), due, &"".into())
+        .await
+        .unwrap();
+    assert_eq!(made.front().due, due);
+
+    let due_of = |tasks: Vec<TaskNote>| tasks[0].front().due;
+    let reword = TaskChange {
+        task: Some(tt("reworded")),
+        ..TaskChange::default()
+    };
+    root.task_update(&tr("/#1"), &reword).await.unwrap();
+    assert_eq!(due_of(get(&root, "/#1", true).await.unwrap()), due);
+
+    advance(&root, "/#1", "started", None).await.unwrap();
+    assert_eq!(due_of(get(&root, "/#1", true).await.unwrap()), due);
+
+    let later: TaskDue = "2026-12-01".parse().unwrap();
+    let moved = TaskChange {
+        due: Some(later),
+        ..TaskChange::default()
+    };
+    root.task_update(&tr("/#1"), &moved).await.unwrap();
+    let reread = get(&root, "/#1", true).await.unwrap();
+    assert_eq!(reread[0].front().due, later);
+    assert_eq!(reread[0].front().state, TaskState::Started);
+
+    let cleared = TaskChange {
+        due: Some(TaskDue::none()),
+        ..TaskChange::default()
+    };
+    root.task_update(&tr("/#1"), &cleared).await.unwrap();
+    assert_eq!(
+        due_of(get(&root, "/#1", true).await.unwrap()),
+        TaskDue::none()
+    );
+}
+
+#[derive(clap::Parser)]
+struct UpdateCli {
+    #[command(flatten)]
+    args: noted::tools::UpdateTaskArgs,
+}
+
+// the UpdateTask call the CLI sends for `update dev/#1 <flags>`
+fn update_flags(flags: &[&str]) -> clap::error::Result<serde_json::Value> {
+    let argv = ["update", "dev/#1"]
+        .into_iter()
+        .chain(flags.iter().copied());
+    let cli = <UpdateCli as clap::Parser>::try_parse_from(argv)?;
+    Ok(serde_json::to_value(&cli.args).unwrap())
+}
+
+#[test]
+fn due_flag_empty_clears_missing_keeps_date_sets() {
+    let due = |flags: &[&str]| update_flags(flags).unwrap().get("due").cloned();
+    assert_eq!(due(&["--due", ""]), Some(serde_json::Value::Null));
+    assert_eq!(due(&[]), None);
+    assert_eq!(due(&["--due", "2026-11-01"]), Some("2026-11-01".into()));
+    assert!(update_flags(&["--due", " "]).is_err());
 }

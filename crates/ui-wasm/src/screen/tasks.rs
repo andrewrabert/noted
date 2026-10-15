@@ -10,6 +10,7 @@ pub fn view(state: &State) -> Element<'_, Message> {
         grid(state),
         create(state),
         move_task(state),
+        set_due(state),
     ]
     .spacing(10)
     .height(Fill)
@@ -52,6 +53,7 @@ fn grid(state: &State) -> Element<'_, Message> {
                     .width(Fill)
             })
             .width(Fill),
+            table::column(text("due"), |row: TaskRow| text(row.due)).width(110),
             table::column(text("path"), |row: TaskRow| text(row.path)).width(240),
             table::column(text("updated"), |row: TaskRow| text(row.updated_at)).width(220),
         ],
@@ -65,6 +67,7 @@ fn create(state: &State) -> Element<'_, Message> {
     column![
         labeled_input("task", &state.new_task, Message::NewTaskChanged),
         labeled_input("group", &state.new_group, Message::NewGroupChanged),
+        labeled_input("due", &state.new_due, Message::NewDueChanged),
         row![
             editor(
                 &state.task_notes,
@@ -90,6 +93,20 @@ fn move_task(state: &State) -> Element<'_, Message> {
             .on_input(Message::DestGroupChanged)
             .boxed(),
         button("move").on_press(Message::MoveTask),
+    ]
+    .spacing(5)
+    .boxed()
+}
+
+fn set_due(state: &State) -> Element<'_, Message> {
+    let selected = state.selected_task.as_deref().unwrap_or("no task selected");
+    row![
+        text(selected.to_string()).width(240),
+        text_input("due YYYY-MM-DD", &state.due)
+            .on_input(Message::DueChanged)
+            .boxed(),
+        button("set due").on_press(Message::SetDue),
+        button("clear due").on_press(Message::ClearDue),
     ]
     .spacing(5)
     .boxed()

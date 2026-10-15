@@ -7,14 +7,14 @@ use crate::error::{NotedError, Result, rejected};
 use crate::note::{Condition, Note as _};
 use crate::policy_store::PolicyStore;
 use crate::search::Hit;
-use crate::tasks::{TaskChange, TaskNote, TaskQuery, TaskSearch, TaskTitle};
+use crate::tasks::{TaskChange, TaskDue, TaskNote, TaskQuery, TaskSearch, TaskTitle};
 use crate::types::TaskBody;
 
 // how a claimed task name is filled: a fresh task is built for each
 // candidate path and, once its write lands, kept in the slot
 #[derive(Clone, Copy)]
 enum Placement<'a> {
-    Fresh(&'a TaskTitle, &'a TaskBody, &'a OnceLock<TaskNote>),
+    Fresh(&'a TaskTitle, TaskDue, &'a TaskBody, &'a OnceLock<TaskNote>),
     Existing(&'a TaskPath),
 }
 
@@ -58,8 +58,8 @@ impl TaskTools {
 
     async fn place(&self, at: &TaskPath, what: Placement<'_>) -> Result<()> {
         match what {
-            Placement::Fresh(title, body, placed) => {
-                let task = TaskNote::new(at.clone(), title.clone(), body.clone());
+            Placement::Fresh(title, due, body, placed) => {
+                let task = TaskNote::new(at.clone(), title.clone(), due, body.clone());
                 let file = self.store.policy().writeable(at.as_ref())?.file()?;
                 self.store
                     .write(&file, &task.to_bytes(), Condition::Missing)
@@ -100,10 +100,11 @@ impl TaskTools {
         &self,
         title: &TaskTitle,
         dir: &DirPath,
+        due: TaskDue,
         body: &TaskBody,
     ) -> Result<TaskNote> {
         let placed = OnceLock::new();
-        self.claim(dir, Placement::Fresh(title, body, &placed))
+        self.claim(dir, Placement::Fresh(title, due, body, &placed))
             .await?;
         placed
             .into_inner()

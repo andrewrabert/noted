@@ -307,6 +307,12 @@
           "default": "/",
           "type": "string"
         },
+        "due": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "notes": {
           "default": "",
           "type": "string"
@@ -345,6 +351,12 @@
   {
     "input_schema": {
       "properties": {
+        "due": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "notes": {
           "type": [
             "string",

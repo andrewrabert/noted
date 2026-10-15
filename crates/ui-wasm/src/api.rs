@@ -1,5 +1,6 @@
 use noted::ToolCall;
 use noted::search::{SearchMode, SearchOrder};
+use noted::tasks::TaskDue;
 use noted::tools::ToolOutput;
 use noted_client::{Backend, BackendArgs, Transport};
 use serde::Serialize;
@@ -80,6 +81,8 @@ pub struct CreateTaskArgs {
     pub task: String,
     pub dir: String,
     pub notes: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub due: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -98,6 +101,8 @@ pub struct UpdateTaskArgs {
     pub notes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub due: Option<TaskDue>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -244,13 +249,14 @@ pub fn log_note(body: &str) -> noted::Result<ToolCall> {
     )
 }
 
-pub fn create_task(task: &str, dir: &str, notes: &str) -> noted::Result<ToolCall> {
+pub fn create_task(task: &str, dir: &str, notes: &str, due: &str) -> noted::Result<ToolCall> {
     raw(
         "CreateTask",
         CreateTaskArgs {
             task: task.to_string(),
             dir: dir.to_string(),
             notes: notes.to_string(),
+            due: due.to_string(),
         },
     )
 }
@@ -271,6 +277,7 @@ pub fn update_task(
     state: Option<&str>,
     notes: Option<&str>,
     task: Option<&str>,
+    due: Option<TaskDue>,
 ) -> noted::Result<ToolCall> {
     raw(
         "UpdateTask",
@@ -279,6 +286,7 @@ pub fn update_task(
             state: state.map(str::to_string),
             notes: notes.map(str::to_string),
             task: task.map(str::to_string),
+            due,
         },
     )
 }

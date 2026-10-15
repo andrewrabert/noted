@@ -13,7 +13,7 @@ use crate::policy::Policy;
 use crate::policy_store::PolicyStore;
 use crate::search::{Hit, SearchQuery};
 use crate::store::NotedDir;
-use crate::tasks::{TaskChange, TaskNote, TaskQuery, TaskSearch, TaskTitle};
+use crate::tasks::{TaskChange, TaskDue, TaskNote, TaskQuery, TaskSearch, TaskTitle};
 use crate::tools::{ToolOutput, permitted, run_tool, tool_defs};
 use crate::types::{LogBody, Source, TaskBody};
 
@@ -143,9 +143,10 @@ Tasks and log entries you create land inside it."
         &self,
         title: &TaskTitle,
         dir: &DirPath,
+        due: TaskDue,
         body: &TaskBody,
     ) -> Result<TaskNote> {
-        self.0.task.create(title, dir, body).await
+        self.0.task.create(title, dir, due, body).await
     }
 
     pub async fn task_get(&self, query: &TaskQuery) -> Result<Vec<TaskNote>> {

@@ -89,10 +89,45 @@ fn validate_task_title(s: &str) -> Result<()> {
     Ok(())
 }
 
+// a task's due date, or none; spelled null on the wire
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "Option<String>", into = "Option<String>")]
+#[schemars(with = "Option<String>")]
+pub struct TaskDue(Option<chrono::NaiveDate>);
+
+impl TaskDue {
+    pub fn none() -> TaskDue {
+        TaskDue(None)
+    }
+}
+
+impl FromStr for TaskDue {
+    type Err = NotedError;
+    fn from_str(s: &str) -> Result<TaskDue> {
+        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+            .map(|date| TaskDue(Some(date)))
+            .map_err(|_| rejected(format!("not a due date (YYYY-MM-DD): '{s}'")))
+    }
+}
+
+impl TryFrom<Option<String>> for TaskDue {
+    type Error = NotedError;
+    fn try_from(s: Option<String>) -> Result<TaskDue> {
+        s.map_or(Ok(TaskDue::none()), |s| s.parse())
+    }
+}
+
+impl From<TaskDue> for Option<String> {
+    fn from(due: TaskDue) -> Option<String> {
+        due.0.map(|date| date.to_string())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TaskFront {
     pub task: TaskTitle,
     pub state: TaskState,
+    pub due: TaskDue,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -103,6 +138,7 @@ impl TaskFront {
         Ok(TaskFront {
             task: front.field("task")?,
             state: front.opt_field("state")?.unwrap_or_default(),
+            due: front.opt_field("due")?.unwrap_or(TaskDue::none()),
             created_at,
             updated_at: front.opt_field("updated_at")?.unwrap_or(created_at),
         })
@@ -112,6 +148,7 @@ impl TaskFront {
         let mut front = FrontMatter::default();
         front.set("task", self.task.as_str());
         front.set("state", self.state.as_str());
+        front.set_opt("due", Option::<String>::from(self.due));
         front.set("created_at", self.created_at.to_string());
         front.set("updated_at", self.updated_at.to_string());
         front
@@ -133,6 +170,7 @@ pub struct TaskChange {
     pub state: Option<TaskState>,
     pub notes: Option<TaskBody>,
     pub task: Option<TaskTitle>,
+    pub due: Option<TaskDue>,
 }
 
 #[derive(Default)]
@@ -156,13 +194,14 @@ pub struct TaskNote {
 }
 
 impl TaskNote {
-    pub(crate) fn new(path: TaskPath, title: TaskTitle, body: TaskBody) -> TaskNote {
+    pub(crate) fn new(path: TaskPath, title: TaskTitle, due: TaskDue, body: TaskBody) -> TaskNote {
         let now = Timestamp::now();
         TaskNote {
             path,
             front: TaskFront {
                 task: title,
                 state: TaskState::Created,
+                due,
                 created_at: now,
                 updated_at: now,
             },
@@ -205,6 +244,7 @@ impl TaskNote {
                     .clone()
                     .unwrap_or_else(|| self.front.task.clone()),
                 state,
+                due: change.due.unwrap_or(self.front.due),
                 created_at: self.front.created_at,
                 updated_at: Timestamp::now(),
             },
