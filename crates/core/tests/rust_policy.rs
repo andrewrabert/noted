@@ -3,7 +3,7 @@ mod common;
 use common::{confined, dp, found, grep, held, note, notes_root, read, rp, write};
 use noted::note::LogQuery;
 use noted::store::NotedDir;
-use noted::tasks::{TaskNote, TaskQuery, TaskTitle};
+use noted::tasks::{TaskDue, TaskNote, TaskQuery, TaskTitle};
 use noted::{NotePath, NotedRoot, PolicyFragment, TaskPath, TextPath};
 
 fn tt(s: &str) -> TaskTitle {
@@ -11,7 +11,8 @@ fn tt(s: &str) -> TaskTitle {
 }
 
 async fn create(root: &NotedRoot, task: &str, dir: &str) -> noted::Result<TaskNote> {
-    root.task_create(&tt(task), &dp(dir), &"".into()).await
+    root.task_create(&tt(task), &dp(dir), TaskDue::none(), &"".into())
+        .await
 }
 
 async fn all_tasks(root: &NotedRoot) -> Vec<String> {

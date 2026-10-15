@@ -69,9 +69,15 @@ fn every_call() -> Vec<ToolCall> {
         api::move_note("Inbox.md", "Archive.md", false),
         api::delete_note("Inbox.md"),
         api::log_note("something happened"),
-        api::create_task("do it", "dev/noted", "notes"),
+        api::create_task("do it", "dev/noted", "notes", "2026-11-01"),
         api::get_tasks("dev", true, false),
-        api::update_task("dev/noted/#1", Some("started"), None, None),
+        api::update_task(
+            "dev/noted/#1",
+            Some("started"),
+            None,
+            None,
+            Some("2026-11-01".parse().unwrap()),
+        ),
         api::move_task("dev/noted/#1", "ops"),
     ]
     .into_iter()
@@ -169,6 +175,7 @@ fn every_payload() -> Vec<(&'static str, Value)> {
                 task: "do it".into(),
                 dir: "dev/noted".into(),
                 notes: "notes".into(),
+                due: "2026-11-01".into(),
             }),
         ),
         (
@@ -186,6 +193,7 @@ fn every_payload() -> Vec<(&'static str, Value)> {
                 state: Some("started".into()),
                 notes: None,
                 task: None,
+                due: Some("2026-11-01".parse().unwrap()),
             }),
         ),
         (

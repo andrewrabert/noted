@@ -238,6 +238,7 @@ async fn note_search_skips_task_and_entry_records() {
     root.task_create(
         &"reserved from notes".parse().unwrap(),
         &Default::default(),
+        noted::tasks::TaskDue::none(),
         &"UNIQUETASKBODY\n".into(),
     )
     .await

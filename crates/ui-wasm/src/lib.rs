@@ -10,6 +10,7 @@ use iced::widget::{
 use iced::{Element, Fill, Task, Theme, Widget};
 
 use noted::ToolCall;
+use noted::tasks::TaskDue;
 use noted::tools::ToolOutput;
 
 const LOG_LIMIT: i64 = 50;
@@ -75,6 +76,7 @@ pub struct TaskRow {
     pub path: String,
     pub state: Option<TaskState>,
     pub task: String,
+    pub due: String,
     pub updated_at: String,
 }
 
@@ -132,10 +134,14 @@ pub enum Message {
     TaskStateSelected(String, TaskState),
     NewTaskChanged(String),
     NewGroupChanged(String),
+    NewDueChanged(String),
     TaskNotesAction(text_editor::Action),
     CreateTask,
     DestGroupChanged(String),
     MoveTask,
+    DueChanged(String),
+    SetDue,
+    ClearDue,
     TaskChanged(Result<ToolOutput, api::ApiError>),
 
     LogAction(text_editor::Action),
@@ -236,8 +242,10 @@ pub struct State {
     selected_task: Option<String>,
     new_task: String,
     new_group: String,
+    new_due: String,
     task_notes: text_editor::Content,
     dest_group: String,
+    due: String,
 
     log: text_editor::Content,
     log_filter: String,
@@ -333,8 +341,10 @@ impl State {
             selected_task: None,
             new_task: String::new(),
             new_group: String::from("/"),
+            new_due: String::new(),
             task_notes: text_editor::Content::new(),
             dest_group: String::from("/"),
+            due: String::new(),
             log: text_editor::Content::new(),
             log_filter: String::new(),
             since: String::new(),
@@ -795,12 +805,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::TaskSelected(path) => {
+            state.due = state
+                .tasks
+                .iter()
+                .find(|row| row.path == path)
+                .map(|row| row.due.clone())
+                .unwrap_or_default();
             state.selected_task = Some(path);
             Task::none()
         }
         Message::TaskStateSelected(path, task_state) => call(
             state,
-            api::update_task(&path, Some(task_state.as_str()), None, None),
+            api::update_task(&path, Some(task_state.as_str()), None, None, None),
             Message::TaskChanged,
         ),
         Message::NewTaskChanged(task) => {
@@ -809,6 +825,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::NewGroupChanged(group) => {
             state.new_group = group;
+            Task::none()
+        }
+        Message::NewDueChanged(due) => {
+            state.new_due = due;
             Task::none()
         }
         Message::TaskNotesAction(action) => {
@@ -823,8 +843,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.new_task.trim(),
                 &state.new_group,
                 &state.task_notes.text(),
+                &state.new_due,
             );
             state.new_task.clear();
+            state.new_due.clear();
             state.task_notes = text_editor::Content::new();
             call(state, request, Message::TaskChanged)
         }
@@ -836,6 +858,29 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Some(path) => call(
                 state,
                 api::move_task(path, &state.dest_group),
+                Message::TaskChanged,
+            ),
+            None => Task::none(),
+        },
+        Message::DueChanged(due) => {
+            state.due = due;
+            Task::none()
+        }
+        Message::SetDue => match &state.selected_task {
+            Some(path) => call(
+                state,
+                state
+                    .due
+                    .parse()
+                    .and_then(|due| api::update_task(path, None, None, None, Some(due))),
+                Message::TaskChanged,
+            ),
+            None => Task::none(),
+        },
+        Message::ClearDue => match &state.selected_task {
+            Some(path) => call(
+                state,
+                api::update_task(path, None, None, None, Some(TaskDue::none())),
                 Message::TaskChanged,
             ),
             None => Task::none(),
@@ -937,6 +982,7 @@ fn task_rows(record: &serde_json::Value) -> Vec<TaskRow> {
                     path: string_at(item, "path"),
                     state: TaskState::parse(&string_at(item, "state")),
                     task: string_at(item, "task"),
+                    due: string_at(item, "due"),
                     updated_at: string_at(item, "updated_at"),
                 })
                 .collect()
@@ -1318,6 +1364,7 @@ mod tests {
             path: "dev/#1".to_string(),
             state: Some(TaskState::Created),
             task: "do it".to_string(),
+            due: String::new(),
             updated_at: String::new(),
         }];
         state.entries = vec![LogRow {

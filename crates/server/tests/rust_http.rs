@@ -230,7 +230,12 @@ async fn a_read_only_key_lists_its_task_directory_but_never_writes_it() {
     )
     .await;
     common::root(&dir)
-        .task_create(&"seed".parse().unwrap(), &common::dp("dev"), &"".into())
+        .task_create(
+            &"seed".parse().unwrap(),
+            &common::dp("dev"),
+            noted::tasks::TaskDue::none(),
+            &"".into(),
+        )
         .await
         .unwrap();
 

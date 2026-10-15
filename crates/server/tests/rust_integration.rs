@@ -6,7 +6,7 @@ use common::{dp, found, grep, note, read, rp, write};
 
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use noted::tasks::{TaskChange, TaskNote, TaskQuery, TaskState, TaskTitle};
+use noted::tasks::{TaskChange, TaskDue, TaskNote, TaskQuery, TaskState, TaskTitle};
 use noted::{NotedRoot, TaskPath, TextPath};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -48,7 +48,8 @@ fn ts(s: &str) -> TaskState {
 }
 
 async fn create(root: &NotedRoot, task: &str, dir: &str) -> noted::Result<TaskNote> {
-    root.task_create(&tt(task), &dp(dir), &"".into()).await
+    root.task_create(&tt(task), &dp(dir), TaskDue::none(), &"".into())
+        .await
 }
 
 async fn get(root: &NotedRoot, prefix: &str, include_completed: bool) -> Vec<TaskNote> {
@@ -72,6 +73,7 @@ async fn advance(
             state: Some(ts(state)),
             notes: notes.map(Into::into),
             task: None,
+            due: None,
         },
     )
     .await
