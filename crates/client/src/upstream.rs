@@ -51,6 +51,15 @@ impl Upstream {
             ));
         }
         let builder = reqwest::Client::builder();
+        // rustls-platform-verifier needs a JVM on Android, which a CLI does not have.
+        #[cfg(target_os = "android")]
+        let builder = builder.tls_certs_only(
+            webpki_root_certs::TLS_SERVER_ROOT_CERTS
+                .iter()
+                .map(|der| reqwest::Certificate::from_der(der))
+                .collect::<reqwest::Result<Vec<_>>>()
+                .map_err(|e| unavailable(format!("cannot load TLS root certificates: {e}")))?,
+        );
         #[cfg(unix)]
         let builder = match endpoint.tcp() {
             Some(_) => builder,
