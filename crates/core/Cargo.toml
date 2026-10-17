@@ -24,6 +24,7 @@ grep-matcher = "0.1"
 grep-regex = "0.1"
 hex = "0.4"
 iso8601 = { workspace = true }
+noyalib = { version = "=0.0.58", default-features = false, features = ["minimal"] }
 path-clean = "1"
 rand = "0.10"
 schemars = "1"
