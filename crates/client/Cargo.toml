@@ -31,6 +31,9 @@ axum = "0.8"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 
+[target.'cfg(target_os = "android")'.dependencies]
+webpki-root-certs = "1"
+
 [dev-dependencies]
 axum = "0.8"
 tempfile = { workspace = true }
