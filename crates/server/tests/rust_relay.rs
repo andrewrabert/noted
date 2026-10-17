@@ -101,15 +101,27 @@ fn narrowed(path: &str, policies: &[&str]) -> String {
 }
 
 async fn read(app: &Router, token: Option<&str>, path: &str) -> (StatusCode, Vec<u8>) {
-    post_json(app, "/tool/ReadNote", token, &json!({ "path": path })).await
+    post_json(
+        app,
+        "/tool",
+        token,
+        &json!({"name": "ReadNote", "args": { "path": path }}),
+    )
+    .await
 }
 
 async fn read_at(app: &Router, uri: &str, path: &str) -> (StatusCode, Vec<u8>) {
-    post_json(app, uri, None, &json!({ "path": path })).await
+    post_json(
+        app,
+        uri,
+        None,
+        &json!({"name": "ReadNote", "args": { "path": path }}),
+    )
+    .await
 }
 
 fn data(body: &[u8]) -> String {
-    json_body(body)["ok"]["data"]
+    json_body(body)["ok"]["body"]
         .as_str()
         .expect("a tool answers with data")
         .to_string()
@@ -198,10 +210,7 @@ async fn a_relay_carries_the_credential_it_was_configured_with_unchanged() {
 
     let (carried, target) = first(&seen);
     assert_eq!(carried, format!("Bearer {}", held.expose()));
-    assert_eq!(
-        target,
-        narrowed("/tool/ReadNote", &[r#"{"scope":"/projects"}"#])
-    );
+    assert_eq!(target, narrowed("/tool", &[r#"{"scope":"/projects"}"#]));
 }
 
 #[tokio::test]
@@ -215,7 +224,7 @@ async fn a_relay_holding_no_credential_presents_none() {
 
     let (carried, target) = first(&seen);
     assert!(carried.is_empty(), "{carried}");
-    assert_eq!(target, "/tool/ReadNote");
+    assert_eq!(target, "/tool");
 }
 
 #[cfg(unix)]
@@ -254,19 +263,14 @@ async fn a_relay_confinement_dominates_the_callers() {
     )
     .await;
 
-    let (status, body) = read_at(
-        &app,
-        &narrowed("/tool/ReadNote", &[r#"{"scope":"/b"}"#]),
-        "/x.md",
-    )
-    .await;
+    let (status, body) = read_at(&app, &narrowed("/tool", &[r#"{"scope":"/b"}"#]), "/x.md").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(data(&body), "confined");
     let (_, target) = first(&seen);
     assert_eq!(
         target,
         narrowed(
-            "/tool/ReadNote",
+            "/tool",
             &[
                 r#"{"scope":"/a","access":{"read":true,"write":false}}"#,
                 r#"{"scope":"/b"}"#,
@@ -276,16 +280,16 @@ async fn a_relay_confinement_dominates_the_callers() {
 
     let (status, _) = post_json(
         &app,
-        &narrowed("/tool/WriteNote", &[r#"{"scope":"/b"}"#]),
+        &narrowed("/tool", &[r#"{"scope":"/b"}"#]),
         None,
-        &json!({"path": "/y.md", "content": "no"}),
+        &json!({"name": "WriteNote", "args": {"path": "/y.md", "content": "no"}}),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     let (status, _) = read_at(
         &app,
-        &narrowed("/tool/ReadNote", &[r#"{"access":{"write":true}}"#]),
+        &narrowed("/tool", &[r#"{"access":{"write":true}}"#]),
         "/b/x.md",
     )
     .await;

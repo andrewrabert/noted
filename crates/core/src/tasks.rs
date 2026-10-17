@@ -1,43 +1,30 @@
 use std::str::FromStr;
 
-use clap::ValueEnum;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{DirPath, TaskPath};
 use crate::error::{NotedError, Result, rejected};
 use crate::front_matter::{FrontMatter, split_front};
-use crate::newtype::str_newtype_validated;
+use crate::newtype::{str_enum, str_newtype_validated};
 use crate::note::Note;
 use crate::search::SearchQuery;
 use crate::types::{TaskBody, Timestamp};
 
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ValueEnum,
-)]
-#[serde(rename_all = "lowercase")]
-pub enum TaskState {
-    #[default]
-    Created,
-    Started,
-    Blocked,
-    Completed,
-    Rejected,
-    Invalid,
+str_enum! {
+    #[derive(Default)]
+    pub enum TaskState {
+        #[default]
+        Created => "created",
+        Started => "started",
+        Blocked => "blocked",
+        Completed => "completed",
+        Rejected => "rejected",
+        Invalid => "invalid",
+    }
 }
 
 impl TaskState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            TaskState::Created => "created",
-            TaskState::Started => "started",
-            TaskState::Blocked => "blocked",
-            TaskState::Completed => "completed",
-            TaskState::Rejected => "rejected",
-            TaskState::Invalid => "invalid",
-        }
-    }
-
     pub fn is_closed(self) -> bool {
         matches!(
             self,
@@ -50,29 +37,6 @@ impl TaskState {
             self,
             TaskState::Blocked | TaskState::Completed | TaskState::Rejected | TaskState::Invalid
         )
-    }
-}
-
-impl std::fmt::Display for TaskState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl FromStr for TaskState {
-    type Err = NotedError;
-    fn from_str(s: &str) -> Result<TaskState> {
-        match s {
-            "created" => Ok(TaskState::Created),
-            "started" => Ok(TaskState::Started),
-            "blocked" => Ok(TaskState::Blocked),
-            "completed" => Ok(TaskState::Completed),
-            "rejected" => Ok(TaskState::Rejected),
-            "invalid" => Ok(TaskState::Invalid),
-            _ => Err(rejected(format!(
-                "unknown state '{s}' (created, started, blocked, completed, rejected, invalid)"
-            ))),
-        }
     }
 }
 
@@ -123,7 +87,7 @@ impl From<TaskDue> for Option<String> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TaskFront {
     pub task: TaskTitle,
     pub state: TaskState,
@@ -186,7 +150,7 @@ pub struct TaskSearch {
     pub query: SearchQuery,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TaskNote {
     path: TaskPath,
     front: TaskFront,

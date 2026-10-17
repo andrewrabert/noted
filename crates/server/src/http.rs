@@ -3,7 +3,7 @@ use std::sync::{Arc, LazyLock};
 use axum::{
     Extension, Json, Router,
     body::Bytes,
-    extract::{OriginalUri, Path, State},
+    extract::{OriginalUri, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
@@ -16,8 +16,11 @@ use serde_json::{Value, json};
 use crate::auth::AuthState;
 use crate::mcp::McpContext;
 use crate::relay::Relay;
-use noted::error::NotedError;
-use noted::{APP_NAME, NotedRoot, PolicyFragment, ToolCall};
+use axum::extract::FromRequest;
+use axum::extract::rejection::JsonRejection;
+use noted::error::{NotedError, json_error};
+use noted::tools::{Tool, Tools};
+use noted::{APP_NAME, NotedRoot, PolicyFragment};
 use noted_auth::{Denial, Verified};
 use url::form_urlencoded;
 
@@ -333,21 +336,50 @@ pub(crate) fn document(requires_bearer: bool) -> Html<&'static str> {
     })
 }
 
-fn error_response(error: NotedError) -> Response {
-    let status = match &error {
-        NotedError::NotFound => StatusCode::NOT_FOUND,
-        NotedError::Forbidden => StatusCode::FORBIDDEN,
-        NotedError::InvalidInput(_) => StatusCode::BAD_REQUEST,
-        NotedError::Conflict => StatusCode::CONFLICT,
-        NotedError::Unauthorized | NotedError::InvalidCredentials => StatusCode::UNAUTHORIZED,
-        NotedError::UnknownTxn => StatusCode::BAD_REQUEST,
-        NotedError::Unavailable(_)
-        | NotedError::Io { .. }
-        | NotedError::Json { .. }
-        | NotedError::Db { .. }
-        | NotedError::Http { .. } => StatusCode::SERVICE_UNAVAILABLE,
-    };
-    detail(status, error.message().into_owned())
+struct ApiError {
+    status: StatusCode,
+    detail: String,
+}
+
+#[derive(FromRequest)]
+#[from_request(via(Json), rejection(ApiError))]
+struct ApiJson<T>(T);
+
+impl From<NotedError> for ApiError {
+    fn from(error: NotedError) -> Self {
+        let status = match &error {
+            NotedError::NotFound => StatusCode::NOT_FOUND,
+            NotedError::Forbidden => StatusCode::FORBIDDEN,
+            NotedError::InvalidInput(_) => StatusCode::BAD_REQUEST,
+            NotedError::Conflict => StatusCode::CONFLICT,
+            NotedError::Unauthorized | NotedError::InvalidCredentials => StatusCode::UNAUTHORIZED,
+            NotedError::UnknownTxn => StatusCode::BAD_REQUEST,
+            NotedError::Unavailable(_)
+            | NotedError::Io { .. }
+            | NotedError::Json { .. }
+            | NotedError::Db { .. }
+            | NotedError::Http { .. } => StatusCode::SERVICE_UNAVAILABLE,
+        };
+        Self {
+            status,
+            detail: error.message().into_owned(),
+        }
+    }
+}
+
+impl From<JsonRejection> for ApiError {
+    fn from(rejection: JsonRejection) -> Self {
+        Self {
+            status: rejection.status(),
+            detail: rejection.body_text(),
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        detail(self.status, self.detail)
+    }
 }
 
 fn detail(status: StatusCode, message: String) -> Response {
@@ -408,11 +440,31 @@ pub fn build_app(served: Served) -> Router {
 
     let inner = match &served.kind {
         ServedKind::Origin(root) => Router::new()
-            .route("/tool/{name}", post(origin_tool))
+            .route(
+                "/tool",
+                post(
+                    |State(root): State<NotedRoot>,
+                     Extension(caller): Extension<Verified>,
+                     Extension(query): Extension<Vec<PolicyFragment>>,
+                     ApiJson(tool): ApiJson<Tool>| async move {
+                        let held = root
+                            .with_authority(caller.fragments())
+                            .and_then(|root| root.with_authority(&query));
+                        let result = match held {
+                            Ok(root) => call_tool(&root, tool).await,
+                            Err(e) => Err(e),
+                        };
+                        match result {
+                            Ok(value) => Json(json!({ "ok": value })).into_response(),
+                            Err(e) => ApiError::from(e).into_response(),
+                        }
+                    },
+                ),
+            )
             .with_state(root.clone())
             .nest_service("/mcp", mcp_service(root.clone())),
         ServedKind::Relay(relay) => Router::new()
-            .route("/tool/{name}", post(relay_forward))
+            .route("/tool", post(relay_forward))
             .route("/mcp", post(relay_forward))
             .with_state(relay.clone()),
     };
@@ -498,7 +550,7 @@ async fn auth_middleware(
                 request.extensions_mut().insert(caller);
                 next.run(request).await
             }
-            Err(error) => error_response(error),
+            Err(error) => ApiError::from(error).into_response(),
         },
         Ok(Err(denial)) => denial_response(&denial, &state),
         Err(error) => detail(
@@ -526,39 +578,26 @@ fn denial_response(denial: &Denial, state: &AppState) -> Response {
     }
 }
 
-async fn origin_tool(
-    State(root): State<NotedRoot>,
-    Path(name): Path<String>,
-    Extension(caller): Extension<Verified>,
-    Extension(query): Extension<Vec<PolicyFragment>>,
-    body: Bytes,
-) -> Response {
-    let args = if body.is_empty() {
-        Value::Object(Default::default())
-    } else {
-        match serde_json::from_slice(&body) {
-            Ok(args) => args,
-            Err(e) => return detail(StatusCode::BAD_REQUEST, e.to_string()),
-        }
+/// One arm per tool: the typed method runs it, and its domain value goes
+/// back as JSON.
+async fn call_tool(root: &NotedRoot, tool: Tool) -> noted::Result<Value> {
+    let value = match tool {
+        Tool::SearchNotes(args) => serde_json::to_value(root.search_notes(args).await?),
+        Tool::SearchLog(args) => serde_json::to_value(root.search_log(args).await?),
+        Tool::SearchTasks(args) => serde_json::to_value(root.search_tasks(args).await?),
+        Tool::ReadNote(args) => serde_json::to_value(root.read_note(args).await?),
+        Tool::WriteNote(args) => serde_json::to_value(root.write_note(args).await?),
+        Tool::EditNote(args) => serde_json::to_value(root.edit_note(args).await?),
+        Tool::MoveNote(args) => serde_json::to_value(root.move_note(args).await?),
+        Tool::DeleteNote(args) => serde_json::to_value(root.delete_note(args).await?),
+        Tool::LogNote(args) => serde_json::to_value(Tools::log_note(root, args).await?),
+        Tool::GetLog(args) => serde_json::to_value(root.get_log(args).await?),
+        Tool::CreateTask(args) => serde_json::to_value(root.create_task(args).await?),
+        Tool::GetTasks(args) => serde_json::to_value(root.get_tasks(args).await?),
+        Tool::UpdateTask(args) => serde_json::to_value(root.update_task(args).await?),
+        Tool::MoveTask(args) => serde_json::to_value(root.move_task(args).await?),
     };
-    match run(&root, &name, args, &caller, &query).await {
-        Ok(output) => Json(json!({ "ok": output })).into_response(),
-        Err(e) => error_response(e),
-    }
-}
-
-async fn run(
-    root: &NotedRoot,
-    name: &str,
-    args: Value,
-    caller: &Verified,
-    query: &[PolicyFragment],
-) -> noted::Result<noted::tools::ToolOutput> {
-    let call = ToolCall::raw(name, args)?;
-    root.with_authority(caller.fragments())?
-        .with_authority(query)?
-        .invoke(&call)
-        .await
+    value.map_err(|e| json_error("tool result", e))
 }
 
 async fn relay_forward(

@@ -1,19 +1,4 @@
 use noted::HttpUrl;
-use std::pin::Pin;
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) trait Threadsafe: Send + Sync {}
-#[cfg(not(target_arch = "wasm32"))]
-impl<T: Send + Sync + ?Sized> Threadsafe for T {}
-#[cfg(target_arch = "wasm32")]
-pub(crate) trait Threadsafe {}
-#[cfg(target_arch = "wasm32")]
-impl<T: ?Sized> Threadsafe for T {}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-#[cfg(target_arch = "wasm32")]
-pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) type Router = axum::Router;

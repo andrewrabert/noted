@@ -171,7 +171,7 @@ impl Default for SearchQuery {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hit<A = NotePath> {
     pub path: A,
     pub lines: BTreeMap<u64, String>,

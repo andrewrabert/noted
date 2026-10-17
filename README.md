@@ -3,7 +3,7 @@
 A tree of `.md` notes exposed three ways over one set of file operations:
 
 - **CLI** — local files, or drive a remote server with `NOTED_URL`, over TCP or a Unix socket
-- **HTTP API** — REST at `/tool/{Name}`, plus MCP (Streamable HTTP) at `/mcp`, under OAuth 2.1, over TCP or a Unix socket, with the web UI at `/`
+- **HTTP API** — REST at `/tool` (body `{"name": …, "args": …}`), plus MCP (Streamable HTTP) at `/mcp`, under OAuth 2.1, over TCP or a Unix socket, with the web UI at `/`
 - **MCP** — over stdio for a local client
 
 A served process is an **origin** when it holds the notes directory, and a **relay**

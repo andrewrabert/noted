@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    backend, dp, fixture_dir, found, grep, invoke, note, notes_root, query, read, root, rp, write,
+    backend, dp, fixture_dir, found, grep, note, notes_root, query, read, root, rp, write,
 };
 use noted::TextPath;
 use noted::note::{Condition, Etag, Note};
@@ -276,14 +276,17 @@ async fn search_orders_paths_case_insensitively() {
 
     for mode in ["path", "file"] {
         let pattern = if mode == "path" { "." } else { "needle" };
-        let out = invoke(
+        let hits = noted::tools::Tools::search_notes(
             &bknd,
-            "SearchNotes",
-            json!({"pattern": pattern, "mode": mode}),
+            serde_json::from_value(json!({"pattern": pattern, "mode": mode})).unwrap(),
         )
         .await
         .unwrap();
-        let out = out.render();
+        let out = hits
+            .iter()
+            .map(|hit| hit.path.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         let got: Vec<&str> = out
             .lines()
             .filter_map(|l| l.strip_prefix('/'))

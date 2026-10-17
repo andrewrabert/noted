@@ -2,7 +2,9 @@ use crate::browser::input as text_input;
 use iced::widget::{button, column, container, row, scrollable, text};
 use iced::{Element, Fill, Widget};
 
-use crate::{Editor, LogRow, Message, State, editor};
+use noted::LogNote;
+
+use crate::{Editor, Message, State, editor};
 
 pub fn view(state: &State) -> Element<'_, Message> {
     column![
@@ -51,15 +53,15 @@ fn entries(state: &State) -> Element<'_, Message> {
     scrollable(body).height(Fill).boxed()
 }
 
-fn entry_view(entry: &LogRow) -> Element<'_, Message> {
+fn entry_view(entry: &LogNote) -> Element<'_, Message> {
     container(
         column![
             row![
-                text(entry.created.clone()).width(260),
-                text(entry.path.clone()).width(Fill),
+                text(entry.front().created.to_string()).width(260),
+                text(entry.path().to_string()).width(Fill),
             ]
             .spacing(5),
-            text(entry.body.clone()),
+            text(entry.body().to_string()),
         ]
         .spacing(5),
     )

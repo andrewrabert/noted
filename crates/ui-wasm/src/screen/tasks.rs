@@ -2,7 +2,9 @@ use crate::browser::input as text_input;
 use iced::widget::{button, column, pick_list, row, scrollable, table, text};
 use iced::{Element, Fill, Widget};
 
-use crate::{Editor, Message, State, TaskRow, TaskState, editor, labeled_input};
+use noted::tasks::{TaskNote, TaskState};
+
+use crate::{Editor, Message, State, editor, labeled_input};
 
 pub fn view(state: &State) -> Element<'_, Message> {
     column![
@@ -40,22 +42,33 @@ fn controls(state: &State) -> Element<'_, Message> {
 fn grid(state: &State) -> Element<'_, Message> {
     scrollable(table(
         [
-            table::column(text("state"), |row: TaskRow| {
-                pick_list(row.state, &TaskState::ALL[..], TaskState::to_string)
-                    .placeholder("state")
-                    .on_select(move |picked| Message::TaskStateSelected(row.path.clone(), picked))
+            table::column(text("state"), |row: TaskNote| {
+                let path = row.path().to_string();
+                pick_list(
+                    Some(row.front().state),
+                    TaskState::ALL,
+                    TaskState::to_string,
+                )
+                .placeholder("state")
+                .on_select(move |picked| Message::TaskStateSelected(path.clone(), picked))
             })
             .width(140),
-            table::column(text("task"), |row: TaskRow| {
-                let selected = row.task.clone();
+            table::column(text("task"), |row: TaskNote| {
+                let selected = row.front().task.to_string();
                 button(text(selected))
-                    .on_press(Message::TaskSelected(row.path.clone()))
+                    .on_press(Message::TaskSelected(row.path().to_string()))
                     .width(Fill)
             })
             .width(Fill),
-            table::column(text("due"), |row: TaskRow| text(row.due)).width(110),
-            table::column(text("path"), |row: TaskRow| text(row.path)).width(240),
-            table::column(text("updated"), |row: TaskRow| text(row.updated_at)).width(220),
+            table::column(text("due"), |row: TaskNote| {
+                text(Option::<String>::from(row.front().due).unwrap_or_default())
+            })
+            .width(110),
+            table::column(text("path"), |row: TaskNote| text(row.path().to_string())).width(240),
+            table::column(text("updated"), |row: TaskNote| {
+                text(row.front().updated_at.to_string())
+            })
+            .width(220),
         ],
         state.task_rows(),
     ))

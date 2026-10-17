@@ -1,9 +1,10 @@
 mod common;
 
-use common::{backend, confined_backend, fixture_dir, invoke, note, notes_root, read, root, write};
+use common::{backend, confined_backend, fixture_dir, note, notes_root, read, root, write};
 use noted::tasks::{
     TaskChange, TaskDue, TaskNote, TaskQuery, TaskState, TaskTitle, parse_task_file,
 };
+use noted::tools::Tools as _;
 use noted::{DirPath, NotePath, NotedRoot, TaskPath};
 
 // the on-disk directory of task `n` under the directory `under` ('' = top)
@@ -377,7 +378,7 @@ async fn update_state_and_body_rules() {
             .parse::<TaskState>()
             .unwrap_err()
             .to_string()
-            .contains("unknown state")
+            .contains("'bogus' is not one of")
     );
     assert!(
         advance(&root, "/#1", "completed", None)
@@ -525,7 +526,28 @@ fn parse_task_file_edges() {
 }
 
 async fn find(backend: &NotedRoot, args: serde_json::Value) -> String {
-    invoke(backend, "SearchTasks", args).await.unwrap().render()
+    let line = args["mode"] == "line";
+    let hits = backend
+        .search_tasks(serde_json::from_value(args).unwrap())
+        .await
+        .unwrap();
+    match line {
+        false => hits
+            .iter()
+            .map(|hit| hit.path.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        true => hits
+            .iter()
+            .map(|hit| {
+                hit.lines()
+                    .map(|(num, text)| format!("{}:{num}:{text}", hit.path))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .collect::<Vec<_>>()
+            .join("\n--\n"),
+    }
 }
 
 #[tokio::test]
@@ -622,7 +644,10 @@ async fn search_skips_notes_and_validates_its_prefix() {
         serde_json::json!({"pattern": "("}),
     ] {
         assert!(
-            invoke(&bknd, "SearchTasks", args.clone()).await.is_err(),
+            match serde_json::from_value(args.clone()) {
+                Ok(parsed) => bknd.search_tasks(parsed).await.is_err(),
+                Err(_) => true,
+            },
             "{args} should be rejected"
         );
     }
@@ -648,13 +673,10 @@ async fn search_admits_only_what_the_grant_allows() {
         "the unconfined caller sees both"
     );
     assert!(
-        invoke(
-            &confined,
-            "SearchTasks",
-            serde_json::json!({"prefix": "ops"}),
-        )
-        .await
-        .is_err(),
+        confined
+            .search_tasks(serde_json::from_value(serde_json::json!({"prefix": "ops"})).unwrap())
+            .await
+            .is_err(),
         "a prefix the policy denies outright is refused"
     );
 }

@@ -5,7 +5,8 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use noted::tools::ReadArgs;
-use noted::{Bearer, Endpoint, PolicyFragment, ToolCall};
+use noted::tools::Tools as _;
+use noted::{Bearer, Endpoint, PolicyFragment};
 use noted_client::{Backend, BackendArgs, Transport};
 use noted_server::serve::{Bind, HttpConfig, ServedConfig, serve_http};
 use noted_server::socket::{
@@ -80,12 +81,9 @@ async fn tools_round_trip_over_a_unix_socket() {
     let dir = common::fixture_dir();
     let (sock, token) = serve(&dir).await;
     let backend = dialing(&sock, &token);
-    let call = ToolCall::new(ReadArgs::new(
-        noted::TextPath::try_from(common::rp("/Inbox.md")).unwrap(),
-    ))
-    .unwrap();
-    let out = backend.invoke(&call).await.unwrap();
-    assert!(out.render().contains("follow up with Dana"));
+    let args = ReadArgs::new(noted::TextPath::try_from(common::rp("/Inbox.md")).unwrap());
+    let note = backend.read_note(args).await.unwrap();
+    assert!(note.body().as_str().contains("follow up with Dana"));
 }
 
 #[tokio::test]
@@ -93,11 +91,8 @@ async fn an_unknown_bearer_is_refused_over_the_socket() {
     let dir = common::fixture_dir();
     let (sock, _token) = serve(&dir).await;
     let backend = dialing(&sock, "not-a-token");
-    let call = ToolCall::new(ReadArgs::new(
-        noted::TextPath::try_from(common::rp("/Inbox.md")).unwrap(),
-    ))
-    .unwrap();
-    let err = backend.invoke(&call).await.unwrap_err();
+    let args = ReadArgs::new(noted::TextPath::try_from(common::rp("/Inbox.md")).unwrap());
+    let err = backend.read_note(args).await.unwrap_err();
     assert!(err.is_rejection(), "{err}");
 }
 

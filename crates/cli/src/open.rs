@@ -5,10 +5,9 @@ use std::process::ExitCode;
 use clap::Args;
 use tempfile::TempDir;
 
-use noted::ToolCall;
 use noted::error::{NotedError, Result, io_error, rejected, unavailable};
 use noted::note::{Condition, TextNote};
-use noted::tools::{ReadArgs, SearchNotesArgs, ToolOutput, WriteArgs};
+use noted::tools::{ReadArgs, SearchNotesArgs, Tools, WriteArgs};
 use noted::{NotePath, TextPath};
 use noted_client::Backend;
 
@@ -112,26 +111,12 @@ async fn pick_path(backend: &Backend) -> Result<Pick> {
 }
 
 async fn list_paths(backend: &Backend) -> Result<Vec<String>> {
-    let call = ToolCall::new(SearchNotesArgs::recent())?;
-    match backend.invoke(&call).await? {
-        ToolOutput::Text(s) => Ok(parse_paths(&s)),
-        other => Err(rejected(format!(
-            "unexpected search output: {}",
-            other.render()
-        ))),
-    }
-}
-
-fn parse_paths(text: &str) -> Vec<String> {
-    text.lines()
-        .map(str::trim)
-        .filter(|line| {
-            NotePath::new(line)
-                .and_then(TextPath::try_from)
-                .is_ok_and(|path| path.as_ref() != &NotePath::default())
-        })
-        .map(str::to_string)
-        .collect()
+    let hits = backend.search_notes(SearchNotesArgs::recent()).await?;
+    Ok(hits
+        .into_iter()
+        .filter(|hit| hit.path.as_ref() != &NotePath::default())
+        .map(|hit| hit.path.to_string())
+        .collect())
 }
 
 async fn edit_note(
@@ -179,8 +164,8 @@ async fn edit_note(
     };
 
     match write_note(backend, &edited, when).await {
-        Ok(out) => {
-            println!("{}", out.render());
+        Ok(()) => {
+            println!("wrote {path}");
             buffer.commit();
             Ok(ExitCode::SUCCESS)
         }
@@ -189,8 +174,8 @@ async fn edit_note(
             if std::io::stdin().is_terminal()
                 && crate::prompt::confirm("overwrite anyway? [y/N]").await
             {
-                let out = write_note(backend, &edited, None).await?;
-                println!("{}", out.render());
+                write_note(backend, &edited, None).await?;
+                println!("wrote {path}");
                 buffer.commit();
                 Ok(ExitCode::SUCCESS)
             } else {
@@ -204,44 +189,13 @@ async fn edit_note(
 }
 
 async fn read_note(backend: &Backend, path: &TextPath) -> Result<TextNote> {
-    let call = ToolCall::new(ReadArgs::new(path.clone()))?;
-    match backend.invoke(&call).await? {
-        ToolOutput::Text(s) => Ok(TextNote::new(path.clone(), s)),
-        other => Err(rejected(format!(
-            "unexpected read output: {}",
-            other.render()
-        ))),
-    }
+    backend.read_note(ReadArgs::new(path.clone())).await
 }
 
-async fn write_note(
-    backend: &Backend,
-    note: &TextNote,
-    when: Option<Condition>,
-) -> Result<ToolOutput> {
+async fn write_note(backend: &Backend, note: &TextNote, when: Option<Condition>) -> Result<()> {
     let mut args = WriteArgs::new(note.path().clone(), note.body().clone());
     if let Some(when) = when {
         args = args.when(when);
     }
-    backend.invoke(&ToolCall::new(args)?).await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_paths;
-
-    #[test]
-    fn parse_paths_keeps_notes_and_drops_blanks_and_non_notes() {
-        let text = "/Inbox.md\n\n  /projects/ideas.md  \n/\n/Inbox\n/projects/ideas\n/dev/#2\n";
-        assert_eq!(
-            parse_paths(text),
-            vec!["/Inbox.md".to_string(), "/projects/ideas.md".to_string()]
-        );
-    }
-
-    #[test]
-    fn parse_paths_of_empty_output_is_empty() {
-        assert!(parse_paths("").is_empty());
-        assert!(parse_paths("\n \n").is_empty());
-    }
+    backend.write_note(args).await
 }
