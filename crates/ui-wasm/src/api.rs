@@ -1,122 +1,10 @@
-use noted::ToolCall;
-use noted::search::{SearchMode, SearchOrder};
-use noted::tasks::TaskDue;
-use noted::tools::ToolOutput;
+use noted::error::rejected;
+use noted::search::{Hit, SearchMode, SearchOrder};
+use noted::tasks::{TaskDue, TaskNote, TaskState};
+use noted::tools::{Tools, UpdateTaskArgs};
+use noted::{LogNote, LogPath, NotePath, TaskPath, TextNote, TextPath, Trashed};
 use noted_client::{Backend, BackendArgs, Transport};
-use serde::Serialize;
-
-#[derive(Clone, Serialize)]
-pub struct SearchNotesArgs {
-    pub pattern: String,
-    pub mode: SearchMode,
-    pub sort: SearchOrder,
-}
-
-#[derive(Clone, Serialize)]
-pub struct SearchLogArgs {
-    pub pattern: String,
-    pub mode: SearchMode,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub since: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub until: Option<String>,
-    pub limit: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SearchTasksArgs {
-    pub pattern: String,
-    pub prefix: String,
-    pub include_completed: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct GetLogArgs {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub since: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub until: Option<String>,
-    pub body: bool,
-    pub limit: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ReadArgs {
-    pub path: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct WriteArgs {
-    pub path: String,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct EditArgs {
-    pub path: String,
-    pub old_string: String,
-    pub new_string: String,
-    pub replace_all: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct MoveArgs {
-    pub path: String,
-    pub dest: String,
-    pub overwrite: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DeleteArgs {
-    pub path: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct LogArgs {
-    pub body: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CreateTaskArgs {
-    pub task: String,
-    pub dir: String,
-    pub notes: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub due: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct GetTasksArgs {
-    pub prefix: String,
-    pub body: bool,
-    pub include_completed: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct UpdateTaskArgs {
-    pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub notes: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub due: Option<TaskDue>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct MoveTaskArgs {
-    pub path: String,
-    pub dest: String,
-}
-
-fn raw(name: &str, args: impl Serialize) -> noted::Result<ToolCall> {
-    ToolCall::raw(
-        name,
-        serde_json::to_value(args).unwrap_or(serde_json::Value::Null),
-    )
-}
+use serde_json::json;
 
 fn pattern_or_all(pattern: &str) -> String {
     if pattern.trim().is_empty() {
@@ -126,205 +14,249 @@ fn pattern_or_all(pattern: &str) -> String {
     }
 }
 
+pub async fn search_notes(
+    backend: noted::Result<Backend>,
+    pattern: String,
+    mode: SearchMode,
+    sort: SearchOrder,
+) -> Result<Vec<Hit<TextPath>>, ApiError> {
+    async move {
+        let args = serde_json::from_value(json!({
+            "pattern": pattern_or_all(&pattern),
+            "mode": mode,
+            "sort": sort,
+        }))
+        .map_err(|e| rejected(e.to_string()))?;
+        backend?.search_notes(args).await
+    }
+    .await
+    .map_err(ApiError::of)
+}
+
 /// An empty bound is omitted rather than sent: the tool reads a missing bound as
 /// unbounded and an empty string as a malformed instant.
-fn bound(value: &str) -> Option<String> {
-    let value = value.trim();
-    (!value.is_empty()).then(|| value.to_string())
+pub async fn search_log(
+    backend: noted::Result<Backend>,
+    pattern: String,
+    since: String,
+    until: String,
+    limit: i64,
+) -> Result<Vec<Hit<LogPath>>, ApiError> {
+    async move {
+        let (since, until) = (since.trim(), until.trim());
+        let args = serde_json::from_value(json!({
+            "pattern": pattern_or_all(&pattern),
+            "mode": SearchMode::Line,
+            "since": (!since.is_empty()).then_some(since),
+            "until": (!until.is_empty()).then_some(until),
+            "limit": limit,
+        }))
+        .map_err(|e| rejected(e.to_string()))?;
+        backend?.search_log(args).await
+    }
+    .await
+    .map_err(ApiError::of)
 }
 
-pub fn search_notes(pattern: &str, mode: SearchMode, sort: SearchOrder) -> noted::Result<ToolCall> {
-    raw(
-        "SearchNotes",
-        SearchNotesArgs {
-            pattern: pattern_or_all(pattern),
-            mode,
-            sort,
-        },
-    )
-}
-
-pub fn search_log(pattern: &str, since: &str, until: &str, limit: i64) -> noted::Result<ToolCall> {
-    raw(
-        "SearchLog",
-        SearchLogArgs {
-            pattern: pattern_or_all(pattern),
-            mode: SearchMode::Line,
-            since: bound(since),
-            until: bound(until),
-            limit,
-        },
-    )
-}
-
-pub fn search_tasks(
-    pattern: &str,
-    prefix: &str,
+pub async fn search_tasks(
+    backend: noted::Result<Backend>,
+    pattern: String,
+    prefix: String,
     include_completed: bool,
-) -> noted::Result<ToolCall> {
-    raw(
-        "SearchTasks",
-        SearchTasksArgs {
-            pattern: pattern_or_all(pattern),
-            prefix: prefix.to_string(),
-            include_completed,
-        },
-    )
+) -> Result<Vec<Hit<TaskPath>>, ApiError> {
+    async move {
+        let args = serde_json::from_value(json!({
+            "pattern": pattern_or_all(&pattern),
+            "prefix": prefix,
+            "include_completed": include_completed,
+        }))
+        .map_err(|e| rejected(e.to_string()))?;
+        backend?.search_tasks(args).await
+    }
+    .await
+    .map_err(ApiError::of)
 }
 
-pub fn get_log(since: &str, until: &str, limit: i64) -> noted::Result<ToolCall> {
-    raw(
-        "GetLog",
-        GetLogArgs {
-            since: bound(since),
-            until: bound(until),
-            body: true,
-            limit,
-        },
-    )
+pub async fn get_log(
+    backend: noted::Result<Backend>,
+    since: String,
+    until: String,
+    limit: i64,
+) -> Result<Vec<LogNote>, ApiError> {
+    async move {
+        let (since, until) = (since.trim(), until.trim());
+        let args = serde_json::from_value(json!({
+            "since": (!since.is_empty()).then_some(since),
+            "until": (!until.is_empty()).then_some(until),
+            "limit": limit,
+        }))
+        .map_err(|e| rejected(e.to_string()))?;
+        backend?.get_log(args).await
+    }
+    .await
+    .map_err(ApiError::of)
 }
 
-pub fn read_note(path: &str) -> noted::Result<ToolCall> {
-    raw(
-        "ReadNote",
-        ReadArgs {
-            path: path.to_string(),
-        },
-    )
+pub async fn read_note(
+    backend: noted::Result<Backend>,
+    path: String,
+) -> Result<TextNote, ApiError> {
+    async move {
+        let args =
+            serde_json::from_value(json!({ "path": path })).map_err(|e| rejected(e.to_string()))?;
+        backend?.read_note(args).await
+    }
+    .await
+    .map_err(ApiError::of)
 }
 
-pub fn write_note(path: &str, content: &str) -> noted::Result<ToolCall> {
-    raw(
-        "WriteNote",
-        WriteArgs {
-            path: path.to_string(),
-            content: content.to_string(),
-        },
-    )
+pub async fn write_note(
+    backend: noted::Result<Backend>,
+    path: String,
+    content: String,
+) -> Result<(), ApiError> {
+    async move {
+        let args = serde_json::from_value(json!({ "path": path, "content": content }))
+            .map_err(|e| rejected(e.to_string()))?;
+        backend?.write_note(args).await
+    }
+    .await
+    .map_err(ApiError::of)
 }
 
-pub fn edit_note(
-    path: &str,
-    old_string: &str,
-    new_string: &str,
+pub async fn edit_note(
+    backend: noted::Result<Backend>,
+    path: String,
+    old_string: String,
+    new_string: String,
     replace_all: bool,
-) -> noted::Result<ToolCall> {
-    raw(
-        "EditNote",
-        EditArgs {
-            path: path.to_string(),
-            old_string: old_string.to_string(),
-            new_string: new_string.to_string(),
-            replace_all,
-        },
-    )
+) -> Result<TextNote, ApiError> {
+    async move {
+        let args = serde_json::from_value(json!({
+            "path": path,
+            "old_string": old_string,
+            "new_string": new_string,
+            "replace_all": replace_all,
+        }))
+        .map_err(|e| rejected(e.to_string()))?;
+        backend?.edit_note(args).await
+    }
+    .await
+    .map_err(ApiError::of)
 }
 
-pub fn move_note(path: &str, dest: &str, overwrite: bool) -> noted::Result<ToolCall> {
-    raw(
-        "MoveNote",
-        MoveArgs {
-            path: path.to_string(),
-            dest: dest.to_string(),
-            overwrite,
-        },
-    )
+pub async fn move_note(
+    backend: noted::Result<Backend>,
+    path: String,
+    dest: String,
+    overwrite: bool,
+) -> Result<(), ApiError> {
+    async move {
+        let args = serde_json::from_value(json!({
+            "path": path,
+            "dest": dest,
+            "overwrite": overwrite,
+        }))
+        .map_err(|e| rejected(e.to_string()))?;
+        backend?.move_note(args).await
+    }
+    .await
+    .map_err(ApiError::of)
 }
 
-pub fn delete_note(path: &str) -> noted::Result<ToolCall> {
-    raw(
-        "DeleteNote",
-        DeleteArgs {
-            path: path.to_string(),
-        },
-    )
+pub async fn delete_note(
+    backend: noted::Result<Backend>,
+    path: String,
+) -> Result<Trashed, ApiError> {
+    async move {
+        let args =
+            serde_json::from_value(json!({ "path": path })).map_err(|e| rejected(e.to_string()))?;
+        backend?.delete_note(args).await
+    }
+    .await
+    .map_err(ApiError::of)
 }
 
-pub fn log_note(body: &str) -> noted::Result<ToolCall> {
-    raw(
-        "LogNote",
-        LogArgs {
-            body: body.to_string(),
-        },
-    )
+pub async fn log_note(backend: noted::Result<Backend>, body: String) -> Result<LogNote, ApiError> {
+    async move {
+        let args =
+            serde_json::from_value(json!({ "body": body })).map_err(|e| rejected(e.to_string()))?;
+        backend?.log_note(args).await
+    }
+    .await
+    .map_err(ApiError::of)
 }
 
-pub fn create_task(task: &str, dir: &str, notes: &str, due: &str) -> noted::Result<ToolCall> {
-    raw(
-        "CreateTask",
-        CreateTaskArgs {
-            task: task.to_string(),
-            dir: dir.to_string(),
-            notes: notes.to_string(),
-            due: due.to_string(),
-        },
-    )
+pub async fn create_task(
+    backend: noted::Result<Backend>,
+    task: String,
+    dir: String,
+    notes: String,
+    due: String,
+) -> Result<TaskNote, ApiError> {
+    async move {
+        let args = serde_json::from_value(json!({
+            "task": task,
+            "dir": dir,
+            "notes": notes,
+            "due": (!due.is_empty()).then_some(due),
+        }))
+        .map_err(|e| rejected(e.to_string()))?;
+        backend?.create_task(args).await
+    }
+    .await
+    .map_err(ApiError::of)
 }
 
-pub fn get_tasks(prefix: &str, body: bool, include_completed: bool) -> noted::Result<ToolCall> {
-    raw(
-        "GetTasks",
-        GetTasksArgs {
-            prefix: prefix.to_string(),
-            body,
-            include_completed,
-        },
-    )
+pub async fn get_tasks(
+    backend: noted::Result<Backend>,
+    prefix: String,
+    include_completed: bool,
+) -> Result<Vec<TaskNote>, ApiError> {
+    async move {
+        let args = serde_json::from_value(json!({
+            "prefix": prefix,
+            "include_completed": include_completed,
+        }))
+        .map_err(|e| rejected(e.to_string()))?;
+        backend?.get_tasks(args).await
+    }
+    .await
+    .map_err(ApiError::of)
 }
 
-pub fn update_task(
-    path: &str,
-    state: Option<&str>,
-    notes: Option<&str>,
-    task: Option<&str>,
+pub async fn update_task(
+    backend: noted::Result<Backend>,
+    path: String,
+    state: Option<TaskState>,
     due: Option<TaskDue>,
-) -> noted::Result<ToolCall> {
-    raw(
-        "UpdateTask",
-        UpdateTaskArgs {
-            path: path.to_string(),
-            state: state.map(str::to_string),
-            notes: notes.map(str::to_string),
-            task: task.map(str::to_string),
+) -> Result<TaskNote, ApiError> {
+    async move {
+        let args = UpdateTaskArgs {
+            path: NotePath::new(&path).and_then(TaskPath::try_from)?,
+            state,
+            notes: None,
+            task: None,
             due,
-        },
-    )
-}
-
-pub fn move_task(path: &str, dest: &str) -> noted::Result<ToolCall> {
-    raw(
-        "MoveTask",
-        MoveTaskArgs {
-            path: path.to_string(),
-            dest: dest.to_string(),
-        },
-    )
-}
-
-pub fn paths(output: &ToolOutput) -> Vec<String> {
-    match output {
-        ToolOutput::Text(s) => s
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(str::to_string)
-            .collect(),
-        _ => Vec::new(),
+        };
+        backend?.update_task(args).await
     }
+    .await
+    .map_err(ApiError::of)
 }
 
-pub fn text(output: ToolOutput) -> String {
-    match output {
-        ToolOutput::Text(s) => s,
-        other => other.render(),
+pub async fn move_task(
+    backend: noted::Result<Backend>,
+    path: String,
+    dest: String,
+) -> Result<TaskNote, ApiError> {
+    async move {
+        let args = serde_json::from_value(json!({ "path": path, "dest": dest }))
+            .map_err(|e| rejected(e.to_string()))?;
+        backend?.move_task(args).await
     }
-}
-
-pub fn record(output: ToolOutput) -> serde_json::Value {
-    match output {
-        ToolOutput::Record(v) => v,
-        _ => serde_json::Value::Null,
-    }
+    .await
+    .map_err(ApiError::of)
 }
 
 /// The Clone-able projection a `Message` can hold.
@@ -366,17 +298,4 @@ pub fn remote(endpoint: String, bearer: Option<noted::Bearer>) -> noted::Result<
         bearer,
         transport: Transport::Real,
     })
-}
-
-pub async fn invoke(
-    call: noted::Result<ToolCall>,
-    endpoint: String,
-    bearer: Option<noted::Bearer>,
-) -> Result<ToolOutput, ApiError> {
-    async move {
-        let call = call?;
-        remote(endpoint, bearer)?.invoke(&call).await
-    }
-    .await
-    .map_err(ApiError::of)
 }

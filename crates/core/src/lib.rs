@@ -1,4 +1,3 @@
-mod call;
 #[path = "fs/disk.rs"]
 mod disk;
 mod domain;
@@ -28,7 +27,6 @@ pub mod tools;
 pub mod types;
 pub mod util;
 
-pub use call::{ToolCall, ToolListing};
 pub use domain::{DirPath, LogPath, NotePath, TaskPath, TextPath};
 pub use endpoint::Endpoint;
 pub use error::{NotedError, Result};

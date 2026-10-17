@@ -303,15 +303,15 @@ async fn run(command: Option<Command>, config: &Config) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     };
     match command {
-        Command::Search(c) => dispatch::run_dispatch(config, dispatch::search(c)?).await,
-        Command::Read(c) => dispatch::run_dispatch(config, dispatch::passthrough_of(c)?).await,
-        Command::Write(c) => dispatch::run_dispatch(config, dispatch::passthrough_of(c)?).await,
-        Command::Edit(c) => dispatch::run_dispatch(config, dispatch::passthrough_of(c)?).await,
+        Command::Search(c) => dispatch::search_notes(config, c).await,
+        Command::Read(c) => dispatch::read_note(config, c).await,
+        Command::Write(c) => dispatch::write_note(config, c).await,
+        Command::Edit(c) => dispatch::edit_note(config, c).await,
         Command::Open(c) => open::run_open(config, c).await,
-        Command::Move(c) => dispatch::run_dispatch(config, dispatch::passthrough_of(c)?).await,
-        Command::Delete(c) => dispatch::run_dispatch(config, dispatch::passthrough_of(c)?).await,
-        Command::Log(c) => dispatch::run_dispatch(config, dispatch::build_log(c)?).await,
-        Command::Task(c) => dispatch::run_dispatch(config, dispatch::build_task(c)?).await,
+        Command::Move(c) => dispatch::move_note(config, c).await,
+        Command::Delete(c) => dispatch::delete_note(config, c).await,
+        Command::Log(c) => dispatch::run_log(config, c).await,
+        Command::Task(c) => dispatch::run_task(config, c).await,
         Command::Auth(c) => auth::run_auth(c, config).await,
         Command::Server(c) => run_server(c, config).await,
     }

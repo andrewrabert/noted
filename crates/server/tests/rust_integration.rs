@@ -294,9 +294,16 @@ async fn mcp_initialize_list_and_call() {
     assert_eq!(missing["isError"], true);
     assert!(tool_text(&missing).starts_with("error:"));
 
-    let unknown = call(&app, "Nope", json!({})).await;
-    assert_eq!(unknown["isError"], true);
-    assert!(tool_text(&unknown).contains("not found"));
+    let bad = call(&app, "CreateTask", json!({"task": "x", "due": "tomorrow"})).await;
+    assert_eq!(bad["isError"], true);
+
+    let unknown = mcp_post(
+        &app,
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "Nope", "arguments": {}}}),
+    )
+    .await;
+    assert!(unknown["error"].is_object(), "{unknown}");
 }
 
 #[tokio::test]
@@ -321,16 +328,9 @@ async fn mcp_read_only_hides_and_refuses_mutators() {
         .map(|t| t["name"].as_str().unwrap())
         .collect();
     assert_eq!(
-        names,
-        vec![
-            "SearchNotes",
-            "SearchLog",
-            "SearchTasks",
-            "ReadNote",
-            "GetLog",
-            "GetTasks"
-        ],
-        "a read-only policy lists every read tool and no writer"
+        names.len(),
+        14,
+        "every tool is listed; the policy refuses at call time"
     );
 
     let write = call(&app, "WriteNote", json!({"path": "/x.md", "content": "y"})).await;
@@ -365,10 +365,10 @@ async fn http_tool_route_and_errors() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/tool/ReadNote")
+                .uri("/tool")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(
-                    json!({"path": "/Inbox.md"}).to_string(),
+                    json!({"name": "ReadNote", "args": {"path": "/Inbox.md"}}).to_string(),
                 ))
                 .unwrap(),
         )
@@ -376,16 +376,16 @@ async fn http_tool_route_and_errors() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let value = body_json(resp).await;
-    assert!(value["ok"]["data"].as_str().unwrap().contains("# Inbox"));
+    assert!(value["ok"]["body"].as_str().unwrap().contains("# Inbox"));
 
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/tool/ReadNote")
+                .uri("/tool")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(
-                    json!({"path": "/nope.md"}).to_string(),
+                    json!({"name": "ReadNote", "args": {"path": "/nope.md"}}).to_string(),
                 ))
                 .unwrap(),
         )
@@ -404,10 +404,10 @@ async fn http_bearer_auth_gates_requests() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/tool/ReadNote")
+                .uri("/tool")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(
-                    json!({"path": "/Inbox.md"}).to_string(),
+                    json!({"name": "ReadNote", "args": {"path": "/Inbox.md"}}).to_string(),
                 ))
                 .unwrap(),
         )
@@ -419,11 +419,11 @@ async fn http_bearer_auth_gates_requests() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/tool/ReadNote")
+                .uri("/tool")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
                 .body(axum::body::Body::from(
-                    json!({"path": "/Inbox.md"}).to_string(),
+                    json!({"name": "ReadNote", "args": {"path": "/Inbox.md"}}).to_string(),
                 ))
                 .unwrap(),
         )

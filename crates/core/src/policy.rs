@@ -155,11 +155,13 @@ impl Policy {
         }
     }
 
-    pub fn access(&self) -> Access {
+    #[cfg(test)]
+    fn access(&self) -> Access {
         self.entries.for_path(&self.scope)
     }
 
-    pub(crate) fn scope(&self) -> &NotePath {
+    #[cfg(test)]
+    fn scope(&self) -> &NotePath {
         &self.scope
     }
 }

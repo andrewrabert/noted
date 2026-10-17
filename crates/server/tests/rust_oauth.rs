@@ -402,7 +402,13 @@ async fn refresh_token_grant_and_rotation() {
 async fn tool_realm_closed_without_a_bearer() {
     let dir = common::fixture_dir();
     let (app, _) = build(&dir, &[("a", UserSpec::new("pw"))]).await;
-    let (s, _) = post_json(&app, "/tool/ReadNote", None, &json!({"path": "/Inbox.md"})).await;
+    let (s, _) = post_json(
+        &app,
+        "/tool",
+        None,
+        &json!({"name": "ReadNote", "args": {"path": "/Inbox.md"}}),
+    )
+    .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 }
 
@@ -487,9 +493,14 @@ fn verify_password_edges() {
 }
 
 async fn tool(app: &Router, token: &str, name: &str, args: serde_json::Value) -> StatusCode {
-    common::post_json(app, &format!("/tool/{name}"), Some(token), &args)
-        .await
-        .0
+    common::post_json(
+        app,
+        "/tool",
+        Some(token),
+        &json!({"name": name, "args": args}),
+    )
+    .await
+    .0
 }
 
 fn held(text: &str) -> PolicyFragment {
@@ -604,7 +615,13 @@ async fn a_minted_credential_cannot_exceed_its_owners_policy() {
         ("WriteNote", json!({"path": "/x.md", "content": "hi"})),
         ("ReadNote", json!({"path": "/Inbox.md"})),
     ] {
-        let (s, b) = common::post_json(&app, &format!("/tool/{name}"), Some(&child), &args).await;
+        let (s, b) = common::post_json(
+            &app,
+            "/tool",
+            Some(&child),
+            &json!({"name": name, "args": args}),
+        )
+        .await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{name}");
         assert!(
             json_body(&b)["detail"].as_str().unwrap().contains("write"),
@@ -905,10 +922,9 @@ async fn a_tool_call_without_a_bearer_reaches_the_backend_as_unauthorized() {
         transport: noted_client::Transport::Router(app),
     })
     .unwrap();
-    let call =
-        noted::ToolCall::raw("SearchNotes", json!({"pattern": ".", "mode": "path"})).unwrap();
+    let args = serde_json::from_value(json!({"pattern": ".", "mode": "path"})).unwrap();
     assert!(matches!(
-        backend.invoke(&call).await,
+        noted::tools::Tools::search_notes(&backend, args).await,
         Err(noted::NotedError::Unauthorized)
     ));
 }

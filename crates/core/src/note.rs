@@ -114,7 +114,7 @@ impl Edit {
 }
 
 /// The name a removed note had. Where it went is the store's business.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Trashed(NotePath);
 
 impl Trashed {
@@ -143,7 +143,7 @@ pub trait Note {
 /// A freeform, mutable, unstructured markdown note — the default kind. No schema,
 /// no lifecycle. It is what remains once you take away a task's state machine and
 /// a log's immutability.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TextNote {
     path: TextPath,
     body: NoteBody,
@@ -186,7 +186,7 @@ impl Note for TextNote {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LogFront {
     pub created: Timestamp,
     pub cwd: String,
@@ -221,7 +221,7 @@ pub struct LogQuery {
     pub limit: u32,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LogNote {
     path: LogPath,
     front: LogFront,

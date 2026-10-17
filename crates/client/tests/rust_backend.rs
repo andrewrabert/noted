@@ -1,6 +1,7 @@
+use noted::Bearer;
+use noted::TextNote;
 use noted::error::NotedError;
-use noted::tools::ToolOutput;
-use noted::{Bearer, ToolCall};
+use noted::tools::Tools as _;
 use noted_client::{Backend, BackendArgs, Transport};
 use serde_json::json;
 
@@ -13,27 +14,20 @@ fn dialing(router: axum::Router, token: Option<&str>) -> Backend {
     .unwrap()
 }
 
-async fn invoke(
-    backend: &Backend,
-    name: &str,
-    args: serde_json::Value,
-) -> noted::Result<ToolOutput> {
-    let call = ToolCall::raw(name, args)?;
-    backend.invoke(&call).await
-}
-
 fn canned(status: u16, body: &'static str) -> axum::Router {
     use axum::http::StatusCode;
     use axum::routing::post;
     axum::Router::new().route(
-        "/tool/{name}",
+        "/tool",
         post(move || async move { (StatusCode::from_u16(status).unwrap(), body) }),
     )
 }
 
-async fn invoke_canned(status: u16, body: &'static str) -> Result<ToolOutput, NotedError> {
+async fn invoke_canned(status: u16, body: &'static str) -> Result<TextNote, NotedError> {
     let backend = dialing(canned(status, body), None);
-    invoke(&backend, "ReadNote", json!({"path": "a.md"})).await
+    backend
+        .read_note(serde_json::from_value(json!({"path": "a.md"})).unwrap())
+        .await
 }
 
 #[tokio::test]
@@ -97,17 +91,17 @@ async fn local_backend_invokes_core_tools_and_enforces_policy() {
     let backend = local(noted::PolicyArgs::default());
     let root =
         noted::NotedRoot::open(noted::NotedDir::new(dir.path().to_path_buf()), None).unwrap();
-    let call = ToolCall::raw("ReadNote", json!({"path": "a.md"})).unwrap();
+    let args = || serde_json::from_value(json!({"path": "a.md"})).unwrap();
     assert_eq!(
-        serde_json::to_value(backend.invoke(&call).await.unwrap()).unwrap(),
-        serde_json::to_value(root.invoke(&call).await.unwrap()).unwrap(),
+        serde_json::to_value(backend.read_note(args()).await.unwrap()).unwrap(),
+        serde_json::to_value(root.read_note(args()).await.unwrap()).unwrap(),
     );
     let confined = local(noted::PolicyArgs {
         policy: Some(r#"{"access":{"read":false,"write":false}}"#.to_string()),
         ..Default::default()
     });
     assert!(matches!(
-        confined.invoke(&call).await,
+        confined.read_note(args()).await,
         Err(NotedError::Forbidden)
     ));
     assert!(backend.submit_txn("txn", "user", "password").await.is_err());

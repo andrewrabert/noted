@@ -1,6 +1,7 @@
 mod common;
 
-use common::{backend, confined_backend, dp, fixture_dir, invoke, note, root, write};
+use common::{backend, confined_backend, dp, fixture_dir, note, root, write};
+use noted::tools::Tools as _;
 use noted::{Note as _, NotedRoot};
 use serde_json::{Value, json};
 
@@ -8,11 +9,24 @@ const JUNE: &str = "/@2026-06-15T08:30:00.000000-07:00";
 const JULY: &str = "/@2026-07-01T09:00:00.000000-07:00";
 
 async fn records(backend: &NotedRoot, args: Value) -> Vec<Value> {
-    let out = invoke(backend, "GetLog", args).await.unwrap();
-    out.record()
-        .and_then(|v| v.as_array())
-        .expect("GetLog always returns an array")
-        .clone()
+    let entries = backend
+        .get_log(serde_json::from_value(args).unwrap())
+        .await
+        .unwrap();
+    entries
+        .iter()
+        .map(|entry| {
+            let front = entry.front();
+            json!({
+                "path": entry.path(),
+                "created": front.created,
+                "cwd": front.cwd,
+                "host": front.host,
+                "source": front.source,
+                "body": entry.body(),
+            })
+        })
+        .collect()
 }
 
 async fn paths(backend: &NotedRoot, args: Value) -> Vec<String> {
@@ -24,7 +38,28 @@ async fn paths(backend: &NotedRoot, args: Value) -> Vec<String> {
 }
 
 async fn search(backend: &NotedRoot, args: Value) -> String {
-    invoke(backend, "SearchLog", args).await.unwrap().render()
+    let line = args.get("mode").is_none_or(|m| m == "line");
+    let hits = backend
+        .search_log(serde_json::from_value(args).unwrap())
+        .await
+        .unwrap();
+    match line {
+        false => hits
+            .iter()
+            .map(|hit| hit.path.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        true => hits
+            .iter()
+            .map(|hit| {
+                hit.lines()
+                    .map(|(num, text)| format!("{}:{num}:{text}", hit.path))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .collect::<Vec<_>>()
+            .join("\n--\n"),
+    }
 }
 
 #[tokio::test]
@@ -47,7 +82,7 @@ async fn an_entry_stamped_with_garbage_is_skipped() {
     )
     .unwrap();
     assert_eq!(paths(&root, json!({})).await, vec![JULY, JUNE]);
-    let found = search(&root, json!({"query": "garbage"})).await;
+    let found = search(&root, json!({"pattern": "garbage"})).await;
     assert!(!found.contains(garbage), "{found}");
     assert!(!found.contains("2026-07-02"), "{found}");
 }
@@ -56,14 +91,11 @@ async fn an_entry_stamped_with_garbage_is_skipped() {
 async fn get_summaries_carry_the_minted_metadata() {
     let dir = fixture_dir();
     let root = backend(&dir);
-    let bare = &records(&root, json!({})).await[0];
-    assert_eq!(bare["created"], json!("2026-07-01T09:00:00.000000-07:00"));
-    assert_eq!(bare["host"], json!("testhost"));
-    assert_eq!(bare["source"], json!("seed"));
-    assert!(bare.get("body").is_none(), "body is opt-in");
-    assert!(bare.get("scope").is_none(), "an entry records no scope");
-
-    let full = &records(&root, json!({"body": true})).await[0];
+    let full = &records(&root, json!({})).await[0];
+    assert_eq!(full["created"], json!("2026-07-01T09:00:00.000000-07:00"));
+    assert_eq!(full["host"], json!("testhost"));
+    assert_eq!(full["source"], json!("seed"));
+    assert!(full.get("scope").is_none(), "an entry records no scope");
     assert!(
         full["body"].as_str().unwrap().contains("notes-mcp"),
         "{full}"
@@ -110,7 +142,10 @@ async fn get_refuses_a_backwards_range_and_bad_bounds() {
         json!({"until": "2026-13-01"}),
     ] {
         assert!(
-            invoke(&root, "GetLog", args.clone()).await.is_err(),
+            match serde_json::from_value(args.clone()) {
+                Ok(parsed) => root.get_log(parsed).await.is_err(),
+                Err(_) => true,
+            },
             "{args} should be rejected"
         );
     }
@@ -248,10 +283,8 @@ async fn search_narrows_by_the_same_bounds_as_get() {
         1
     );
     assert!(
-        invoke(
-            &root,
-            "SearchLog",
-            json!({"since": "2026-08-01", "until": "2026-07-01"}),
+        root.search_log(
+            serde_json::from_value(json!({"since": "2026-08-01", "until": "2026-07-01"})).unwrap()
         )
         .await
         .is_err()
@@ -263,7 +296,7 @@ async fn search_refuses_an_unusable_pattern() {
     let dir = fixture_dir();
     let root = backend(&dir);
     assert!(
-        invoke(&root, "SearchLog", json!({"pattern": "("}))
+        root.search_log(serde_json::from_value(json!({"pattern": "("})).unwrap())
             .await
             .is_err()
     );

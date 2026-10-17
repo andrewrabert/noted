@@ -291,8 +291,10 @@ async fn a_scope_cannot_widen_a_denial() {
     assert!(log_paths(&root).await.is_empty());
     assert!(create(&root, "nope", "/").await.is_err());
 
-    let names = tool_names(&dir, chain.iter().map(|text| held(text)).collect());
-    assert!(names.is_empty(), "{names:?}");
+    let grants: Vec<PolicyFragment> = chain.iter().map(|text| held(text)).collect();
+    let held_root = common::root(&dir).with_authority(&grants).unwrap();
+    let tasks = held_root.task_get(&TaskQuery::default()).await;
+    assert!(tasks.is_err() || tasks.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -331,46 +333,6 @@ fn reserved_names_are_unspellable() {
     ] {
         assert!(noted::NotePath::new(spelled).is_err(), "accepted {spelled}");
     }
-}
-
-fn listings(dir: &tempfile::TempDir, grants: Vec<PolicyFragment>) -> Vec<noted::ToolListing> {
-    common::root(dir).with_authority(&grants).unwrap().tools()
-}
-
-fn tool_names(dir: &tempfile::TempDir, grants: Vec<PolicyFragment>) -> Vec<&'static str> {
-    listings(dir, grants).iter().map(|t| t.name).collect()
-}
-
-fn described(dir: &tempfile::TempDir, name: &str, grants: Vec<PolicyFragment>) -> String {
-    listings(dir, grants)
-        .into_iter()
-        .find(|t| t.name == name)
-        .unwrap()
-        .description
-}
-
-#[test]
-fn allowed_tools_follow_access() {
-    let dir = common::fixture_dir();
-    let all = tool_names(&dir, vec![]);
-    assert!(all.contains(&"LogNote") && all.contains(&"DeleteNote"));
-
-    let names = tool_names(
-        &dir,
-        vec![held(r#"{"access":{"read":true,"write":false}}"#)],
-    );
-    assert!(names.contains(&"ReadNote") && names.contains(&"SearchLog"));
-    assert!(!names.contains(&"WriteNote") && !names.contains(&"LogNote"));
-}
-
-#[test]
-fn a_tool_description_tells_a_scoped_client_where_things_land() {
-    let dir = common::fixture_dir();
-    let scoped = || vec![held(r#"{"scope":"/projects"}"#)];
-    assert!(described(&dir, "CreateTask", scoped()).ends_with("Paths are relative to /projects."));
-    assert!(described(&dir, "LogNote", scoped()).ends_with("Paths are relative to /projects."));
-    assert!(described(&dir, "WriteNote", scoped()).ends_with("Paths are relative to /projects."));
-    assert!(!described(&dir, "WriteNote", vec![]).contains("Paths are relative to"));
 }
 
 #[test]

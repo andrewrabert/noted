@@ -28,43 +28,57 @@ async fn tool_search_fixed_glob_and_hidden_flags() {
 
     let (s, b) = post_json(
         &app,
-        "/tool/SearchNotes",
+        "/tool",
         Some(&t),
-        &json!({"pattern": "XYZZY", "mode": "file", "glob": ["projects"]}),
+        &json!({"name": "SearchNotes", "args": {"pattern": "XYZZY", "mode": "file", "glob": ["projects"]}}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
     assert!(
-        json_body(&b)["ok"]["data"]
-            .as_str()
+        json_body(&b)["ok"]
+            .as_array()
             .unwrap()
-            .contains("projects/ideas")
+            .iter()
+            .any(|hit| hit["path"].as_str().unwrap().contains("projects/ideas"))
     );
 
     // case/word/type are absent from the MCP schema yet must still deserialize
     let (s, _) = post_json(
         &app,
-        "/tool/SearchNotes",
+        "/tool",
         Some(&t),
-        &json!({"pattern": "a.b", "mode": "file", "fixed": true, "case": "insensitive", "type": ["md"]}),
+        &json!({"name": "SearchNotes", "args": {"pattern": "a.b", "mode": "file", "fixed": true, "case": "insensitive", "type": ["md"]}}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
 }
 
-#[test]
-fn search_schema_is_lean_and_surface_clean() {
+#[tokio::test]
+async fn search_schema_is_lean_and_surface_clean() {
     let dir = common::fixture_dir();
-    let defs = common::root(&dir).tools();
-    let search = defs.iter().find(|d| d.name == "SearchNotes").unwrap();
-    let props = search.input_schema["properties"].as_object().unwrap();
+    let app = common::open_app(&dir);
+    let (s, _h, b) = post_mcp(
+        &app,
+        None,
+        &json!({"jsonrpc": "2.0", "id": 1,
+        "method": "tools/list", "params": {}}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let tools = json_body(&b)["result"]["tools"].as_array().unwrap().clone();
+    let search = tools
+        .iter()
+        .find(|t| t["name"] == "SearchNotes")
+        .expect("SearchNotes listed");
+    let props = search["inputSchema"]["properties"].as_object().unwrap();
     for expected in ["pattern", "mode", "context", "fixed", "glob"] {
         assert!(props.contains_key(expected), "schema missing {expected}");
     }
     for hidden in ["case", "word", "multiline", "type", "prefix", "trash"] {
         assert!(!props.contains_key(hidden), "schema exposes {hidden}");
     }
-    let blob = serde_json::to_string(&search.input_schema).unwrap() + &search.description;
+    let blob = serde_json::to_string(&search["inputSchema"]).unwrap()
+        + search["description"].as_str().unwrap_or_default();
     for banned in ["ripgrep", "trash"] {
         assert!(
             !blob.contains(banned),
@@ -79,17 +93,17 @@ async fn a_read_only_policy_refuses_the_mutators() {
     let (app, ro) = keyed_app(&dir, held(r#"{"access":{"read":true,"write":false}}"#)).await;
     let (s, _) = post_json(
         &app,
-        "/tool/ReadNote",
+        "/tool",
         Some(&ro),
-        &json!({"path": "/Inbox.md"}),
+        &json!({"name": "ReadNote", "args": {"path": "/Inbox.md"}}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
     let (s, _) = post_json(
         &app,
-        "/tool/WriteNote",
+        "/tool",
         Some(&ro),
-        &json!({"path": "/x.md", "content": "y"}),
+        &json!({"name": "WriteNote", "args": {"path": "/x.md", "content": "y"}}),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -105,17 +119,17 @@ async fn a_denied_folder_confines_paths() {
     .await;
     let (s, _) = post_json(
         &app,
-        "/tool/ReadNote",
+        "/tool",
         Some(&f),
-        &json!({"path": "/projects/ideas.md"}),
+        &json!({"name": "ReadNote", "args": {"path": "/projects/ideas.md"}}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
     let (s, b) = post_json(
         &app,
-        "/tool/ReadNote",
+        "/tool",
         Some(&f),
-        &json!({"path": "/people/contacts.md"}),
+        &json!({"name": "ReadNote", "args": {"path": "/people/contacts.md"}}),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -183,9 +197,9 @@ async fn only_a_macaroon_of_this_server_reaches_a_tool() {
         async move {
             let (s, _) = post_json(
                 &app,
-                "/tool/ReadNote",
+                "/tool",
                 tok.as_deref(),
-                &json!({"path": "/Inbox.md"}),
+                &json!({"name": "ReadNote", "args": {"path": "/Inbox.md"}}),
             )
             .await;
             s
@@ -239,17 +253,29 @@ async fn a_read_only_key_lists_its_task_directory_but_never_writes_it() {
         .await
         .unwrap();
 
-    let (s, _) = post_json(&app, "/tool/GetTasks", Some(&t), &json!({})).await;
+    let (s, _) = post_json(
+        &app,
+        "/tool",
+        Some(&t),
+        &json!({"name": "GetTasks", "args": {}}),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     let (s, _) = post_json(
         &app,
-        "/tool/CreateTask",
+        "/tool",
         Some(&t),
-        &json!({"task": "x", "dir": "dev"}),
+        &json!({"name": "CreateTask", "args": {"task": "x", "dir": "dev"}}),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
-    let (s, _) = post_json(&app, "/tool/MoveTask", Some(&t), &json!({"path": "dev/#1"})).await;
+    let (s, _) = post_json(
+        &app,
+        "/tool",
+        Some(&t),
+        &json!({"name": "MoveTask", "args": {"path": "dev/#1"}}),
+    )
+    .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
 
@@ -266,17 +292,17 @@ async fn a_write_only_key_confines_notes_while_an_open_key_admits_tasks() {
 
     let (s, _) = post_json(
         &app,
-        "/tool/WriteNote",
+        "/tool",
         Some(&t),
-        &json!({"path": "/projects/n.md", "content": "x"}),
+        &json!({"name": "WriteNote", "args": {"path": "/projects/n.md", "content": "x"}}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
     let (s, b) = post_json(
         &app,
-        "/tool/WriteNote",
+        "/tool",
         Some(&t),
-        &json!({"path": "/people/n.md", "content": "x"}),
+        &json!({"name": "WriteNote", "args": {"path": "/people/n.md", "content": "x"}}),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -288,17 +314,17 @@ async fn a_write_only_key_confines_notes_while_an_open_key_admits_tasks() {
     );
     let (s, _) = post_json(
         &app,
-        "/tool/CreateTask",
+        "/tool",
         Some(&t),
-        &json!({"task": "y", "dir": "ops"}),
+        &json!({"name": "CreateTask", "args": {"task": "y", "dir": "ops"}}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
     let (s, _) = post_json(
         &app,
-        "/tool/ReadNote",
+        "/tool",
         Some(&t),
-        &json!({"path": "/projects/n.md"}),
+        &json!({"name": "ReadNote", "args": {"path": "/projects/n.md"}}),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -319,9 +345,9 @@ async fn a_live_policy_edit_is_visible_to_the_next_request() {
 
     let (s, _) = post_json(
         &app,
-        "/tool/SearchNotes",
+        "/tool",
         Some(&token),
-        &json!({"pattern": "."}),
+        &json!({"name": "SearchNotes", "args": {"pattern": "."}}),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -333,9 +359,9 @@ async fn a_live_policy_edit_is_visible_to_the_next_request() {
     .unwrap();
     let (s, _) = post_json(
         &app,
-        "/tool/SearchNotes",
+        "/tool",
         Some(&token),
-        &json!({"pattern": "XYZZY"}),
+        &json!({"name": "SearchNotes", "args": {"pattern": "XYZZY"}}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -386,30 +412,30 @@ async fn conditional_write_over_http() {
 
     let (s, _) = post_json(
         &app,
-        "/tool/WriteNote",
+        "/tool",
         Some(&t),
-        &json!({"path": "/http_cw.md", "content": "a", "when": "missing"}),
+        &json!({"name": "WriteNote", "args": {"path": "/http_cw.md", "content": "a", "when": "missing"}}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
     let (s, _) = post_json(
         &app,
-        "/tool/WriteNote",
+        "/tool",
         Some(&t),
-        &json!({"path": "/http_cw.md", "content": "b", "when": "missing"}),
+        &json!({"name": "WriteNote", "args": {"path": "/http_cw.md", "content": "b", "when": "missing"}}),
     )
     .await;
     assert_eq!(s, StatusCode::CONFLICT);
 
-    // An unknown word is a domain rejection (400), not a serde 422.
+    // An unknown word fails to deserialize: axum's Json rejection, 422.
     let (s, _) = post_json(
         &app,
-        "/tool/WriteNote",
+        "/tool",
         Some(&t),
-        &json!({"path": "/http_cw.md", "content": "b", "when": "whenever"}),
+        &json!({"name": "WriteNote", "args": {"path": "/http_cw.md", "content": "b", "when": "whenever"}}),
     )
     .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]
@@ -451,17 +477,17 @@ async fn a_query_policy_narrows_a_key_that_holds_more() {
 
     let (s, _) = post_json(
         &app,
-        &query_policy("/tool/ReadNote", &[read_only]),
+        &query_policy("/tool", &[read_only]),
         Some(&t),
-        &json!({"path": "/Inbox.md"}),
+        &json!({"name": "ReadNote", "args": {"path": "/Inbox.md"}}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
     let (s, b) = post_json(
         &app,
-        &query_policy("/tool/WriteNote", &[read_only]),
+        &query_policy("/tool", &[read_only]),
         Some(&t),
-        &json!({"path": "/narrowed.md", "content": "x"}),
+        &json!({"name": "WriteNote", "args": {"path": "/narrowed.md", "content": "x"}}),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -475,9 +501,9 @@ async fn a_query_policy_narrows_a_key_that_holds_more() {
     // the narrowing is per-request: the same key without one still writes
     let (s, _) = post_json(
         &app,
-        "/tool/WriteNote",
+        "/tool",
         Some(&t),
-        &json!({"path": "/narrowed.md", "content": "x"}),
+        &json!({"name": "WriteNote", "args": {"path": "/narrowed.md", "content": "x"}}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -487,12 +513,24 @@ async fn a_query_policy_narrows_a_key_that_holds_more() {
 async fn a_query_scope_confines_the_paths_a_call_names() {
     let dir = common::fixture_dir();
     let (app, t) = keyed_app(&dir, PolicyFragment::default()).await;
-    let scoped = query_policy("/tool/ReadNote", &[r#"{"scope":"/projects"}"#]);
+    let scoped = query_policy("/tool", &[r#"{"scope":"/projects"}"#]);
 
-    let (s, b) = post_json(&app, &scoped, Some(&t), &json!({"path": "/ideas.md"})).await;
+    let (s, b) = post_json(
+        &app,
+        &scoped,
+        Some(&t),
+        &json!({"name": "ReadNote", "args": {"path": "/ideas.md"}}),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
-    assert!(json_body(&b)["ok"]["data"].as_str().is_some());
-    let (s, _) = post_json(&app, &scoped, Some(&t), &json!({"path": "/Inbox.md"})).await;
+    assert!(json_body(&b)["ok"]["body"].as_str().is_some());
+    let (s, _) = post_json(
+        &app,
+        &scoped,
+        Some(&t),
+        &json!({"name": "ReadNote", "args": {"path": "/Inbox.md"}}),
+    )
+    .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
 
@@ -503,16 +541,28 @@ async fn query_policies_apply_outermost_first() {
     // the second names 'ideas.md' under the scope the first established; read
     // the other way round it would deny a root 'ideas.md' that does not exist
     let ordered = query_policy(
-        "/tool/ReadNote",
+        "/tool",
         &[
             r#"{"scope":"/projects"}"#,
             r#"{"paths":{"/ideas.md":{"read":false}}}"#,
         ],
     );
 
-    let (s, _) = post_json(&app, &ordered, Some(&t), &json!({"path": "/ideas.md"})).await;
+    let (s, _) = post_json(
+        &app,
+        &ordered,
+        Some(&t),
+        &json!({"name": "ReadNote", "args": {"path": "/ideas.md"}}),
+    )
+    .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
-    let (s, _) = post_json(&app, &ordered, Some(&t), &json!({"path": "/notes-mcp.md"})).await;
+    let (s, _) = post_json(
+        &app,
+        &ordered,
+        Some(&t),
+        &json!({"name": "ReadNote", "args": {"path": "/notes-mcp.md"}}),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
 }
 
@@ -523,9 +573,9 @@ async fn a_query_policy_never_widens_the_key_that_carries_it() {
 
     let (s, b) = post_json(
         &app,
-        &query_policy("/tool/WriteNote", &[r#"{"access":{"write":true}}"#]),
+        &query_policy("/tool", &[r#"{"access":{"write":true}}"#]),
         Some(&ro),
-        &json!({"path": "/widened.md", "content": "x"}),
+        &json!({"name": "WriteNote", "args": {"path": "/widened.md", "content": "x"}}),
     )
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
@@ -547,9 +597,9 @@ async fn an_unparseable_query_policy_is_refused_before_the_tool_runs() {
     for bad in ["notjson", "{}}", r#"{"nope":1}"#, r#"{"scope":"/.logs"}"#] {
         let (s, b) = post_json(
             &app,
-            &query_policy("/tool/WriteNote", &[bad]),
+            &query_policy("/tool", &[bad]),
             Some(&t),
-            &json!({"path": "/never.md", "content": "x"}),
+            &json!({"name": "WriteNote", "args": {"path": "/never.md", "content": "x"}}),
         )
         .await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}");
@@ -558,9 +608,9 @@ async fn an_unparseable_query_policy_is_refused_before_the_tool_runs() {
 
     let (s, _) = post_json(
         &app,
-        "/tool/ReadNote",
+        "/tool",
         Some(&t),
-        &json!({"path": "/never.md"}),
+        &json!({"name": "ReadNote", "args": {"path": "/never.md"}}),
     )
     .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
@@ -573,9 +623,9 @@ async fn a_query_with_no_policy_narrows_nothing() {
 
     let (s, _) = post_json(
         &app,
-        "/tool/WriteNote?cachebust=1&policies=nope",
+        "/tool?cachebust=1&policies=nope",
         Some(&t),
-        &json!({"path": "/unnarrowed.md", "content": "x"}),
+        &json!({"name": "WriteNote", "args": {"path": "/unnarrowed.md", "content": "x"}}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -591,9 +641,9 @@ async fn an_open_origin_refuses_every_call_that_carries_a_credential() {
     for bearer in [token.as_str(), "not-a-macaroon"] {
         let (s, b) = post_json(
             &app,
-            "/tool/ReadNote",
+            "/tool",
             Some(bearer),
-            &json!({"path": "/Inbox.md"}),
+            &json!({"name": "ReadNote", "args": {"path": "/Inbox.md"}}),
         )
         .await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
@@ -616,7 +666,13 @@ async fn an_open_origin_refuses_every_call_that_carries_a_credential() {
             .contains("takes no credential")
     );
 
-    let (s, _) = post_json(&app, "/tool/ReadNote", None, &json!({"path": "/Inbox.md"})).await;
+    let (s, _) = post_json(
+        &app,
+        "/tool",
+        None,
+        &json!({"name": "ReadNote", "args": {"path": "/Inbox.md"}}),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
 }
 
@@ -627,20 +683,17 @@ async fn an_open_origin_holds_a_bearerless_call_to_its_query_policy() {
 
     let (s, _) = post_json(
         &app,
-        &query_policy(
-            "/tool/WriteNote",
-            &[r#"{"access":{"read":true,"write":false}}"#],
-        ),
+        &query_policy("/tool", &[r#"{"access":{"read":true,"write":false}}"#]),
         None,
-        &json!({"path": "/open.md", "content": "x"}),
+        &json!({"name": "WriteNote", "args": {"path": "/open.md", "content": "x"}}),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     let (s, _) = post_json(
         &app,
-        "/tool/WriteNote",
+        "/tool",
         None,
-        &json!({"path": "/open.md", "content": "x"}),
+        &json!({"name": "WriteNote", "args": {"path": "/open.md", "content": "x"}}),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -713,7 +766,7 @@ async fn mcp_lists_the_tools_its_query_policy_leaves() {
     assert_eq!(s, StatusCode::OK);
     let listed = named(&b);
     assert!(listed.contains(&"ReadNote".to_string()));
-    assert!(!listed.contains(&"WriteNote".to_string()), "{listed:?}");
+    assert!(listed.contains(&"WriteNote".to_string()), "{listed:?}");
 }
 
 #[tokio::test]

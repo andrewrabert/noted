@@ -9,9 +9,10 @@ use iced::widget::{
 };
 use iced::{Element, Fill, Task, Theme, Widget};
 
-use noted::ToolCall;
-use noted::tasks::TaskDue;
-use noted::tools::ToolOutput;
+use noted::search::Hit;
+use noted::tasks::{TaskDue, TaskNote, TaskState};
+use noted::{LogNote, LogPath, NotePath, TaskPath, TextNote, TextPath, Trashed};
+use noted_client::Backend;
 
 const LOG_LIMIT: i64 = 50;
 
@@ -27,64 +28,6 @@ pub enum Editor {
     Note,
     TaskNotes,
     Log,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskState {
-    Created,
-    Started,
-    Blocked,
-    Completed,
-    Rejected,
-    Invalid,
-}
-
-impl TaskState {
-    pub const ALL: [TaskState; 6] = [
-        TaskState::Created,
-        TaskState::Started,
-        TaskState::Blocked,
-        TaskState::Completed,
-        TaskState::Rejected,
-        TaskState::Invalid,
-    ];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            TaskState::Created => "created",
-            TaskState::Started => "started",
-            TaskState::Blocked => "blocked",
-            TaskState::Completed => "completed",
-            TaskState::Rejected => "rejected",
-            TaskState::Invalid => "invalid",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<TaskState> {
-        TaskState::ALL.into_iter().find(|st| st.as_str() == s)
-    }
-}
-
-impl std::fmt::Display for TaskState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct TaskRow {
-    pub path: String,
-    pub state: Option<TaskState>,
-    pub task: String,
-    pub due: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct LogRow {
-    pub path: String,
-    pub created: String,
-    pub body: String,
 }
 
 #[derive(Debug, Clone)]
@@ -104,14 +47,14 @@ pub enum Message {
     LogoutConfirmed,
 
     FilterChanged(String),
-    NotesListed(Result<ToolOutput, api::ApiError>),
+    NotesListed(Result<Vec<Hit<TextPath>>, api::ApiError>),
     NoteSelected(String),
-    NoteLoaded(String, Result<ToolOutput, api::ApiError>),
+    NoteLoaded(String, Result<TextNote, api::ApiError>),
     EditToggled,
     NoteAction(text_editor::Action),
-    NoteSaved(Result<ToolOutput, api::ApiError>),
-    NoteEdited(Result<ToolOutput, api::ApiError>),
-    NoteReloaded(String, Result<ToolOutput, api::ApiError>),
+    NoteSaved(Result<(), api::ApiError>),
+    NoteEdited(Result<TextNote, api::ApiError>),
+    NoteReloaded(String, Result<TextNote, api::ApiError>),
     SaveNote,
     LinkClicked(markdown::Uri),
     FindChanged(String),
@@ -122,14 +65,15 @@ pub enum Message {
     ApplyRename,
     DeleteArmed,
     ApplyDelete,
-    NoteGone(Result<ToolOutput, api::ApiError>),
+    NoteMoved(Result<(), api::ApiError>),
+    NoteDeleted(Result<Trashed, api::ApiError>),
 
-    TasksLoaded(Result<ToolOutput, api::ApiError>),
+    TasksLoaded(Result<Vec<TaskNote>, api::ApiError>),
     RefreshTasks,
     PrefixChanged(String),
     IncludeCompletedToggled,
     TaskMatchChanged(String),
-    TasksMatched(Result<ToolOutput, api::ApiError>),
+    TasksMatched(Result<Vec<Hit<TaskPath>>, api::ApiError>),
     TaskSelected(String),
     TaskStateSelected(String, TaskState),
     NewTaskChanged(String),
@@ -142,17 +86,17 @@ pub enum Message {
     DueChanged(String),
     SetDue,
     ClearDue,
-    TaskChanged(Result<ToolOutput, api::ApiError>),
+    TaskChanged(Result<TaskNote, api::ApiError>),
 
     LogAction(text_editor::Action),
     SubmitLog,
-    LogSubmitted(Result<ToolOutput, api::ApiError>),
+    LogSubmitted(Result<LogNote, api::ApiError>),
     RefreshLog,
     LogFilterChanged(String),
     SinceChanged(String),
     UntilChanged(String),
-    LogLoaded(Result<ToolOutput, api::ApiError>),
-    LogMatched(Result<ToolOutput, api::ApiError>),
+    LogLoaded(Result<Vec<LogNote>, api::ApiError>),
+    LogMatched(Result<Vec<Hit<LogPath>>, api::ApiError>),
 
     BrowserEdited(Editor, browser::Edit),
 }
@@ -234,11 +178,11 @@ pub struct State {
     dest: String,
     delete_armed: bool,
 
-    tasks: Vec<TaskRow>,
+    tasks: Vec<TaskNote>,
     prefix: String,
     include_completed: bool,
     task_match: String,
-    matched_tasks: Option<Vec<String>>,
+    matched_tasks: Option<Vec<TaskPath>>,
     selected_task: Option<String>,
     new_task: String,
     new_group: String,
@@ -251,7 +195,7 @@ pub struct State {
     log_filter: String,
     since: String,
     until: String,
-    entries: Vec<LogRow>,
+    entries: Vec<LogNote>,
     hits: String,
 }
 
@@ -388,24 +332,36 @@ impl State {
         }
     }
 
-    pub(crate) fn task_rows(&self) -> Vec<TaskRow> {
+    /// The backend every call goes to; a page with no origin has none.
+    fn remote(&self) -> noted::Result<Backend> {
+        match self.host.endpoint() {
+            Some(endpoint) => api::remote(endpoint, self.bearer()),
+            None => Err(noted::error::unavailable("the page has no origin")),
+        }
+    }
+
+    pub(crate) fn task_rows(&self) -> Vec<TaskNote> {
         match &self.matched_tasks {
             None => self.tasks.clone(),
             Some(matched) => self
                 .tasks
                 .iter()
-                .filter(|row| matched.iter().any(|path| path == &row.path))
+                .filter(|task| matched.contains(task.path()))
                 .cloned()
                 .collect(),
         }
     }
 }
 
-fn list_notes() -> noted::Result<ToolCall> {
-    api::search_notes(
-        ".",
-        noted::search::SearchMode::Path,
-        noted::search::SearchOrder::Modified,
+fn list_notes(state: &State) -> Task<Message> {
+    Task::perform(
+        api::search_notes(
+            state.remote(),
+            ".".to_string(),
+            noted::search::SearchMode::Path,
+            noted::search::SearchOrder::Modified,
+        ),
+        Message::NotesListed,
     )
 }
 
@@ -419,42 +375,27 @@ fn redirect_uri(endpoint: &str) -> String {
 
 /// Any tool reply the server refused for want of a credential.
 fn rejected_credential(message: &Message) -> bool {
-    let refused = |result: &Result<ToolOutput, api::ApiError>| {
-        matches!(result, Err(api::ApiError::Unauthorized))
-    };
-    match message {
-        Message::NotesListed(result)
-        | Message::NoteLoaded(_, result)
-        | Message::NoteSaved(result)
-        | Message::NoteEdited(result)
-        | Message::NoteReloaded(_, result)
-        | Message::NoteGone(result)
-        | Message::TasksLoaded(result)
-        | Message::TasksMatched(result)
-        | Message::TaskChanged(result)
-        | Message::LogSubmitted(result)
-        | Message::LogLoaded(result)
-        | Message::LogMatched(result) => refused(result),
-        _ => false,
-    }
+    use api::ApiError::Unauthorized;
+    matches!(
+        message,
+        Message::NotesListed(Err(Unauthorized))
+            | Message::NoteLoaded(_, Err(Unauthorized))
+            | Message::NoteSaved(Err(Unauthorized))
+            | Message::NoteEdited(Err(Unauthorized))
+            | Message::NoteReloaded(_, Err(Unauthorized))
+            | Message::NoteMoved(Err(Unauthorized))
+            | Message::NoteDeleted(Err(Unauthorized))
+            | Message::TasksLoaded(Err(Unauthorized))
+            | Message::TasksMatched(Err(Unauthorized))
+            | Message::TaskChanged(Err(Unauthorized))
+            | Message::LogSubmitted(Err(Unauthorized))
+            | Message::LogLoaded(Err(Unauthorized))
+            | Message::LogMatched(Err(Unauthorized))
+    )
 }
 
 fn initial_loads(state: &State) -> Task<Message> {
-    Task::batch([call(state, list_notes(), Message::NotesListed)])
-}
-
-/// Answers a failed call when the host names no endpoint.
-fn call(
-    state: &State,
-    request: noted::Result<ToolCall>,
-    to_message: impl Fn(Result<ToolOutput, api::ApiError>) -> Message + Send + 'static,
-) -> Task<Message> {
-    let Some(endpoint) = state.host.endpoint() else {
-        return Task::done(to_message(Err(api::ApiError::Failed(
-            "the page has no origin".to_string(),
-        ))));
-    };
-    Task::perform(api::invoke(request, endpoint, state.bearer()), to_message)
+    Task::batch([list_notes(state)])
 }
 
 fn update(state: &mut State, message: Message) -> Task<Message> {
@@ -584,8 +525,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.refilter();
             Task::none()
         }
-        Message::NotesListed(Ok(output)) => {
-            state.notes = api::paths(&output);
+        Message::NotesListed(Ok(hits)) => {
+            state.notes = hits.iter().map(|hit| hit.path.to_string()).collect();
             state.picker = picker::PickerState::new(state.notes.clone());
             state.refilter();
             Task::none()
@@ -595,17 +536,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::NoteSelected(path) => {
-            let request = api::read_note(&path);
+            let request = api::read_note(state.remote(), path.clone());
             state.delete_armed = false;
             state.dest = path.clone();
-            call(state, request, move |result| {
-                Message::NoteLoaded(path.clone(), result)
-            })
+            Task::perform(request, move |result| Message::NoteLoaded(path, result))
         }
-        Message::NoteLoaded(path, Ok(output)) => {
-            let content = api::text(output);
-            state.preview = markdown::Content::parse(&content);
-            state.note = text_editor::Content::with_text(&content);
+        Message::NoteLoaded(path, Ok(note)) => {
+            let content = note.body().as_str();
+            state.preview = markdown::Content::parse(content);
+            state.note = text_editor::Content::with_text(content);
             state.open = Some(path);
             state.editing = false;
             state.logout_armed = false;
@@ -629,31 +568,30 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::SaveNote => match &state.open {
-            Some(path) => call(
-                state,
-                api::write_note(path, &state.note.text()),
+            Some(path) => Task::perform(
+                api::write_note(state.remote(), path.clone(), state.note.text()),
                 Message::NoteSaved,
             ),
             None => Task::none(),
         },
         Message::NoteSaved(result) => {
+            let path = state.open.clone().unwrap_or_default();
             state.status = Some(match result {
-                Ok(output) => output.render(),
+                Ok(()) => format!("wrote {path}"),
                 Err(e) => format!("cannot write: {}", e.message()),
             });
             Task::none()
         }
         // The editor still holds the pre-edit text, which the next save would
         // write back over the edit.
-        Message::NoteEdited(Ok(output)) => {
-            state.status = Some(output.render());
+        Message::NoteEdited(Ok(note)) => {
+            let path: &NotePath = note.path().as_ref();
+            state.status = Some(format!("edited {path}"));
             match &state.open {
                 Some(path) => {
                     let path = path.clone();
-                    let request = api::read_note(&path);
-                    call(state, request, move |result| {
-                        Message::NoteReloaded(path.clone(), result)
-                    })
+                    let request = api::read_note(state.remote(), path.clone());
+                    Task::perform(request, move |result| Message::NoteReloaded(path, result))
                 }
                 None => Task::none(),
             }
@@ -662,10 +600,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.fail("cannot edit", e);
             Task::none()
         }
-        Message::NoteReloaded(_, Ok(output)) => {
-            let content = api::text(output);
-            state.preview = markdown::Content::parse(&content);
-            state.note = text_editor::Content::with_text(&content);
+        Message::NoteReloaded(_, Ok(note)) => {
+            let content = note.body().as_str();
+            state.preview = markdown::Content::parse(content);
+            state.note = text_editor::Content::with_text(content);
             Task::none()
         }
         Message::NoteReloaded(path, Err(e)) => {
@@ -694,9 +632,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ApplyReplace => match (&state.open, state.find.is_empty()) {
-            (Some(path), false) => call(
-                state,
-                api::edit_note(path, &state.find, &state.replace, state.replace_all),
+            (Some(path), false) => Task::perform(
+                api::edit_note(
+                    state.remote(),
+                    path.clone(),
+                    state.find.clone(),
+                    state.replace.clone(),
+                    state.replace_all,
+                ),
                 Message::NoteEdited,
             ),
             _ => Task::none(),
@@ -706,10 +649,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ApplyRename => match &state.open {
-            Some(path) if !state.dest.is_empty() && state.dest != *path => call(
-                state,
-                api::move_note(path, &state.dest, false),
-                Message::NoteGone,
+            Some(path) if !state.dest.is_empty() && state.dest != *path => Task::perform(
+                api::move_note(state.remote(), path.clone(), state.dest.clone(), false),
+                Message::NoteMoved,
             ),
             _ => Task::none(),
         },
@@ -718,29 +660,45 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ApplyDelete => match &state.open {
-            Some(path) => call(state, api::delete_note(path), Message::NoteGone),
+            Some(path) => Task::perform(
+                api::delete_note(state.remote(), path.clone()),
+                Message::NoteDeleted,
+            ),
             None => Task::none(),
         },
-        Message::NoteGone(Ok(output)) => {
-            state.status = Some(output.render());
+        Message::NoteMoved(Ok(())) => {
+            let from = state.open.take().unwrap_or_default();
+            state.status = Some(format!("moved {from} -> {}", state.dest));
+            state.editing = false;
+            state.logout_armed = false;
+            state.delete_armed = false;
+            state.preview = markdown::Content::new();
+            state.note = text_editor::Content::new();
+            list_notes(state)
+        }
+        Message::NoteDeleted(Ok(trashed)) => {
+            state.status = Some(format!("deleted {trashed}"));
             state.open = None;
             state.editing = false;
             state.logout_armed = false;
             state.delete_armed = false;
             state.preview = markdown::Content::new();
             state.note = text_editor::Content::new();
-            call(state, list_notes(), Message::NotesListed)
+            list_notes(state)
         }
-        Message::NoteGone(Err(e)) => {
+        Message::NoteMoved(Err(e)) | Message::NoteDeleted(Err(e)) => {
             state.delete_armed = false;
             state.fail("cannot change the tree", e);
             Task::none()
         }
 
         Message::RefreshTasks => {
-            let listing = call(
-                state,
-                api::get_tasks(&state.prefix, true, state.include_completed),
+            let listing = Task::perform(
+                api::get_tasks(
+                    state.remote(),
+                    state.prefix.clone(),
+                    state.include_completed,
+                ),
                 Message::TasksLoaded,
             );
             if state.task_match.is_empty() {
@@ -749,11 +707,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             } else {
                 Task::batch([
                     listing,
-                    call(
-                        state,
+                    Task::perform(
                         api::search_tasks(
-                            &state.task_match,
-                            &state.prefix,
+                            state.remote(),
+                            state.task_match.clone(),
+                            state.prefix.clone(),
                             state.include_completed,
                         ),
                         Message::TasksMatched,
@@ -761,8 +719,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ])
             }
         }
-        Message::TasksLoaded(Ok(output)) => {
-            state.tasks = task_rows(&api::record(output));
+        Message::TasksLoaded(Ok(tasks)) => {
+            state.tasks = tasks;
             Task::none()
         }
         Message::TasksLoaded(Err(e)) => {
@@ -783,20 +741,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.matched_tasks = None;
                 Task::none()
             } else {
-                call(
-                    state,
-                    api::search_tasks(&state.task_match, &state.prefix, state.include_completed),
+                Task::perform(
+                    api::search_tasks(
+                        state.remote(),
+                        state.task_match.clone(),
+                        state.prefix.clone(),
+                        state.include_completed,
+                    ),
                     Message::TasksMatched,
                 )
             }
         }
-        Message::TasksMatched(Ok(output)) => {
-            state.matched_tasks = Some(
-                api::paths(&output)
-                    .into_iter()
-                    .map(|path| path.trim_end_matches(".md").to_string())
-                    .collect(),
-            );
+        Message::TasksMatched(Ok(hits)) => {
+            state.matched_tasks = Some(hits.into_iter().map(|hit| hit.path).collect());
             Task::none()
         }
         Message::TasksMatched(Err(e)) => {
@@ -808,15 +765,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.due = state
                 .tasks
                 .iter()
-                .find(|row| row.path == path)
-                .map(|row| row.due.clone())
+                .find(|task| task.path().to_string() == path)
+                .and_then(|task| Option::<String>::from(task.front().due))
                 .unwrap_or_default();
             state.selected_task = Some(path);
             Task::none()
         }
-        Message::TaskStateSelected(path, task_state) => call(
-            state,
-            api::update_task(&path, Some(task_state.as_str()), None, None, None),
+        Message::TaskStateSelected(path, task_state) => Task::perform(
+            api::update_task(state.remote(), path, Some(task_state), None),
             Message::TaskChanged,
         ),
         Message::NewTaskChanged(task) => {
@@ -840,24 +796,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             let request = api::create_task(
-                state.new_task.trim(),
-                &state.new_group,
-                &state.task_notes.text(),
-                &state.new_due,
+                state.remote(),
+                state.new_task.trim().to_string(),
+                state.new_group.clone(),
+                state.task_notes.text(),
+                state.new_due.clone(),
             );
             state.new_task.clear();
             state.new_due.clear();
             state.task_notes = text_editor::Content::new();
-            call(state, request, Message::TaskChanged)
+            Task::perform(request, Message::TaskChanged)
         }
         Message::DestGroupChanged(group) => {
             state.dest_group = group;
             Task::none()
         }
         Message::MoveTask => match &state.selected_task {
-            Some(path) => call(
-                state,
-                api::move_task(path, &state.dest_group),
+            Some(path) => Task::perform(
+                api::move_task(state.remote(), path.clone(), state.dest_group.clone()),
                 Message::TaskChanged,
             ),
             None => Task::none(),
@@ -867,20 +823,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::SetDue => match &state.selected_task {
-            Some(path) => call(
-                state,
-                state
-                    .due
-                    .parse()
-                    .and_then(|due| api::update_task(path, None, None, None, Some(due))),
-                Message::TaskChanged,
-            ),
+            Some(path) => match state.due.parse::<TaskDue>() {
+                Ok(due) => Task::perform(
+                    api::update_task(state.remote(), path.clone(), None, Some(due)),
+                    Message::TaskChanged,
+                ),
+                Err(e) => {
+                    state.fail("cannot change the task", api::ApiError::of(e));
+                    Task::none()
+                }
+            },
             None => Task::none(),
         },
         Message::ClearDue => match &state.selected_task {
-            Some(path) => call(
-                state,
-                api::update_task(path, None, None, None, Some(TaskDue::none())),
+            Some(path) => Task::perform(
+                api::update_task(state.remote(), path.clone(), None, Some(TaskDue::none())),
                 Message::TaskChanged,
             ),
             None => Task::none(),
@@ -901,10 +858,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             state.log = text_editor::Content::new();
-            call(state, api::log_note(&body), Message::LogSubmitted)
+            Task::perform(api::log_note(state.remote(), body), Message::LogSubmitted)
         }
-        Message::LogSubmitted(Ok(output)) => {
-            state.status = Some(output.render());
+        Message::LogSubmitted(Ok(entry)) => {
+            let path: &NotePath = entry.path().as_ref();
+            state.status = Some(format!("logged {path}"));
             update(state, Message::RefreshLog)
         }
         Message::LogSubmitted(Err(e)) => {
@@ -914,16 +872,25 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::RefreshLog => {
             if state.log_filter.is_empty() {
                 state.hits.clear();
-                call(
-                    state,
-                    api::get_log(&state.since, &state.until, LOG_LIMIT),
+                Task::perform(
+                    api::get_log(
+                        state.remote(),
+                        state.since.clone(),
+                        state.until.clone(),
+                        LOG_LIMIT,
+                    ),
                     Message::LogLoaded,
                 )
             } else {
                 state.entries.clear();
-                call(
-                    state,
-                    api::search_log(&state.log_filter, &state.since, &state.until, LOG_LIMIT),
+                Task::perform(
+                    api::search_log(
+                        state.remote(),
+                        state.log_filter.clone(),
+                        state.since.clone(),
+                        state.until.clone(),
+                        LOG_LIMIT,
+                    ),
                     Message::LogMatched,
                 )
             }
@@ -940,16 +907,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.until = until;
             update(state, Message::RefreshLog)
         }
-        Message::LogLoaded(Ok(output)) => {
-            state.entries = log_rows(&api::record(output));
+        Message::LogLoaded(Ok(entries)) => {
+            state.entries = entries;
             Task::none()
         }
         Message::LogLoaded(Err(e)) => {
             state.fail("cannot read the log", e);
             Task::none()
         }
-        Message::LogMatched(Ok(output)) => {
-            state.hits = api::text(output);
+        Message::LogMatched(Ok(hits)) => {
+            state.hits = render_search(&hits);
             Task::none()
         }
         Message::LogMatched(Err(e)) => {
@@ -972,46 +939,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
     }
 }
 
-fn task_rows(record: &serde_json::Value) -> Vec<TaskRow> {
-    record
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .map(|item| TaskRow {
-                    path: string_at(item, "path"),
-                    state: TaskState::parse(&string_at(item, "state")),
-                    task: string_at(item, "task"),
-                    due: string_at(item, "due"),
-                    updated_at: string_at(item, "updated_at"),
-                })
-                .collect()
+/// The log's matches as `path:num:text` lines, `--` between entries.
+fn render_search(hits: &[Hit<LogPath>]) -> String {
+    hits.iter()
+        .map(|hit| {
+            hit.lines()
+                .map(|(num, text)| format!("{}:{num}:{text}", hit.path))
+                .collect::<Vec<_>>()
+                .join("\n")
         })
-        .unwrap_or_default()
-}
-
-fn log_rows(record: &serde_json::Value) -> Vec<LogRow> {
-    record
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .map(|item| LogRow {
-                    path: string_at(item, "path"),
-                    created: string_at(item, "created"),
-                    body: string_at(item, "body"),
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn string_at(value: &serde_json::Value, key: &str) -> String {
-    value
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_string()
+        .collect::<Vec<_>>()
+        .join("\n--\n")
 }
 
 fn view(state: &State) -> Element<'_, Message> {
@@ -1360,18 +1298,33 @@ mod tests {
     fn logging_out_drops_the_token_and_empties_every_tab() {
         let (host, mut state) = authed();
         state.open = Some("Inbox.md".to_string());
-        state.tasks = vec![TaskRow {
-            path: "dev/#1".to_string(),
-            state: Some(TaskState::Created),
-            task: "do it".to_string(),
-            due: String::new(),
-            updated_at: String::new(),
-        }];
-        state.entries = vec![LogRow {
-            path: "2026/07/x.md".to_string(),
-            created: String::new(),
-            body: "hi".to_string(),
-        }];
+        state.tasks = vec![
+            serde_json::from_value(serde_json::json!({
+                "path": "/dev/#1",
+                "front": {
+                    "task": "do it",
+                    "state": TaskState::Created,
+                    "due": null,
+                    "created_at": "2026-07-01T09:00:00-07:00",
+                    "updated_at": "2026-07-01T09:00:00-07:00",
+                },
+                "body": "",
+            }))
+            .unwrap(),
+        ];
+        state.entries = vec![
+            serde_json::from_value(serde_json::json!({
+                "path": "/@2026-07-01T09:00:00.000000-07:00",
+                "front": {
+                    "created": "2026-07-01T09:00:00-07:00",
+                    "cwd": "",
+                    "host": "",
+                    "source": null,
+                },
+                "body": "hi",
+            }))
+            .unwrap(),
+        ];
         let _ = update(&mut state, Message::LogoutRequested);
         assert!(matches!(state.auth, Auth::LoggedOut));
         assert_eq!(host.stored_token(), None);
