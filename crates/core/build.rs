@@ -1,7 +1,7 @@
 use vergen_gix::{Emitter, Gix};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let gix = Gix::builder().sha(true).dirty(false).build();
+    let gix = Gix::builder().sha(true).dirty(true).build();
     Emitter::default().add_instructions(&gix)?.emit_and_set()?;
     println!("cargo::rustc-env=VERSION_SUFFIX={}", version_suffix());
     Ok(())

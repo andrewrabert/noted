@@ -50,7 +50,11 @@ impl Upstream {
                 "a socket is dialed by a real client: it takes no in-process router",
             ));
         }
-        let builder = reqwest::Client::builder();
+        let builder = reqwest::Client::builder().user_agent(format!(
+            "{}/{}",
+            noted::APP_NAME,
+            noted::APP_VERSION
+        ));
         // rustls-platform-verifier needs a JVM on Android, which a CLI does not have.
         #[cfg(target_os = "android")]
         let builder = builder.tls_certs_only(

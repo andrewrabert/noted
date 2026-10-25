@@ -301,6 +301,8 @@ pub async fn serve_http(cfg: HttpConfig) -> Result<()> {
     };
 
     tracing::info!(
+        name = noted::APP_NAME,
+        version = noted::APP_VERSION,
         endpoint = %bound.endpoint(),
         auth = auth.is_some(),
         oauth = oauth.is_some(),
