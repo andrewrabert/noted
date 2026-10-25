@@ -3154,6 +3154,7 @@ dependencies = [
  "tokio",
  "tower",
  "url",
+ "webpki-root-certs",
 ]
 
 [[package]]

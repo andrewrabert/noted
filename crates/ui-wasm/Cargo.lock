@@ -3706,6 +3706,7 @@ dependencies = [
  "sha2",
  "tower",
  "url",
+ "webpki-root-certs",
 ]
 
 [[package]]
