@@ -62,7 +62,24 @@ check: fmt-check lint test
 
 # List outdated dependencies
 outdated:
-    @cargo outdated --manifest-path {{justfile_directory()}}/Cargo.toml --workspace --root-deps-only
+    #!/usr/bin/env sh
+    set -eu
+    cargo outdated --manifest-path {{justfile_directory()}}/Cargo.toml --workspace --root-deps-only
+    # cargo outdated cannot see past a pinned git rev, so compare each one
+    # in ui-wasm against the remote's default branch.
+    sed -n 's/^\([A-Za-z0-9_-]*\) = {.*git = "\([^"]*\)".*rev = "\([^"]*\)".*/\1 \2 \3/p' \
+        {{justfile_directory()}}/crates/ui-wasm/Cargo.toml | sort -u |
+    while read -r name url rev; do
+        head=$(git ls-remote "$url" HEAD | cut -f1)
+        if [ -z "$head" ]; then
+            echo "$name: no HEAD at $url" >&2
+            exit 1
+        elif [ "$rev" = "$head" ]; then
+            echo "$name: pinned rev $rev is up to date"
+        else
+            echo "$name: pinned rev $rev is behind $head ($url)"
+        fi
+    done
 
 # Update dependencies
 [positional-arguments]
