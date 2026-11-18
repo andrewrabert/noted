@@ -38,11 +38,8 @@ pub(crate) async fn route(
     let request = builder
         .body(axum::body::Body::from(body))
         .map_err(|e| e.to_string())?;
-    let resp = router
-        .clone()
-        .oneshot(request)
-        .await
-        .map_err(|e| e.to_string())?;
+    // the router's error is Infallible
+    let Ok(resp) = router.clone().oneshot(request).await;
     let status = resp.status().as_u16();
     let content_type = resp
         .headers()
