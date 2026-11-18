@@ -4,7 +4,6 @@ authors = ["Andrew Rabert <ar@nullsum.net>"]
 description = "The noted web UI, compiled to WebAssembly and served by noted-server."
 edition = "2024"
 license = "MIT"
-homepage = "https://github.com/andrewrabert/noted"
 repository = "https://github.com/andrewrabert/noted"
 publish = false
 
