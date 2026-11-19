@@ -1,6 +1,6 @@
 use crate::domain::{DirPath, TextPath};
 use crate::error::{NotedError, Result, rejected};
-use crate::note::{Condition, Edit, Note as _, TextNote, Trashed};
+use crate::note::{Condition, Edit, Note as _, NoteWatch, TextNote, Trashed};
 use crate::policy_store::PolicyStore;
 use crate::search::{Hit, SearchQuery};
 
@@ -39,6 +39,11 @@ impl NoteTools {
         })?;
         let text = String::from_utf8(bytes).map_err(|_| rejected("note is not valid utf-8"))?;
         Ok(TextNote::new(path.clone(), text))
+    }
+
+    pub(super) async fn watch(&self, path: &TextPath) -> Result<NoteWatch> {
+        let at = self.store.policy().readable(path.as_ref())?.file()?;
+        Ok(NoteWatch::new(path.clone(), self.store.watch(&at).await?))
     }
 
     pub(super) async fn write(&self, note: &TextNote, condition: Condition) -> Result<()> {

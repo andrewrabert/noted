@@ -1,7 +1,8 @@
+use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::upstream::{Transport, Upstream};
+use crate::upstream::{Reply, Transport, Upstream};
 use noted::Endpoint;
 use noted::NotedRoot;
 use noted::PolicyArgs;
@@ -17,6 +18,8 @@ use noted::tools::{
 };
 use noted::types::{Bearer, Source};
 use noted::{LogPath, TaskPath, TextPath};
+#[cfg(not(target_arch = "wasm32"))]
+use noted::{NoteEvent, NoteWatch, tools::WatchArgs};
 
 /// What a client invokes against: a notes tree on this host, or another
 /// server reached over an upstream.
@@ -92,6 +95,93 @@ impl Backend {
             }
             Inner::Local(_) => Err(rejected("a local notes tree has no login")),
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn watch_note(&self, path: TextPath) -> Result<NoteChanges> {
+        let inner = match &self.inner {
+            Inner::Local(root) => ChangesInner::Local(root.note_watch(&path).await?),
+            Inner::Remote(remote) => ChangesInner::Remote(remote.watch_note(path).await?),
+        };
+        Ok(NoteChanges { inner })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub struct NoteChanges {
+    inner: ChangesInner,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+enum ChangesInner {
+    Local(NoteWatch),
+    Remote(EventStream),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NoteChanges {
+    pub async fn next(&mut self) -> Result<Option<NoteEvent>> {
+        match &mut self.inner {
+            ChangesInner::Local(watch) => watch.next().await.transpose(),
+            ChangesInner::Remote(events) => events.next().await,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct EventStream {
+    body: crate::upstream::ByteStream,
+    buffer: Vec<u8>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl EventStream {
+    async fn next(&mut self) -> Result<Option<NoteEvent>> {
+        use futures_util::StreamExt;
+        loop {
+            if let Some(end) = self.buffer.windows(2).position(|pair| pair == b"\n\n") {
+                let block: Vec<u8> = self.buffer.drain(..end + 2).collect();
+                match parse_event(&block)? {
+                    Some(event) => return Ok(Some(event)),
+                    None => continue,
+                }
+            }
+            match self.body.next().await {
+                Some(Ok(chunk)) => self.buffer.extend_from_slice(&chunk),
+                Some(Err(e)) => return Err(unavailable(format!("note events stopped: {e}"))),
+                None => return Ok(None),
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_event(block: &[u8]) -> Result<Option<NoteEvent>> {
+    let block = std::str::from_utf8(block)
+        .map_err(|e| unavailable(format!("note event is not utf-8: {e}")))?;
+    let mut kind = None;
+    let mut data = Vec::new();
+    for line in block.lines() {
+        let field = |name: &str| {
+            line.strip_prefix(name)
+                .map(|value| value.strip_prefix(' ').unwrap_or(value))
+        };
+        if let Some(value) = field("data:") {
+            data.push(value);
+        } else if let Some(value) = field("event:") {
+            kind = Some(value);
+        }
+    }
+    if data.is_empty() {
+        return Ok(None);
+    }
+    let data = data.join("\n");
+    match kind {
+        None => serde_json::from_str(&data)
+            .map(Some)
+            .map_err(|e| json_error("malformed note event", e)),
+        Some("error") => Err(unavailable(data)),
+        Some(other) => Err(unavailable(format!("unknown note event: '{other}'"))),
     }
 }
 
@@ -259,6 +349,47 @@ impl Tools for RemoteBackend {
 }
 
 impl RemoteBackend {
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn watch_note(&self, path: TextPath) -> Result<EventStream> {
+        let body = serde_json::to_vec(&WatchArgs::new(path))
+            .map_err(|e| json_error("watch arguments", e))?;
+        let streamed = self
+            .upstream
+            .post_stream(
+                "watch",
+                &[],
+                self.bearer.as_ref(),
+                Some("text/event-stream"),
+                body,
+            )
+            .await?;
+        if streamed.is_refusal() {
+            let reply = streamed.collect().await?;
+            return Err(self.refusal(&reply));
+        }
+        Ok(EventStream {
+            body: streamed.body,
+            buffer: Vec::new(),
+        })
+    }
+
+    fn refusal(&self, reply: &Reply) -> NotedError {
+        let at = self.upstream.endpoint();
+        let Ok(status) = StatusCode::from_u16(reply.status) else {
+            return unavailable(format!("{at}: {}", reply.detail()));
+        };
+        if status.is_server_error() {
+            return unavailable(format!("{at}: {}", reply.detail()));
+        }
+        match status {
+            StatusCode::NOT_FOUND => NotedError::NotFound,
+            StatusCode::FORBIDDEN => NotedError::Forbidden,
+            StatusCode::UNAUTHORIZED => NotedError::Unauthorized,
+            StatusCode::CONFLICT => NotedError::Conflict,
+            _ => rejected(reply.detail()),
+        }
+    }
+
     // the tool, name and args, is the whole body of `tool`
     async fn post_tool<R: DeserializeOwned>(&self, tool: Tool) -> Result<R> {
         let at = self.upstream.endpoint();
@@ -267,24 +398,8 @@ impl RemoteBackend {
             .upstream
             .post("tool", &[], self.bearer.as_ref(), None, body)
             .await?;
-        if reply.status >= 500 {
-            return Err(unavailable(
-                reply
-                    .detail()
-                    .unwrap_or_else(|| format!("{at}: HTTP {}", reply.status)),
-            ));
-        }
-        if reply.status >= 400 {
-            let msg = reply
-                .detail()
-                .unwrap_or_else(|| format!("HTTP {}", reply.status));
-            return Err(match reply.status {
-                404 => NotedError::NotFound,
-                403 => NotedError::Forbidden,
-                401 => NotedError::Unauthorized,
-                409 => NotedError::Conflict,
-                _ => rejected(msg),
-            });
+        if reply.is_refusal() {
+            return Err(self.refusal(&reply));
         }
         let parsed: Value = serde_json::from_slice(&reply.body)
             .map_err(|e| json_error(format!("{at}: malformed response"), e))?;

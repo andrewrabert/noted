@@ -4,7 +4,7 @@ use std::ops::RangeBounds as _;
 use chrono::{DateTime, FixedOffset, Local, TimeDelta};
 
 use crate::domain::{DirPath, LogPath};
-use crate::error::{NotedError, Result, rejected};
+use crate::error::{NotedError, Result, io_error, rejected};
 use crate::note::{LogFront, LogNote, LogQuery, Note as _};
 use crate::policy_store::PolicyStore;
 use crate::search::Hit;
@@ -25,9 +25,11 @@ impl LogTools {
         let front = LogFront {
             created,
             cwd: std::env::current_dir()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            host: crate::platform::host(),
+                .map_err(|e| io_error("cannot read the working directory", e))?
+                .into_os_string()
+                .into_string()
+                .map_err(|_| rejected("the working directory is not utf-8"))?,
+            host: crate::platform::host()?,
             source: self.source.clone(),
         };
 
@@ -60,16 +62,17 @@ impl LogTools {
         self.store.read(&file).await
     }
 
+    async fn entry(&self, path: &LogPath) -> Result<LogNote> {
+        LogNote::from_bytes(path.clone(), &self.read(path).await?)
+    }
+
     pub(super) async fn get(&self, query: &LogQuery) -> Result<Vec<LogNote>> {
         let mut found = Vec::new();
-        for path in self.within(query).await {
-            let Ok(bytes) = self.read(&path).await else {
-                continue;
-            };
-            let Ok(entry) = LogNote::from_bytes(path, &bytes) else {
-                continue;
-            };
-            found.push(entry);
+        for path in self.within(query).await? {
+            match self.entry(&path).await {
+                Ok(entry) => found.push(entry),
+                Err(e) => skipped(&path, &e),
+            }
         }
         found.sort_by_cached_key(LogTools::newest_first);
         Ok(found.into_iter().take(query.limit as usize).collect())
@@ -97,13 +100,10 @@ impl LogTools {
             {
                 continue;
             }
-            let Ok(bytes) = self.read(&hit.path).await else {
-                continue;
-            };
-            let Ok(entry) = LogNote::from_bytes(hit.path.clone(), &bytes) else {
-                continue;
-            };
-            dated.push((LogTools::newest_first(&entry), hit));
+            match self.entry(&hit.path).await {
+                Ok(entry) => dated.push((LogTools::newest_first(&entry), hit)),
+                Err(e) => skipped(&hit.path, &e),
+            }
         }
         dated.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(dated
@@ -113,10 +113,11 @@ impl LogTools {
             .collect())
     }
 
-    async fn within(&self, query: &LogQuery) -> Vec<LogPath> {
-        self.store
+    async fn within(&self, query: &LogQuery) -> Result<Vec<LogPath>> {
+        Ok(self
+            .store
             .walk(&query.prefix, None)
-            .await
+            .await?
             .into_iter()
             .filter_map(|at| LogPath::try_from(at).ok())
             .filter(|path| {
@@ -124,10 +125,14 @@ impl LogTools {
                     .range
                     .contains(&DateTime::<FixedOffset>::from(path.created()))
             })
-            .collect()
+            .collect())
     }
 
     fn newest_first(entry: &LogNote) -> (Reverse<Timestamp>, LogPath) {
         (Reverse(entry.front().created), entry.path().clone())
     }
+}
+
+fn skipped(path: &LogPath, error: &NotedError) {
+    tracing::warn!(target: crate::SKIPPED, %path, %error, "skipping a log entry that cannot be read");
 }

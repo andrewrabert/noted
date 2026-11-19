@@ -9,9 +9,15 @@ pub struct LogGuard(#[allow(dead_code)] Option<tracing_appender::non_blocking::W
 
 /// Initializes tracing with `filter`, writing to `file` when one is named and
 /// stderr otherwise. A filter that does not parse is rejected.
-pub fn init(filter: &str, file: Option<&Path>) -> Result<LogGuard> {
-    let env_filter = EnvFilter::try_new(filter)
+pub fn init(filter: &str, file: Option<&Path>, serving: bool) -> Result<LogGuard> {
+    let mut env_filter = EnvFilter::try_new(filter)
         .map_err(|_| rejected(format!("invalid log filter: {filter} (--log-level)")))?;
+    if !serving {
+        let silenced = format!("{}=off", noted::SKIPPED)
+            .parse()
+            .map_err(|_| rejected("invalid built-in log directive"))?;
+        env_filter = env_filter.add_directive(silenced);
+    }
     let builder = tracing_subscriber::fmt().with_env_filter(env_filter);
 
     match file {

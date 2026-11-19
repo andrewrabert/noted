@@ -17,24 +17,6 @@ pub(crate) async fn password() -> Result<String> {
     .await
 }
 
-/// Asks `question` on stderr; anything but `y`/`yes` is no, and an
-/// unreadable stdin is no.
-pub(crate) async fn confirm(question: &str) -> bool {
-    let question = question.to_string();
-    let answered = blocking(move || {
-        let mut stderr = std::io::stderr();
-        let _ = write!(stderr, "{question} ");
-        let _ = stderr.flush();
-        let mut line = String::new();
-        if std::io::stdin().read_line(&mut line).is_err() {
-            return Ok(false);
-        }
-        Ok(matches!(line.trim(), "y" | "Y" | "yes" | "Yes"))
-    })
-    .await;
-    answered.unwrap_or(false)
-}
-
 async fn blocking<T, F>(f: F) -> Result<T>
 where
     T: Send + 'static,

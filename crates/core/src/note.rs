@@ -8,6 +8,7 @@ use crate::domain::{DirPath, LogPath, NotePath, TextPath};
 use crate::error::{NotedError, Result, rejected};
 use crate::front_matter::{FrontMatter, split_front};
 use crate::search::SearchQuery;
+use crate::store::FileWatch;
 use crate::timerange::TimeRange;
 use crate::types::{NoteBody, Source, Timestamp};
 
@@ -130,6 +131,33 @@ impl Trashed {
 impl fmt::Display for Trashed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoteEvent {
+    pub path: TextPath,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
+}
+
+pub struct NoteWatch {
+    path: TextPath,
+    file: FileWatch,
+}
+
+impl NoteWatch {
+    pub(crate) fn new(path: TextPath, file: FileWatch) -> NoteWatch {
+        NoteWatch { path, file }
+    }
+
+    pub async fn next(&mut self) -> Option<Result<NoteEvent>> {
+        let present = self.file.next().await?;
+        Some(present.map(|present| NoteEvent {
+            path: self.path.clone(),
+            removed: !present,
+        }))
     }
 }
 

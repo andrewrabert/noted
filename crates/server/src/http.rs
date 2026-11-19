@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::sync::{Arc, LazyLock};
 
 use axum::{
@@ -6,7 +7,10 @@ use axum::{
     extract::{OriginalUri, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
-    response::{Html, IntoResponse, Response},
+    response::{
+        Html, IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
     routing::{get, post},
 };
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -15,12 +19,13 @@ use serde_json::{Value, json};
 
 use crate::auth::AuthState;
 use crate::mcp::McpContext;
-use crate::relay::Relay;
+use crate::relay::{Relay, RelayError};
 use axum::extract::FromRequest;
 use axum::extract::rejection::JsonRejection;
+use futures_util::Stream;
 use noted::error::{NotedError, json_error};
-use noted::tools::{Tool, Tools};
-use noted::{APP_NAME, NotedRoot, PolicyFragment};
+use noted::tools::{Tool, Tools, WatchArgs};
+use noted::{APP_NAME, NoteWatch, NotedRoot, PolicyFragment};
 use noted_auth::{Denial, Verified};
 use url::form_urlencoded;
 
@@ -461,11 +466,33 @@ pub fn build_app(served: Served) -> Router {
                     },
                 ),
             )
+            .route(
+                "/watch",
+                post(
+                    |State(root): State<NotedRoot>,
+                     Extension(caller): Extension<Verified>,
+                     Extension(query): Extension<Vec<PolicyFragment>>,
+                     ApiJson(args): ApiJson<WatchArgs>| async move {
+                        let held = root
+                            .with_authority(caller.fragments())
+                            .and_then(|root| root.with_authority(&query));
+                        let watch = match held {
+                            Ok(root) => root.note_watch(&args.path).await,
+                            Err(e) => Err(e),
+                        };
+                        match watch {
+                            Ok(watch) => events(watch).into_response(),
+                            Err(e) => ApiError::from(e).into_response(),
+                        }
+                    },
+                ),
+            )
             .with_state(root.clone())
             .nest_service("/mcp", mcp_service(root.clone())),
         ServedKind::Relay(relay) => Router::new()
             .route("/tool", post(relay_forward))
             .route("/mcp", post(relay_forward))
+            .route("/watch", post(relay_stream))
             .with_state(relay.clone()),
     };
 
@@ -566,9 +593,16 @@ fn denial_response(denial: &Denial, state: &AppState) -> Response {
         Denial::Forbidden(message) => detail(StatusCode::FORBIDDEN, message.clone()),
         Denial::Unauthorized(_) => {
             let mut response = detail(StatusCode::UNAUTHORIZED, "unauthorized".to_string());
-            if let Some(oauth) = state.auth.oauth()
-                && let Ok(value) = HeaderValue::from_str(&oauth.resource_metadata_challenge())
-            {
+            if let Some(oauth) = state.auth.oauth() {
+                let challenge = oauth.resource_metadata_challenge();
+                let Ok(value) = HeaderValue::from_str(&challenge) else {
+                    return detail(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!(
+                            "cannot send the authentication challenge as a header: {challenge:?}"
+                        ),
+                    );
+                };
                 response
                     .headers_mut()
                     .insert(header::WWW_AUTHENTICATE, value);
@@ -578,8 +612,6 @@ fn denial_response(denial: &Denial, state: &AppState) -> Response {
     }
 }
 
-/// One arm per tool: the typed method runs it, and its domain value goes
-/// back as JSON.
 async fn call_tool(root: &NotedRoot, tool: Tool) -> noted::Result<Value> {
     let value = match tool {
         Tool::SearchNotes(args) => serde_json::to_value(root.search_notes(args).await?),
@@ -600,13 +632,43 @@ async fn call_tool(root: &NotedRoot, tool: Tool) -> noted::Result<Value> {
     value.map_err(|e| json_error("tool result", e))
 }
 
+fn events(watch: NoteWatch) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let changes = futures_util::stream::unfold(watch, |mut watch| async move {
+        let sent = match watch.next().await? {
+            Ok(event) => match serde_json::to_string(&event) {
+                Ok(data) => Event::default().data(data),
+                Err(e) => failure(&json_error("note event", e)),
+            },
+            Err(e) => failure(&e),
+        };
+        Some((Ok(sent), watch))
+    });
+    Sse::new(changes).keep_alive(KeepAlive::default())
+}
+
+fn failure(e: &NotedError) -> Event {
+    Event::default().event("error").data(e.to_string())
+}
+
+async fn relay_stream(
+    State(relay): State<Arc<Relay>>,
+    OriginalUri(uri): OriginalUri,
+    Extension(asked): Extension<Vec<PolicyFragment>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, RelayError> {
+    relay
+        .stream(uri.path(), accept(&headers), &asked, body)
+        .await
+}
+
 async fn relay_forward(
     State(relay): State<Arc<Relay>>,
     OriginalUri(uri): OriginalUri,
     Extension(asked): Extension<Vec<PolicyFragment>>,
     headers: HeaderMap,
     body: Bytes,
-) -> Response {
+) -> Result<Response, RelayError> {
     relay
         .forward(uri.path(), accept(&headers), &asked, body)
         .await

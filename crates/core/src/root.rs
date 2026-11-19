@@ -7,7 +7,7 @@ mod task;
 use crate::domain::{DirPath, LogPath, TaskPath, TextPath};
 use crate::error::Result;
 use crate::fragment::PolicyFragment;
-use crate::note::{Condition, Edit, LogNote, LogQuery, TextNote, Trashed};
+use crate::note::{Condition, Edit, LogNote, LogQuery, NoteWatch, TextNote, Trashed};
 use crate::policy_store::PolicyStore;
 use crate::search::{Hit, SearchQuery};
 use crate::store::NotedDir;
@@ -78,6 +78,10 @@ impl NotedRoot {
 
     pub async fn note_read(&self, path: &TextPath) -> Result<TextNote> {
         self.0.note.read(path).await
+    }
+
+    pub async fn note_watch(&self, path: &TextPath) -> Result<NoteWatch> {
+        self.0.note.watch(path).await
     }
 
     pub async fn note_write(&self, note: &TextNote, condition: Condition) -> Result<()> {

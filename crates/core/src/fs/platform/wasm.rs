@@ -46,12 +46,8 @@ pub(crate) async fn relocate(_from: &StdPath, _to: &StdPath) -> Result<()> {
     absent()
 }
 
-pub(crate) async fn exists(_abs: &StdPath) -> bool {
-    false
-}
-
 pub(crate) async fn walk(_dir: &StdPath, _max_depth: Option<usize>) -> Result<Vec<PathBuf>> {
-    Ok(Vec::new())
+    absent()
 }
 
 pub(crate) async fn grep(
@@ -59,9 +55,33 @@ pub(crate) async fn grep(
     _from: &StdPath,
     _query: &SearchQuery,
 ) -> Result<Vec<RawHit>> {
-    Ok(Vec::new())
+    absent()
 }
 
-pub(crate) fn host() -> String {
-    String::new()
+pub(crate) fn host() -> Result<String> {
+    absent()
+}
+
+pub(crate) async fn present(_abs: &StdPath) -> Result<bool> {
+    absent()
+}
+
+pub(crate) struct Watcher;
+
+impl Watcher {
+    pub(crate) fn changes(&self, _abs: PathBuf) -> Changes {
+        Changes
+    }
+}
+
+pub(crate) async fn watcher(_base: &StdPath) -> Result<Watcher> {
+    absent()
+}
+
+pub(crate) struct Changes;
+
+impl Changes {
+    pub(crate) async fn next(&mut self) -> Option<Result<()>> {
+        None
+    }
 }

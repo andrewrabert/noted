@@ -7,6 +7,7 @@ use grep_searcher::{Searcher, SearcherBuilder, SinkContext, SinkMatch};
 use ignore::overrides::OverrideBuilder;
 use ignore::types::TypesBuilder;
 use ignore::{WalkBuilder, WalkState};
+use tokio::sync::broadcast;
 
 use crate::disk::{atomic_create, atomic_write, normalize};
 use crate::error::{NotedError, Result, io_error, rejected, unavailable};
@@ -52,7 +53,7 @@ pub(crate) async fn create(abs: &StdPath, data: &[u8]) -> Result<()> {
     let abs = abs.to_path_buf();
     let data = data.to_vec();
     blocking(move || {
-        if std::fs::symlink_metadata(&abs).is_ok() {
+        if exists_at(&abs)? {
             return Err(NotedError::Conflict);
         }
         atomic_create(&abs, &data).map_err(|e| match e.kind() {
@@ -67,10 +68,10 @@ pub(crate) async fn rename(from: &StdPath, to: &StdPath, overwrite: bool) -> Res
     let from = from.to_path_buf();
     let to = to.to_path_buf();
     blocking(move || {
-        if std::fs::symlink_metadata(&from).is_err() {
+        if !exists_at(&from)? {
             return Err(NotedError::NotFound);
         }
-        if !overwrite && std::fs::symlink_metadata(&to).is_ok() {
+        if !overwrite && exists_at(&to)? {
             return Err(NotedError::Conflict);
         }
         parented(&to, "cannot rename")?;
@@ -83,16 +84,24 @@ pub(crate) async fn relocate(from: &StdPath, to: &StdPath) -> Result<()> {
     let from = from.to_path_buf();
     let to = to.to_path_buf();
     blocking(move || {
-        if std::fs::symlink_metadata(&from).is_err() {
+        if !exists_at(&from)? {
             return Err(NotedError::NotFound);
         }
-        if std::fs::symlink_metadata(&to).is_ok() {
+        if exists_at(&to)? {
             return Err(NotedError::Conflict);
         }
         parented(&to, "delete failed")?;
         std::fs::rename(&from, &to).map_err(|e| io_error("delete failed", e))
     })
     .await?
+}
+
+fn exists_at(abs: &StdPath) -> Result<bool> {
+    match std::fs::symlink_metadata(abs) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(io_error("cannot check the notes dir", e)),
+    }
 }
 
 fn parented(at: &StdPath, context: &'static str) -> Result<()> {
@@ -102,35 +111,139 @@ fn parented(at: &StdPath, context: &'static str) -> Result<()> {
     }
 }
 
-pub(crate) async fn exists(abs: &StdPath) -> bool {
-    let abs = abs.to_path_buf();
-    blocking(move || abs.exists()).await.unwrap_or(false)
-}
-
 pub(crate) async fn walk(dir: &StdPath, max_depth: Option<usize>) -> Result<Vec<PathBuf>> {
     let dir = dir.to_path_buf();
     blocking(move || {
-        walk_builder(&dir)
-            .max_depth(max_depth)
-            .build()
-            .flatten()
-            .filter(|entry| entry.depth() > 0)
-            .filter_map(|entry| {
-                entry
-                    .path()
-                    .strip_prefix(&dir)
-                    .ok()
-                    .map(StdPath::to_path_buf)
-            })
-            .collect()
+        let mut found = Vec::new();
+        for entry in walk_builder(&dir).max_depth(max_depth).build() {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e)
+                    if e.io_error()
+                        .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+                {
+                    continue;
+                }
+                Err(e) => return Err(unavailable(format!("cannot list the notes dir: {e}"))),
+            };
+            if entry.depth() == 0 {
+                continue;
+            }
+            let rel = entry
+                .path()
+                .strip_prefix(&dir)
+                .map_err(|_| rejected("outside the listing root"))?;
+            found.push(rel.to_path_buf());
+        }
+        Ok(found)
     })
-    .await
+    .await?
 }
 
-pub(crate) fn host() -> String {
+pub(crate) async fn present(abs: &StdPath) -> Result<bool> {
+    let abs = abs.to_path_buf();
+    blocking(move || exists_at(&abs)).await?
+}
+
+#[derive(Clone)]
+enum Report {
+    Touched(PathBuf),
+    Missed,
+    Failed(String),
+}
+
+pub(crate) struct Watcher {
+    _inner: Mutex<notify::RecommendedWatcher>,
+    reports: broadcast::Sender<Report>,
+}
+
+impl Watcher {
+    pub(crate) fn changes(&self, abs: PathBuf) -> Changes {
+        Changes {
+            abs,
+            reports: self.reports.subscribe(),
+        }
+    }
+}
+
+pub(crate) async fn watcher(base: &StdPath) -> Result<Watcher> {
+    use notify::Watcher as _;
+
+    let base = base.to_path_buf();
+    blocking(move || {
+        let (reports, _) = broadcast::channel(256);
+        let sender = reports.clone();
+        let mut inner =
+            notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
+                Err(e) => {
+                    let _ = sender.send(Report::Failed(e.to_string()));
+                }
+                Ok(event) if event.need_rescan() => {
+                    let _ = sender.send(Report::Missed);
+                }
+                Ok(event) if changes_contents(&event.kind) => {
+                    for path in event.paths {
+                        let _ = sender.send(Report::Touched(path));
+                    }
+                }
+                Ok(_) => {}
+            })
+            .map_err(|e| unavailable(format!("cannot watch the notes dir: {e}")))?;
+        inner
+            .watch(&base, notify::RecursiveMode::Recursive)
+            .map_err(|e| unavailable(format!("cannot watch the notes dir: {e}")))?;
+        Ok(Watcher {
+            _inner: Mutex::new(inner),
+            reports,
+        })
+    })
+    .await?
+}
+
+fn changes_contents(kind: &notify::EventKind) -> bool {
+    use notify::event::{AccessKind, AccessMode, EventKind};
+    match kind {
+        EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
+        EventKind::Access(_) => false,
+        _ => true,
+    }
+}
+
+pub(crate) struct Changes {
+    abs: PathBuf,
+    reports: broadcast::Receiver<Report>,
+}
+
+impl Changes {
+    pub(crate) async fn next(&mut self) -> Option<Result<()>> {
+        loop {
+            match self.reports.recv().await {
+                Ok(Report::Touched(path)) if path == self.abs => break,
+                Ok(Report::Touched(_)) => continue,
+                Ok(Report::Missed) | Err(broadcast::error::RecvError::Lagged(_)) => break,
+                Ok(Report::Failed(e)) => {
+                    return Some(Err(unavailable(format!("the notes dir watch failed: {e}"))));
+                }
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+        loop {
+            match self.reports.try_recv() {
+                Ok(Report::Failed(e)) => {
+                    return Some(Err(unavailable(format!("the notes dir watch failed: {e}"))));
+                }
+                Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(_) => return Some(Ok(())),
+            }
+        }
+    }
+}
+
+pub(crate) fn host() -> Result<String> {
     hostname::get()
-        .map(|h| h.to_string_lossy().into_owned())
-        .unwrap_or_default()
+        .map_err(|e| io_error("cannot read the host name", e))?
+        .into_string()
+        .map_err(|_| rejected("the host name is not utf-8"))
 }
 
 // the tree's walk configuration, rooted at the notes root; '.ignore' and

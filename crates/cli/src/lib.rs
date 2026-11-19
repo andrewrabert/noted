@@ -59,7 +59,7 @@ fn start() -> Result<ExitCode> {
     }
     let settings = Settings::resolve(layers)?;
     let config = Config::new(settings, environment.config_dir);
-    let _log = logging::init(config.log_filter(), config.log_file())?;
+    let _log = logging::init(config.log_filter(), config.log_file(), cli.serves())?;
     let runtime = tokio::runtime::Runtime::new().map_err(|e| io_error("runtime", e))?;
     runtime.block_on(run(cli.command, &config))
 }
@@ -78,6 +78,19 @@ struct Cli {
 }
 
 impl Cli {
+    fn serves(&self) -> bool {
+        #[cfg(unix)]
+        if let Some(Command::Server(c)) = &self.command
+            && matches!(c.sub, ServerSub::Socket(_))
+        {
+            return true;
+        }
+        matches!(
+            &self.command,
+            Some(Command::Server(c)) if matches!(c.sub, ServerSub::Http(_) | ServerSub::Mcp(_))
+        )
+    }
+
     /// Everything the command line binds, whatever spells it: the global
     /// flags and every flag a subcommand carries for itself.
     fn flags(&self) -> Layer {

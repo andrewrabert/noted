@@ -3,7 +3,7 @@
 A tree of `.md` notes exposed three ways over one set of file operations:
 
 - **CLI** — local files, or drive a remote server with `NOTED_URL`, over TCP or a Unix socket
-- **HTTP API** — REST at `/tool` (body `{"name": …, "args": …}`), plus MCP (Streamable HTTP) at `/mcp`, under OAuth 2.1, over TCP or a Unix socket, with the web UI at `/`
+- **HTTP API** — REST at `/tool` (body `{"name": …, "args": …}`), plus MCP (Streamable HTTP) at `/mcp` and a note's changes as server-sent events at `/watch` (body `{"path": …}`), under OAuth 2.1, over TCP or a Unix socket, with the web UI at `/`
 - **MCP** — over stdio for a local client
 
 A served process is an **origin** when it holds the notes directory, and a **relay**
@@ -61,7 +61,7 @@ noted <command>
   read    Read a note by relative path
   write   Write a note, overwriting it
   edit    Revise a note via string-replace
-  open    Open a note in $EDITOR; with no path, fuzzy-pick one, newest first
+  open    Open a note in $EDITOR, synced both ways while open; with no path, fuzzy-pick one, newest first
   move    Move or rename a note or folder
   delete  Move a note to .trash/ (recoverable)
   log     Log entries (create/get/search)

@@ -61,7 +61,7 @@ impl Upstream {
         )
         .unwrap_or_default();
         let reply = self.post("register", &[], None, None, body).await?;
-        if reply.status >= 400 {
+        if reply.is_refusal() {
             return Err(rejected(format!(
                 "{}: {}",
                 self.base().join("register"),
@@ -121,7 +121,7 @@ impl Upstream {
             ],
         )
         .await?;
-        if reply.status >= 400 {
+        if reply.is_refusal() {
             return Err(rejected(format!("{target}: {}", failure(&reply))));
         }
         let body = answer(&reply)?;

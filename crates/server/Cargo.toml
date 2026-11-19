@@ -13,6 +13,7 @@ noted-client = { workspace = true }
 noted-auth = { workspace = true }
 noted-core = { workspace = true }
 axum = { version = "0.8", features = ["macros"] }
+futures-util = "0.3"
 http = "1"
 rand = "0.10"
 rustix = { version = "1", features = ["fs", "net", "process"] }

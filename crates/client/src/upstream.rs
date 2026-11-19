@@ -31,14 +31,72 @@ pub struct Reply {
     pub body: Vec<u8>,
 }
 
+fn refuses(status: u16) -> bool {
+    reqwest::StatusCode::from_u16(status).map_or(true, |code| {
+        code.is_client_error() || code.is_server_error()
+    })
+}
+
 impl Reply {
-    pub fn detail(&self) -> Option<String> {
-        let value: Value = serde_json::from_slice(&self.body).ok()?;
-        match value.get("detail")? {
-            Value::Null => None,
-            Value::String(s) => Some(s.clone()),
-            other => Some(other.to_string()),
+    pub fn is_refusal(&self) -> bool {
+        refuses(self.status)
+    }
+
+    pub fn detail(&self) -> String {
+        let status = format!("HTTP {}", self.status);
+        if self.body.is_empty() {
+            return format!("{status}, with no body");
         }
+        let Ok(text) = std::str::from_utf8(&self.body) else {
+            return format!(
+                "{status}, with a {}-byte body that is not utf-8",
+                self.body.len()
+            );
+        };
+        match serde_json::from_str::<Value>(text) {
+            Ok(value) => match value.get("detail") {
+                Some(Value::String(detail)) => detail.clone(),
+                Some(Value::Null) | None => format!("{status}: {text}"),
+                Some(other) => other.to_string(),
+            },
+            Err(_) => format!("{status}: {text}"),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub struct Streamed {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub body: ByteStream,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub type ByteStream = std::pin::Pin<
+    Box<dyn futures_util::Stream<Item = std::io::Result<bytes::Bytes>> + Send + 'static>,
+>;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Streamed {
+    pub fn is_refusal(&self) -> bool {
+        refuses(self.status)
+    }
+
+    pub async fn collect(self) -> Result<Reply> {
+        use futures_util::TryStreamExt;
+        let body: Vec<u8> = self
+            .body
+            .try_fold(Vec::new(), |mut all, chunk| async move {
+                all.extend_from_slice(&chunk);
+                Ok(all)
+            })
+            .await
+            .map_err(|e| unavailable(format!("cannot read the reply: {e}")))?;
+        Ok(Reply {
+            status: self.status,
+            content_type: self.content_type,
+            body,
+        })
     }
 }
 
@@ -114,7 +172,33 @@ impl Upstream {
         self.send(&target, &headers, body).await
     }
 
-    /// One POST through this upstream's transport, whichever it is.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn post_stream(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        bearer: Option<&Bearer>,
+        accept: Option<&str>,
+        body: Vec<u8>,
+    ) -> Result<Streamed> {
+        let target = self.base.join_query(path, query);
+        let authorization = bearer.map(|b| format!("Bearer {}", b.expose()));
+        let mut headers: Vec<(&str, &str)> = vec![("content-type", "application/json")];
+        if let Some(authorization) = &authorization {
+            headers.push(("authorization", authorization));
+        }
+        if let Some(accept) = accept {
+            headers.push(("accept", accept));
+        }
+        let sent = match &self.transport {
+            Transport::Real => stream_reqwest(&self.client, &target, &headers, body).await,
+            Transport::Router(router) => {
+                crate::platform::route_stream(router, &target, &headers, body).await
+            }
+        };
+        sent.map_err(|e| unavailable(format!("cannot reach {}: {e}", self.endpoint)))
+    }
+
     async fn send(
         &self,
         target: &HttpUrl,
@@ -157,8 +241,36 @@ async fn send_reqwest(
     let content_type = resp
         .headers()
         .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
+        .map(|v| v.to_str().map(str::to_string))
+        .transpose()
+        .map_err(|e| format!("invalid content type: {e}"))?;
     let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
     Ok((status, content_type, bytes.to_vec()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn stream_reqwest(
+    client: &reqwest::Client,
+    target: &HttpUrl,
+    headers: &[(&str, &str)],
+    body: Vec<u8>,
+) -> std::result::Result<Streamed, String> {
+    use futures_util::TryStreamExt;
+    let mut req = client.post(target.as_str()).body(body);
+    for (name, value) in headers {
+        req = req.header(*name, *value);
+    }
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    let status = resp.status().as_u16();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .map(|v| v.to_str().map(str::to_string))
+        .transpose()
+        .map_err(|e| format!("invalid content type: {e}"))?;
+    Ok(Streamed {
+        status,
+        content_type,
+        body: Box::pin(resp.bytes_stream().map_err(std::io::Error::other)),
+    })
 }

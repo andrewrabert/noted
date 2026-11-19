@@ -6,7 +6,7 @@ use tokio::net::TcpListener;
 
 use crate::credentials::{Credential, CredentialStore};
 use crate::{Transport, Upstream};
-use noted::error::{Result, io_error, rejected, unavailable};
+use noted::error::{Result, io_error, json_error, rejected, unavailable};
 use noted::util::random_token;
 use noted::{Bearer, HttpUrl, PolicyFragment};
 use noted_auth::credential::{Macaroon, MacaroonId};
@@ -116,16 +116,14 @@ impl Session {
             .await?
             .ok_or_else(|| rejected("not logged in; run `noted auth login`"))?;
         let endpoint = self.url.join("macaroon/mint");
-        let body = serde_json::to_vec(&json!({ "policy": ask.policy })).unwrap_or_default();
+        let body = serde_json::to_vec(&json!({ "policy": ask.policy }))
+            .map_err(|e| json_error("mint request", e))?;
         let credential = Bearer::new(credential.expose().to_string());
         let reply = Upstream::open(self.url.as_str().parse()?, Transport::Real)?
             .post("macaroon/mint", &[], Some(&credential), None, body)
             .await?;
-        if reply.status >= 400 {
-            let detail = reply
-                .detail()
-                .unwrap_or_else(|| format!("HTTP {}", reply.status));
-            return Err(rejected(format!("{endpoint}: {detail}")));
+        if reply.is_refusal() {
+            return Err(rejected(format!("{endpoint}: {}", reply.detail())));
         }
         let answer: Value = serde_json::from_slice(&reply.body)
             .map_err(|e| unavailable(format!("{endpoint}: unreadable answer: {e}")))?;

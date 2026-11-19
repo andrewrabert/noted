@@ -1,12 +1,12 @@
 use std::collections::BTreeSet;
 
 use crate::domain::{DirPath, NotePath, Path};
-use crate::error::Result;
+use crate::error::{NotedError, Result};
 use crate::fragment::PolicyFragment;
 use crate::note::Condition;
 use crate::policy::{Policy, ReadableFile, WriteableFile, WriteablePath};
 use crate::search::{Hit, SearchQuery};
-use crate::store::{NotedDir, Store};
+use crate::store::{FileWatch, NotedDir, Store};
 
 // `entry` is measured from `dir`'s store directory and starts with a
 // separator; the whole store path is read back at once so an entry under a
@@ -53,6 +53,10 @@ impl PolicyStore {
         self.store.read(at).await
     }
 
+    pub(crate) async fn watch(&self, at: &ReadableFile) -> Result<FileWatch> {
+        self.store.watch(at).await
+    }
+
     pub(crate) async fn write(
         &self,
         at: &WriteableFile,
@@ -77,16 +81,23 @@ impl PolicyStore {
 
     // every listing is rooted at the scope; `dir` is where inside it to start,
     // and what comes back is spelled from the scope, as the caller names notes
-    pub(crate) async fn walk(&self, dir: &DirPath, max_depth: Option<usize>) -> Vec<NotePath> {
-        let Ok(start) = self.policy.readable(dir.as_ref()).and_then(|at| at.dir()) else {
-            return Vec::new();
+    pub(crate) async fn walk(
+        &self,
+        dir: &DirPath,
+        max_depth: Option<usize>,
+    ) -> Result<Vec<NotePath>> {
+        let start = match self.policy.readable(dir.as_ref()) {
+            Ok(at) => at.dir()?,
+            Err(NotedError::Forbidden) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
         };
-        let found = self.store.walk(&start, max_depth).await;
-        self.named(dir, found)
+        let found = self.store.walk(&start, max_depth).await?;
+        Ok(self
+            .named(dir, found)
             .into_iter()
             .collect::<BTreeSet<_>>()
             .into_iter()
-            .collect()
+            .collect())
     }
 
     // each entry read back as one store path under `dir`, kept when readable

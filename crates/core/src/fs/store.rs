@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path as StdPath, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
 use crate::domain::Path;
@@ -45,6 +45,28 @@ fn spare_names(name: &str) -> impl Iterator<Item = String> + use<> {
 struct StoreInner {
     base: PathBuf,
     writes: platform::Lock,
+    watching: platform::Lock,
+    watcher: OnceLock<platform::Watcher>,
+}
+
+pub(crate) struct FileWatch {
+    abs: PathBuf,
+    changes: platform::Changes,
+    pending: bool,
+}
+
+impl FileWatch {
+    pub(crate) async fn next(&mut self) -> Option<Result<bool>> {
+        if !self.pending {
+            if let Err(e) = self.changes.next().await? {
+                return Some(Err(e));
+            }
+            self.pending = true;
+        }
+        let present = platform::present(&self.abs).await;
+        self.pending = false;
+        Some(present)
+    }
 }
 
 #[derive(Clone)]
@@ -62,6 +84,8 @@ impl Store {
             inner: Arc::new(StoreInner {
                 base,
                 writes: platform::Lock::new(),
+                watching: platform::Lock::new(),
+                watcher: OnceLock::new(),
             }),
         })
     }
@@ -95,7 +119,7 @@ impl Store {
         match when {
             Condition::Always => platform::write(&abs, data).await,
             Condition::Missing => platform::create(&abs, data).await,
-            Condition::Exists => match platform::exists(&abs).await {
+            Condition::Exists => match platform::present(&abs).await? {
                 true => platform::write(&abs, data).await,
                 false => Err(NotedError::NotFound),
             },
@@ -118,7 +142,7 @@ impl Store {
         match when {
             Condition::Missing => platform::rename(&source, &target, false).await,
             Condition::Always => platform::rename(&source, &target, true).await,
-            Condition::Exists => match platform::exists(&target).await {
+            Condition::Exists => match platform::present(&target).await? {
                 true => platform::rename(&source, &target, true).await,
                 false => Err(NotedError::NotFound),
             },
@@ -152,23 +176,48 @@ impl Store {
         Err(NotedError::Conflict)
     }
 
-    pub(crate) async fn walk(&self, start: &ReadableDir, max_depth: Option<usize>) -> Vec<String> {
+    pub(crate) async fn watch(&self, at: &ReadableFile) -> Result<FileWatch> {
+        let at: &ReadablePath = at.as_ref();
+        let abs = at.to_store_path(&self.inner.base)?;
+        let changes = self.watcher().await?.changes(abs.clone());
+        Ok(FileWatch {
+            abs,
+            changes,
+            pending: false,
+        })
+    }
+
+    async fn watcher(&self) -> Result<&platform::Watcher> {
+        if let Some(watcher) = self.inner.watcher.get() {
+            return Ok(watcher);
+        }
+        let _guard = self.inner.watching.hold().await;
+        if let Some(watcher) = self.inner.watcher.get() {
+            return Ok(watcher);
+        }
+        let started = platform::watcher(&self.inner.base).await?;
+        Ok(self.inner.watcher.get_or_init(|| started))
+    }
+
+    pub(crate) async fn walk(
+        &self,
+        start: &ReadableDir,
+        max_depth: Option<usize>,
+    ) -> Result<Vec<String>> {
         let start: &ReadablePath = start.as_ref();
-        let Ok(abs) = start.to_store_path(&self.inner.base) else {
-            return Vec::new();
-        };
-        platform::walk(&abs, max_depth)
-            .await
-            .unwrap_or_default()
+        let abs = start.to_store_path(&self.inner.base)?;
+        Ok(platform::walk(&abs, max_depth)
+            .await?
             .iter()
-            .map(|rel| {
+            .filter_map(|rel| {
                 rel.components()
                     .map(|part| {
-                        format!("{}{}", Path::SEPARATOR, part.as_os_str().to_string_lossy())
+                        let name = part.as_os_str().to_str()?;
+                        Some(format!("{}{name}", Path::SEPARATOR))
                     })
                     .collect()
             })
-            .collect()
+            .collect())
     }
 
     pub(crate) async fn search(

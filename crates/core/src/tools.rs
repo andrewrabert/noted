@@ -277,6 +277,18 @@ impl GetLogArgs {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WatchArgs {
+    pub path: TextPath,
+}
+
+impl WatchArgs {
+    pub fn new(path: TextPath) -> WatchArgs {
+        WatchArgs { path }
+    }
+}
+
 #[derive(Args, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadArgs {

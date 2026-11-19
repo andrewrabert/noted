@@ -37,7 +37,7 @@ impl TaskTools {
     async fn read(&self, task: &TaskPath) -> Result<TaskNote> {
         let file = self.store.policy().readable(task.as_ref())?.file()?;
         let bytes = self.store.read(&file).await?;
-        TaskNote::from_bytes(task.clone(), &bytes).map_err(|_| rejected("not a task"))
+        TaskNote::from_bytes(task.clone(), &bytes).map_err(|e| rejected(format!("not a task: {e}")))
     }
 
     // one more than the largest task sitting directly in `dir`
@@ -46,7 +46,7 @@ impl TaskTools {
         Ok(self
             .store
             .walk(&tasks, Some(1))
-            .await
+            .await?
             .into_iter()
             .filter_map(|at| TaskPath::try_from(at).ok())
             .map(|task| task.number())
@@ -113,7 +113,14 @@ impl TaskTools {
 
     pub(super) async fn get(&self, query: &TaskQuery) -> Result<Vec<TaskNote>> {
         let exact = match TaskPath::try_from(query.prefix.as_ref().clone()) {
-            Ok(task) => self.read(&task).await.ok(),
+            Ok(task) => match self.read(&task).await {
+                Ok(found) => Some(found),
+                Err(NotedError::NotFound | NotedError::Forbidden) => None,
+                Err(e) => {
+                    skipped(&task, &e);
+                    None
+                }
+            },
             Err(_) => None,
         };
         let (paths, hide_closed) = match exact {
@@ -121,7 +128,7 @@ impl TaskTools {
             None => (
                 self.store
                     .walk(&query.prefix, None)
-                    .await
+                    .await?
                     .into_iter()
                     .filter_map(|at| TaskPath::try_from(at).ok())
                     .collect::<Vec<_>>(),
@@ -131,8 +138,12 @@ impl TaskTools {
 
         let mut found = Vec::new();
         for path in paths {
-            let Ok(task) = self.read(&path).await else {
-                continue;
+            let task = match self.read(&path).await {
+                Ok(task) => task,
+                Err(e) => {
+                    skipped(&path, &e);
+                    continue;
+                }
             };
             if hide_closed && task.front().state.is_closed() {
                 continue;
@@ -159,8 +170,12 @@ impl TaskTools {
 
         let mut ordered = Vec::new();
         for hit in search.query.assemble(hits)? {
-            let Ok(task) = self.read(&hit.path).await else {
-                continue;
+            let task = match self.read(&hit.path).await {
+                Ok(task) => task,
+                Err(e) => {
+                    skipped(&hit.path, &e);
+                    continue;
+                }
             };
             if !search.include_completed && task.front().state.is_closed() {
                 continue;
@@ -203,4 +218,8 @@ impl TaskTools {
         let moved = self.claim(dest, Placement::Existing(reference)).await?;
         self.existing(&moved).await
     }
+}
+
+fn skipped(path: &TaskPath, error: &NotedError) {
+    tracing::warn!(target: crate::SKIPPED, %path, %error, "skipping a task that cannot be read");
 }

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, http::HeaderValue};
@@ -87,8 +87,8 @@ impl Relay {
         accept: Option<&str>,
         asked: &[PolicyFragment],
         body: Bytes,
-    ) -> Response {
-        match self
+    ) -> std::result::Result<Response, RelayError> {
+        let reply = self
             .upstream
             .post(
                 path.trim_start_matches('/'),
@@ -98,19 +98,33 @@ impl Relay {
                 body.to_vec(),
             )
             .await
-        {
-            Ok(reply) => {
-                let status = StatusCode::from_u16(reply.status).unwrap_or(StatusCode::BAD_GATEWAY);
-                let mut response = (status, reply.body).into_response();
-                if let Some(content_type) = reply.content_type
-                    && let Ok(value) = HeaderValue::from_str(&content_type)
-                {
-                    response.headers_mut().insert(header::CONTENT_TYPE, value);
-                }
-                response
-            }
-            Err(e) => refused(StatusCode::SERVICE_UNAVAILABLE, e.message().into_owned()),
-        }
+            .map_err(RelayError::unreachable)?;
+        relayed(reply.status, reply.content_type, Body::from(reply.body))
+    }
+
+    pub async fn stream(
+        &self,
+        path: &str,
+        accept: Option<&str>,
+        asked: &[PolicyFragment],
+        body: Bytes,
+    ) -> std::result::Result<Response, RelayError> {
+        let streamed = self
+            .upstream
+            .post_stream(
+                path.trim_start_matches('/'),
+                &self.query(asked),
+                self.bearer.as_ref(),
+                accept,
+                body.to_vec(),
+            )
+            .await
+            .map_err(RelayError::unreachable)?;
+        relayed(
+            streamed.status,
+            streamed.content_type,
+            Body::from_stream(streamed.body),
+        )
     }
 
     /// One JSON-RPC message per line from stdin to the upstream `/mcp`, each
@@ -151,8 +165,53 @@ impl Relay {
     }
 }
 
-fn refused(status: StatusCode, detail: String) -> Response {
-    (status, Json(json!({ "detail": detail }))).into_response()
+pub struct RelayError {
+    status: StatusCode,
+    detail: String,
+}
+
+impl RelayError {
+    fn unreachable(e: NotedError) -> RelayError {
+        RelayError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            detail: e.message().into_owned(),
+        }
+    }
+
+    fn bad_gateway(detail: String) -> RelayError {
+        RelayError {
+            status: StatusCode::BAD_GATEWAY,
+            detail,
+        }
+    }
+}
+
+impl IntoResponse for RelayError {
+    fn into_response(self) -> Response {
+        (self.status, Json(json!({ "detail": self.detail }))).into_response()
+    }
+}
+
+fn relayed(
+    status: u16,
+    content_type: Option<String>,
+    body: Body,
+) -> std::result::Result<Response, RelayError> {
+    let code = StatusCode::from_u16(status).map_err(|_| {
+        RelayError::bad_gateway(format!(
+            "upstream answered with an invalid status: {status}"
+        ))
+    })?;
+    let mut response = (code, body).into_response();
+    if let Some(content_type) = content_type {
+        let value = HeaderValue::from_str(&content_type).map_err(|_| {
+            RelayError::bad_gateway(format!(
+                "upstream answered with an invalid content type: {content_type:?}"
+            ))
+        })?;
+        response.headers_mut().insert(header::CONTENT_TYPE, value);
+    }
+    Ok(response)
 }
 
 #[cfg(test)]

@@ -1,15 +1,15 @@
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Args;
 use tempfile::TempDir;
+use tokio::sync::mpsc;
 
 use noted::error::{NotedError, Result, io_error, rejected, unavailable};
-use noted::note::{Condition, TextNote};
 use noted::tools::{ReadArgs, SearchNotesArgs, Tools, WriteArgs};
-use noted::{NotePath, TextPath};
-use noted_client::Backend;
+use noted::{NoteEvent, NotePath, TextPath};
+use noted_client::{Backend, NoteChanges};
 
 use crate::config::Config;
 use crate::picker::Pick;
@@ -19,60 +19,70 @@ use crate::text_editor::TextEditor;
 pub(crate) struct OpenArgs {
     /// Note to open, by relative path; omit to pick one interactively
     path: Option<TextPath>,
-    /// Overwrite unconditionally, ignoring concurrent changes
-    #[arg(short, long)]
-    force: bool,
 }
 
-struct EditBuffer {
-    dir: Option<TempDir>,
+struct Mirror {
+    dir: TempDir,
     file: PathBuf,
-    armed: bool,
 }
 
-impl EditBuffer {
-    /// Creates the temp dir and seeds the file off the blocking pool.
-    async fn create(basename: &str, initial: &str) -> Result<EditBuffer> {
-        let basename = basename.to_string();
+impl Mirror {
+    async fn create(path: &TextPath, initial: &str) -> Result<Mirror> {
+        let shown = path.to_string();
         let initial = initial.to_string();
         blocking(move || {
             let dir = tempfile::tempdir().map_err(|e| io_error("cannot create temp dir", e))?;
-            let file = dir.path().join(basename);
+            let mut file = dir
+                .path()
+                .canonicalize()
+                .map_err(|e| io_error("cannot create temp dir", e))?;
+            file.extend(shown.split('/').filter(|part| !part.is_empty()));
+            if let Some(parent) = file.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| io_error("cannot create temp dir", e))?;
+            }
             std::fs::write(&file, initial).map_err(|e| io_error("cannot write temp file", e))?;
-            Ok(EditBuffer {
-                dir: Some(dir),
-                file,
-                armed: false,
-            })
+            Ok(Mirror { dir, file })
         })
         .await
     }
 
-    /// Reads the edited text off the blocking pool.
-    async fn read(&self) -> Result<String> {
+    async fn read(&self) -> Result<Option<String>> {
         let file = self.file.clone();
-        blocking(move || {
-            std::fs::read_to_string(&file).map_err(|e| io_error("cannot read edited buffer", e))
+        blocking(move || match std::fs::read_to_string(&file) {
+            Ok(text) => Ok(Some(text)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(io_error("cannot read edited buffer", e)),
         })
         .await
     }
 
-    fn arm(&mut self) {
-        self.armed = true;
+    async fn replace(&self, text: &str) -> Result<()> {
+        let file = self.file.clone();
+        let text = text.to_string();
+        blocking(move || {
+            let Some(name) = file.file_name().and_then(|name| name.to_str()) else {
+                return Err(rejected("the edit buffer has no utf-8 file name"));
+            };
+            let sibling = file.with_file_name(format!(".{name}.noted"));
+            std::fs::write(&sibling, text).map_err(|e| io_error("cannot write temp file", e))?;
+            std::fs::rename(&sibling, &file).map_err(|e| io_error("cannot write temp file", e))
+        })
+        .await
     }
 
-    fn commit(mut self) {
-        self.dir.take();
+    async fn remove(&self) -> Result<()> {
+        let file = self.file.clone();
+        blocking(move || match std::fs::remove_file(&file) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(io_error("cannot remove temp file", e)),
+        })
+        .await
     }
-}
 
-impl Drop for EditBuffer {
-    fn drop(&mut self) {
-        if self.armed
-            && let Some(dir) = self.dir.take()
-        {
-            eprintln!("your edits are preserved at {}", dir.keep().display());
-        }
+    fn keep(self) -> PathBuf {
+        self.dir.keep()
     }
 }
 
@@ -86,6 +96,44 @@ where
         .map_err(|e| unavailable(format!("edit buffer failed: {e}")))?
 }
 
+type Saved = std::result::Result<(), String>;
+
+fn watch_saves(
+    file: &Path,
+) -> Result<(notify::RecommendedWatcher, mpsc::UnboundedReceiver<Saved>)> {
+    use notify::Watcher as _;
+    use notify::event::{AccessKind, AccessMode, EventKind};
+
+    let Some(dir) = file.parent() else {
+        return Err(rejected("the edit buffer has no directory"));
+    };
+    let (saved, saves) = mpsc::unbounded_channel();
+    let target = file.to_path_buf();
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let report = match event {
+            Err(e) => Err(e.to_string()),
+            Ok(event) if event.need_rescan() => Ok(()),
+            Ok(event) => {
+                let wrote = match event.kind {
+                    EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
+                    EventKind::Access(_) => false,
+                    _ => true,
+                };
+                if !(wrote && event.paths.contains(&target)) {
+                    return;
+                }
+                Ok(())
+            }
+        };
+        let _ = saved.send(report);
+    })
+    .map_err(|e| unavailable(format!("cannot watch the edit buffer: {e}")))?;
+    watcher
+        .watch(dir, notify::RecursiveMode::NonRecursive)
+        .map_err(|e| unavailable(format!("cannot watch the edit buffer: {e}")))?;
+    Ok((watcher, saves))
+}
+
 pub(crate) async fn run_open(config: &Config, args: OpenArgs) -> Result<ExitCode> {
     let backend = config.connect().await?;
     let editor = TextEditor::resolve(&config.editor()).await?;
@@ -96,7 +144,7 @@ pub(crate) async fn run_open(config: &Config, args: OpenArgs) -> Result<ExitCode
             Pick::Aborted => return Ok(ExitCode::SUCCESS),
         },
     };
-    edit_note(&backend, &editor, path, args.force).await
+    edit_note(&backend, &editor, path).await
 }
 
 async fn pick_path(backend: &Backend) -> Result<Pick> {
@@ -119,83 +167,146 @@ async fn list_paths(backend: &Backend) -> Result<Vec<String>> {
         .collect())
 }
 
-async fn edit_note(
-    backend: &Backend,
-    editor: &TextEditor,
-    path: TextPath,
-    force: bool,
-) -> Result<ExitCode> {
-    let original = match read_note(backend, &path).await {
-        Ok(note) => Some(note),
-        Err(NotedError::NotFound) => None,
-        Err(e) => return Err(e),
+async fn edit_note(backend: &Backend, editor: &TextEditor, path: TextPath) -> Result<ExitCode> {
+    let mut changes = Some(backend.watch_note(path.clone()).await?);
+    let initial: String = read_body(backend, &path).await?.unwrap_or_default();
+    let mirror = Mirror::create(&path, &initial).await?;
+    let (_watcher, mut saves) = watch_saves(&mirror.file)?;
+    let mut session = Session {
+        backend,
+        path,
+        mirror,
+        synced: Some(initial),
+        pushed: false,
+        notices: Vec::new(),
     };
-    let initial = original
-        .as_ref()
-        .map(|note| note.body().as_str())
-        .unwrap_or_default();
 
-    let shown = path.to_string();
-    let basename = shown.rsplit('/').next().unwrap_or(&shown);
-    let mut buffer = EditBuffer::create(basename, initial).await?;
+    let file = session.mirror.file.clone();
+    let editing = editor.edit(&file);
+    tokio::pin!(editing);
+    let edited = loop {
+        tokio::select! {
+            edited = &mut editing => break edited,
+            Some(saved) = saves.recv() => {
+                let mut burst = vec![saved];
+                while let Ok(saved) = saves.try_recv() {
+                    burst.push(saved);
+                }
+                for failed in burst.into_iter().filter_map(std::result::Result::err) {
+                    session.notice(format!("watching the edit buffer failed: {failed}"));
+                }
+                let pushed = session.push().await;
+                session.report(pushed);
+            }
+            change = next_change(&mut changes) => match change {
+                Ok(Some(event)) => {
+                    let applied = session.apply(event).await;
+                    session.report(applied);
+                }
+                Ok(None) => {
+                    session.notice(format!("changes to '{}' stopped arriving", session.path));
+                    changes = None;
+                }
+                Err(e) => session.notice(format!("cannot follow '{}': {e}", session.path)),
+            },
+        }
+    };
+    let last = session.push().await;
+    session.finish(edited, last)
+}
 
-    editor.edit(&buffer.file).await?;
+async fn next_change(changes: &mut Option<NoteChanges>) -> Result<Option<NoteEvent>> {
+    match changes {
+        Some(changes) => changes.next().await,
+        None => std::future::pending().await,
+    }
+}
 
-    let edited = buffer.read().await?;
-    if edited == initial {
-        println!("unchanged");
-        buffer.commit();
-        return Ok(ExitCode::SUCCESS);
+struct Session<'a> {
+    backend: &'a Backend,
+    path: TextPath,
+    mirror: Mirror,
+    synced: Option<String>,
+    pushed: bool,
+    notices: Vec<String>,
+}
+
+impl Session<'_> {
+    fn notice(&mut self, message: String) {
+        if self.notices.last() != Some(&message) {
+            self.notices.push(message);
+        }
     }
 
-    let edited = match &original {
-        Some(original) => original.clone().with_body(edited),
-        None => TextNote::new(path.clone(), edited),
-    };
-
-    buffer.arm();
-    let when = if force {
-        None
-    } else {
-        Some(match &original {
-            None => Condition::Missing,
-            Some(original) => Condition::Matching(original.etag()),
-        })
-    };
-
-    match write_note(backend, &edited, when).await {
-        Ok(()) => {
-            println!("wrote {path}");
-            buffer.commit();
-            Ok(ExitCode::SUCCESS)
+    fn report(&mut self, outcome: Result<()>) {
+        if let Err(e) = outcome {
+            self.notice(format!("'{}': {e}", self.path));
         }
-        Err(NotedError::Conflict) => {
-            eprintln!("note changed since it was opened: '{path}'");
-            if std::io::stdin().is_terminal()
-                && crate::prompt::confirm("overwrite anyway? [y/N]").await
-            {
-                write_note(backend, &edited, None).await?;
-                println!("wrote {path}");
-                buffer.commit();
-                Ok(ExitCode::SUCCESS)
-            } else {
-                // Armed guard's Drop preserves the buffer and reports the path.
-                Ok(ExitCode::FAILURE)
+    }
+
+    async fn push(&mut self) -> Result<()> {
+        let Some(text) = self.mirror.read().await? else {
+            return Ok(());
+        };
+        if self.synced.as_ref() == Some(&text) {
+            return Ok(());
+        }
+        write_body(self.backend, &self.path, text.clone()).await?;
+        self.synced = Some(text);
+        self.pushed = true;
+        Ok(())
+    }
+
+    async fn apply(&mut self, event: NoteEvent) -> Result<()> {
+        if self.mirror.read().await? != self.synced {
+            return self.push().await;
+        }
+        let remote = match event.removed {
+            true => None,
+            false => read_body(self.backend, &self.path).await?,
+        };
+        if remote == self.synced {
+            return Ok(());
+        }
+        match &remote {
+            Some(text) => self.mirror.replace(text).await?,
+            None => self.mirror.remove().await?,
+        }
+        self.synced = remote;
+        Ok(())
+    }
+
+    fn finish(self, edited: Result<()>, last: Result<()>) -> Result<ExitCode> {
+        for notice in &self.notices {
+            eprintln!("{notice}");
+        }
+        if let Err(e) = last {
+            eprintln!(
+                "your edits are preserved at {}",
+                self.mirror.keep().display()
+            );
+            if let Err(editor) = edited {
+                eprintln!("{editor}");
             }
+            return Err(e);
         }
-        // Armed guard's Drop preserves the buffer and reports the path.
+        edited?;
+        match self.pushed {
+            true => println!("wrote {}", self.path),
+            false => println!("unchanged"),
+        }
+        Ok(ExitCode::SUCCESS)
+    }
+}
+
+async fn read_body(backend: &Backend, path: &TextPath) -> Result<Option<String>> {
+    match backend.read_note(ReadArgs::new(path.clone())).await {
+        Ok(note) => Ok(Some(note.body().as_str().to_string())),
+        Err(NotedError::NotFound) => Ok(None),
         Err(e) => Err(e),
     }
 }
 
-async fn read_note(backend: &Backend, path: &TextPath) -> Result<TextNote> {
-    backend.read_note(ReadArgs::new(path.clone())).await
-}
-
-async fn write_note(backend: &Backend, note: &TextNote, when: Option<Condition>) -> Result<()> {
-    let mut args = WriteArgs::new(note.path().clone(), note.body().clone());
-    if let Some(when) = when {
-        args = args.when(when);
-    }
-    backend.write_note(args).await
+async fn write_body(backend: &Backend, path: &TextPath, text: String) -> Result<()> {
+    backend.write_note(WriteArgs::new(path.clone(), text)).await
 }

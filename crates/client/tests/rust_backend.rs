@@ -51,7 +51,7 @@ async fn http_non_json_body_is_json_error() {
 }
 
 #[tokio::test]
-async fn http_4xx_without_detail_falls_back() {
+async fn http_4xx_without_detail_names_the_status_and_body() {
     let err = invoke_canned(400, "{\"other\": 1}").await.unwrap_err();
     let NotedError::InvalidInput(msg) = &err else {
         panic!("expected InvalidInput, got {err:?}");
@@ -60,7 +60,7 @@ async fn http_4xx_without_detail_falls_back() {
 }
 
 #[tokio::test]
-async fn http_5xx_without_detail_falls_back() {
+async fn http_5xx_without_detail_names_the_status_and_body() {
     let err = invoke_canned(500, "{}").await.unwrap_err();
     let NotedError::Unavailable(msg) = &err else {
         panic!("expected Unavailable, got {err:?}");

@@ -38,14 +38,14 @@ pub(crate) async fn route(
     let request = builder
         .body(axum::body::Body::from(body))
         .map_err(|e| e.to_string())?;
-    // the router's error is Infallible
     let Ok(resp) = router.clone().oneshot(request).await;
     let status = resp.status().as_u16();
     let content_type = resp
         .headers()
         .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
+        .map(|v| v.to_str().map(str::to_string))
+        .transpose()
+        .map_err(|e| format!("invalid content type: {e}"))?;
     let bytes = resp
         .into_body()
         .collect()
@@ -53,6 +53,46 @@ pub(crate) async fn route(
         .map_err(|e| e.to_string())?
         .to_bytes();
     Ok((status, content_type, bytes.to_vec()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) async fn route_stream(
+    router: &Router,
+    target: &HttpUrl,
+    headers: &[(&str, &str)],
+    body: Vec<u8>,
+) -> std::result::Result<crate::upstream::Streamed, String> {
+    use axum::http::Request;
+    use futures_util::TryStreamExt;
+    use tower::ServiceExt;
+
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(target.path_and_query())
+        .header("host", authority(target));
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let request = builder
+        .body(axum::body::Body::from(body))
+        .map_err(|e| e.to_string())?;
+    let Ok(resp) = router.clone().oneshot(request).await;
+    let status = resp.status().as_u16();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .map(|v| v.to_str().map(str::to_string))
+        .transpose()
+        .map_err(|e| format!("invalid content type: {e}"))?;
+    Ok(crate::upstream::Streamed {
+        status,
+        content_type,
+        body: Box::pin(
+            resp.into_body()
+                .into_data_stream()
+                .map_err(std::io::Error::other),
+        ),
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
